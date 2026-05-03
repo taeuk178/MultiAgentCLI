@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from "react";
 import { IconPlus, IconX } from "./Icons";
 import type { ConversationEntry, ProviderId } from "../lib/types";
 import { PROVIDERS } from "../lib/types";
@@ -8,6 +9,13 @@ interface Props {
   onSelect: (id: string) => void;
   onDelete: (id: string) => void;
   onNew: () => void;
+  onClearChat: (id: string) => void;
+}
+
+interface CtxMenu {
+  id: string;
+  x: number;
+  y: number;
 }
 
 function ProviderDot({ providerId }: { providerId: ProviderId }) {
@@ -25,7 +33,92 @@ function ProviderDot({ providerId }: { providerId: ProviderId }) {
   );
 }
 
-export function Sidebar({ conversations, activeId, onSelect, onDelete, onNew }: Props) {
+function ContextMenu({
+  menu,
+  onClearChat,
+  onDelete,
+  onClose,
+}: {
+  menu: CtxMenu;
+  onClearChat: () => void;
+  onDelete: () => void;
+  onClose: () => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [onClose]);
+
+  const menuItem = (label: string, onClick: () => void, danger = false) => (
+    <button
+      onClick={() => { onClick(); onClose(); }}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        width: "100%",
+        padding: "6px 10px",
+        borderRadius: 4,
+        background: "transparent",
+        color: danger ? "var(--danger)" : "var(--fg-2)",
+        fontSize: 12,
+        fontWeight: 500,
+        cursor: "pointer",
+        textAlign: "left",
+        fontFamily: "var(--ui)",
+        transition: "background 80ms",
+        border: "none",
+      }}
+      onMouseEnter={(e) =>
+        ((e.currentTarget as HTMLElement).style.background =
+          danger ? "rgba(255,95,87,0.1)" : "rgba(255,255,255,0.06)")
+      }
+      onMouseLeave={(e) =>
+        ((e.currentTarget as HTMLElement).style.background = "transparent")
+      }
+    >
+      {label}
+    </button>
+  );
+
+  return (
+    <div
+      ref={ref}
+      style={{
+        position: "fixed",
+        left: menu.x,
+        top: menu.y,
+        zIndex: 200,
+        background: "var(--bg-overlay)",
+        border: "1px solid var(--border-strong)",
+        borderRadius: 6,
+        boxShadow: "0 8px 24px rgba(0,0,0,0.55), 0 2px 6px rgba(0,0,0,0.3)",
+        padding: 4,
+        minWidth: 160,
+        animation: "pop-in 120ms ease-out",
+      }}
+    >
+      {menuItem("Clear Chat", onClearChat)}
+      <div style={{ height: 1, background: "var(--divider)", margin: "3px 0" }} />
+      {menuItem("Delete", onDelete, true)}
+    </div>
+  );
+}
+
+export function Sidebar({
+  conversations,
+  activeId,
+  onSelect,
+  onDelete,
+  onNew,
+  onClearChat,
+}: Props) {
+  const [ctxMenu, setCtxMenu] = useState<CtxMenu | null>(null);
+
   return (
     <aside
       style={{
@@ -36,9 +129,10 @@ export function Sidebar({ conversations, activeId, onSelect, onDelete, onNew }: 
         height: "100%",
         background: "var(--bg-sidebar)",
         borderRight: "1px solid var(--divider)",
+        position: "relative",
       }}
     >
-      {/* Traffic light region — native controls appear here */}
+      {/* Traffic light region */}
       <div
         style={{ height: 44, flexShrink: 0 }}
         {...{ "data-tauri-drag-region": true }}
@@ -92,6 +186,10 @@ export function Sidebar({ conversations, activeId, onSelect, onDelete, onNew }: 
               tabIndex={0}
               onClick={() => onSelect(conv.id)}
               onKeyDown={(e) => e.key === "Enter" && onSelect(conv.id)}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                setCtxMenu({ id: conv.id, x: e.clientX, y: e.clientY });
+              }}
               style={{
                 position: "relative",
                 display: "flex",
@@ -247,6 +345,16 @@ export function Sidebar({ conversations, activeId, onSelect, onDelete, onNew }: 
           <span>New Chat</span>
         </button>
       </div>
+
+      {/* Context menu */}
+      {ctxMenu && (
+        <ContextMenu
+          menu={ctxMenu}
+          onClearChat={() => onClearChat(ctxMenu.id)}
+          onDelete={() => onDelete(ctxMenu.id)}
+          onClose={() => setCtxMenu(null)}
+        />
+      )}
     </aside>
   );
 }

@@ -1,6 +1,6 @@
 import { open } from "@tauri-apps/plugin-dialog";
 import { AdvisorPopover } from "./AdvisorPopover";
-import { IconFolder, IconTrash } from "./Icons";
+import { IconFolder } from "./Icons";
 import type { ConversationEntry, ProviderId } from "../lib/types";
 
 interface Props {
@@ -8,7 +8,6 @@ interface Props {
   isRunning: boolean;
   onAdvisorChange: (advisor: ProviderId | null) => void;
   onProjectChange: (path: string) => void;
-  onClearChat: () => void;
 }
 
 function GhostBtn({
@@ -64,10 +63,8 @@ export function ProjectRow({
   isRunning,
   onAdvisorChange,
   onProjectChange,
-  onClearChat,
 }: Props) {
   const provider = conv?.provider ?? "claude";
-  const hasMessages = false;
 
   const handlePickFolder = async () => {
     const selected = await open({
@@ -119,15 +116,6 @@ export function ProjectRow({
         onChange={onAdvisorChange}
       />
 
-      {/* Clear chat */}
-      <GhostBtn
-        onClick={onClearChat}
-        disabled={isRunning || !hasMessages || !conv}
-        title="Clear Chat"
-      >
-        <IconTrash size={13} />
-        <span>Clear Chat</span>
-      </GhostBtn>
     </div>
   );
 }

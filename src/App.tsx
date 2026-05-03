@@ -1,4 +1,5 @@
 import { useCallback, useState } from "react";
+import { open } from "@tauri-apps/plugin-dialog";
 import { Sidebar } from "./components/Sidebar";
 import { TitleBar } from "./components/TitleBar";
 import { ProjectRow } from "./components/ProjectRow";
@@ -56,10 +57,22 @@ export default function App() {
   );
 
   const handleNew = useCallback(async () => {
+    const selected = await open({
+      directory: true,
+      multiple: false,
+      title: "프로젝트 폴더 선택",
+    });
+    const projectPath = typeof selected === "string" ? selected : null;
+
     const conv = makeConversation();
+    if (projectPath) conv.project = projectPath;
+
     for (const tab of conv.tabs) {
       try {
         await ptyCreate(tab.tabId, tab.providerId, 120, 40);
+        if (projectPath) {
+          await ptyWrite(tab.tabId, `cd "${projectPath}"\r`);
+        }
       } catch (err) {
         console.warn(`[pty] ${tab.providerId} failed:`, err);
       }
@@ -109,6 +122,17 @@ export default function App() {
     [activeConvId, activeConv, updateConv]
   );
 
+  const handleClearChat = useCallback(
+    (id: string) => {
+      const conv = conversations.find((c) => c.id === id);
+      if (!conv) return;
+      for (const tab of conv.tabs) {
+        ptyWrite(tab.tabId, "clear\r").catch(() => {});
+      }
+    },
+    [conversations]
+  );
+
   const handleSend = useCallback(() => {
     if (!composerText.trim() || !activeConv) return;
     const tab = activeConv.tabs.find(
@@ -137,6 +161,7 @@ export default function App() {
         onSelect={setActiveConvId}
         onDelete={handleDelete}
         onNew={handleNew}
+        onClearChat={handleClearChat}
       />
 
       <div
@@ -161,7 +186,6 @@ export default function App() {
           isRunning={isRunning}
           onAdvisorChange={handleAdvisorChange}
           onProjectChange={handleProjectChange}
-          onClearChat={() => {}}
         />
 
         <HUD
