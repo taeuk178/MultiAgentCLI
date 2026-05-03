@@ -21,6 +21,13 @@ pub struct ProviderRuntimeStatus {
     model: String,
     context_label: String,
     context_percent: Option<u8>,
+    context_reset_seconds: Option<u64>,
+}
+
+struct RuntimeContext {
+    label: String,
+    percent: Option<u8>,
+    reset_seconds: Option<u64>,
 }
 
 pub struct SpawnConfig {
@@ -127,10 +134,12 @@ pub fn runtime_statuses() -> Vec<ProviderRuntimeStatus> {
         .into_iter()
         .map(|provider| {
             let healthy = command_exists(&provider);
+            let context = runtime_context(&provider);
             ProviderRuntimeStatus {
                 model: configured_model(&provider),
-                context_label: context_label(&provider).to_string(),
-                context_percent: context_percent(&provider),
+                context_label: context.label,
+                context_percent: context.percent,
+                context_reset_seconds: context.reset_seconds,
                 provider_id: provider,
                 health: if healthy { "healthy" } else { "error" }.to_string(),
             }
@@ -212,24 +221,35 @@ fn configured_model(provider: &ProviderId) -> String {
     normalize_model_name(provider, &model)
 }
 
-fn context_label(provider: &ProviderId) -> &'static str {
+fn runtime_context(provider: &ProviderId) -> RuntimeContext {
     match provider {
-        ProviderId::Claude => "5h context",
-        ProviderId::Codex | ProviderId::Gemini => "ctx",
+        ProviderId::Claude => read_claude_five_hour_context().unwrap_or_else(|| RuntimeContext {
+            label: "5h".to_string(),
+            percent: None,
+            reset_seconds: None,
+        }),
+        ProviderId::Codex => RuntimeContext {
+            label: "ctx".to_string(),
+            percent: read_codex_context_percent(),
+            reset_seconds: None,
+        },
+        ProviderId::Gemini => RuntimeContext {
+            label: "ctx".to_string(),
+            percent: None,
+            reset_seconds: None,
+        },
     }
 }
 
-fn context_percent(provider: &ProviderId) -> Option<u8> {
-    match provider {
-        ProviderId::Claude => read_claude_five_hour_percent(),
-        ProviderId::Codex | ProviderId::Gemini => None,
-    }
-}
-
-fn read_claude_five_hour_percent() -> Option<u8> {
+fn read_claude_five_hour_context() -> Option<RuntimeContext> {
     read_percent_env(["CLAUDE_5H_CONTEXT_PERCENT", "CLAUDE_5H_USAGE_PERCENT"])
+        .map(|percent| RuntimeContext {
+            label: "5h".to_string(),
+            percent: Some(percent),
+            reset_seconds: read_seconds_env(["CLAUDE_5H_RESET_SECONDS"]),
+        })
         .or_else(read_claude_auth_status_percent)
-        .or_else(read_claude_five_hour_log_percent)
+        .or_else(read_claude_five_hour_log_context)
 }
 
 fn read_percent_env<const N: usize>(names: [&str; N]) -> Option<u8> {
@@ -237,6 +257,12 @@ fn read_percent_env<const N: usize>(names: [&str; N]) -> Option<u8> {
         let value = std::env::var(name).ok()?;
         parse_percent(&value)
     })
+}
+
+fn read_seconds_env<const N: usize>(names: [&str; N]) -> Option<u64> {
+    names
+        .into_iter()
+        .find_map(|name| std::env::var(name).ok()?.trim().parse::<u64>().ok())
 }
 
 fn parse_percent(value: &str) -> Option<u8> {
@@ -253,7 +279,7 @@ fn parse_percent(value: &str) -> Option<u8> {
     Some(numeric.clamp(0.0, 100.0) as u8)
 }
 
-fn read_claude_auth_status_percent() -> Option<u8> {
+fn read_claude_auth_status_percent() -> Option<RuntimeContext> {
     let output = Command::new("claude")
         .arg("auth")
         .arg("status")
@@ -262,7 +288,7 @@ fn read_claude_auth_status_percent() -> Option<u8> {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let json = serde_json::from_str::<serde_json::Value>(&stdout).ok()?;
 
-    find_percent_by_keys(
+    let percent = find_percent_by_keys(
         &json,
         &[
             "fiveHourContextPercent",
@@ -272,7 +298,21 @@ fn read_claude_auth_status_percent() -> Option<u8> {
             "usagePercent",
             "percentUsed",
         ],
-    )
+    )?;
+
+    Some(RuntimeContext {
+        label: "5h".to_string(),
+        percent: Some(percent),
+        reset_seconds: find_seconds_by_keys(
+            &json,
+            &[
+                "fiveHourResetSeconds",
+                "fiveHourResetsInSeconds",
+                "secondsUntilReset",
+                "resetSeconds",
+            ],
+        ),
+    })
 }
 
 fn find_percent_by_keys(json: &serde_json::Value, keys: &[&str]) -> Option<u8> {
@@ -299,7 +339,31 @@ fn find_percent_by_keys(json: &serde_json::Value, keys: &[&str]) -> Option<u8> {
     }
 }
 
-fn read_claude_five_hour_log_percent() -> Option<u8> {
+fn find_seconds_by_keys(json: &serde_json::Value, keys: &[&str]) -> Option<u64> {
+    match json {
+        serde_json::Value::Object(map) => {
+            for (key, value) in map {
+                if keys.iter().any(|candidate| key == candidate) {
+                    if let Some(seconds) = value.as_u64() {
+                        return Some(seconds);
+                    }
+                    if let Some(seconds) = value.as_str().and_then(|value| value.parse().ok()) {
+                        return Some(seconds);
+                    }
+                }
+            }
+
+            map.values()
+                .find_map(|value| find_seconds_by_keys(value, keys))
+        }
+        serde_json::Value::Array(values) => values
+            .iter()
+            .find_map(|value| find_seconds_by_keys(value, keys)),
+        _ => None,
+    }
+}
+
+fn read_claude_five_hour_log_context() -> Option<RuntimeContext> {
     let limit = std::env::var("CLAUDE_5H_TOKEN_LIMIT")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
@@ -310,28 +374,46 @@ fn read_claude_five_hour_log_percent() -> Option<u8> {
     let cutoff = now.checked_sub(Duration::from_secs(5 * 60 * 60))?;
     let home = std::env::var("HOME").ok()?;
     let projects_dir = PathBuf::from(home).join(".claude/projects");
-    let tokens = claude_usage_tokens_since(&projects_dir, cutoff);
+    let (tokens, oldest_usage) = claude_usage_tokens_since(&projects_dir, cutoff);
     if tokens == 0 {
         return None;
     }
 
     let percent = ((tokens as f64 / limit as f64) * 100.0).round();
-    Some(percent.clamp(0.0, 100.0) as u8)
+    let reset_seconds = oldest_usage
+        .and_then(|timestamp| timestamp.checked_add(Duration::from_secs(5 * 60 * 60)))
+        .and_then(|reset_at| reset_at.duration_since(now).ok())
+        .map(|duration| duration.as_secs());
+
+    Some(RuntimeContext {
+        label: "5h".to_string(),
+        percent: Some(percent.clamp(0.0, 100.0) as u8),
+        reset_seconds,
+    })
 }
 
-fn claude_usage_tokens_since(root: &PathBuf, cutoff: SystemTime) -> u64 {
+fn claude_usage_tokens_since(root: &PathBuf, cutoff: SystemTime) -> (u64, Option<SystemTime>) {
     let mut files = Vec::new();
     collect_jsonl_files(root, &mut files, cutoff, 0);
 
-    files
-        .iter()
-        .filter_map(|path| fs::read_to_string(path).ok())
-        .flat_map(|raw| {
-            raw.lines()
-                .filter_map(|line| claude_usage_tokens_from_line(line, cutoff))
-                .collect::<Vec<_>>()
-        })
-        .sum()
+    let mut tokens = 0;
+    let mut oldest_usage = None;
+    for path in files {
+        let Ok(raw) = fs::read_to_string(path) else {
+            continue;
+        };
+        for line in raw.lines() {
+            let Some((line_tokens, timestamp)) = claude_usage_from_line(line, cutoff) else {
+                continue;
+            };
+            tokens += line_tokens;
+            if oldest_usage.is_none_or(|oldest| timestamp < oldest) {
+                oldest_usage = Some(timestamp);
+            }
+        }
+    }
+
+    (tokens, oldest_usage)
 }
 
 fn collect_jsonl_files(dir: &PathBuf, files: &mut Vec<PathBuf>, cutoff: SystemTime, depth: usize) {
@@ -378,7 +460,7 @@ fn collect_jsonl_files(dir: &PathBuf, files: &mut Vec<PathBuf>, cutoff: SystemTi
     }
 }
 
-fn claude_usage_tokens_from_line(line: &str, cutoff: SystemTime) -> Option<u64> {
+fn claude_usage_from_line(line: &str, cutoff: SystemTime) -> Option<(u64, SystemTime)> {
     let json = serde_json::from_str::<serde_json::Value>(line).ok()?;
     let timestamp = json
         .get("timestamp")
@@ -399,13 +481,68 @@ fn claude_usage_tokens_from_line(line: &str, cutoff: SystemTime) -> Option<u64> 
         })
         .or_else(|| json.get("data").and_then(|data| data.get("usage")))?;
 
-    Some(
-        json_number(usage, "input_tokens")
-            + json_number(usage, "output_tokens")
-            + json_number(usage, "cache_creation_input_tokens")
-            + json_number(usage, "cache_read_input_tokens"),
-    )
-    .filter(|tokens| *tokens > 0)
+    let tokens = json_number(usage, "input_tokens")
+        + json_number(usage, "output_tokens")
+        + json_number(usage, "cache_creation_input_tokens")
+        + json_number(usage, "cache_read_input_tokens");
+
+    (tokens > 0).then_some((tokens, timestamp))
+}
+
+fn read_codex_context_percent() -> Option<u8> {
+    let now = SystemTime::now();
+    let cutoff = now.checked_sub(Duration::from_secs(5 * 60 * 60))?;
+    let home = std::env::var("HOME").ok()?;
+    let sessions_dir = PathBuf::from(home).join(".codex/sessions");
+    let mut files = Vec::new();
+    collect_jsonl_files(&sessions_dir, &mut files, cutoff, 0);
+
+    files
+        .iter()
+        .filter_map(|path| fs::read_to_string(path).ok())
+        .flat_map(|raw| {
+            raw.lines()
+                .filter_map(codex_token_count_from_line)
+                .collect::<Vec<_>>()
+        })
+        .max_by_key(|status| status.timestamp)
+        .and_then(|status| {
+            if status.context_window == 0 {
+                return None;
+            }
+            let percent = (status.total_tokens as f64 / status.context_window as f64) * 100.0;
+            Some(percent.round().clamp(0.0, 100.0) as u8)
+        })
+}
+
+struct CodexTokenStatus {
+    timestamp: SystemTime,
+    total_tokens: u64,
+    context_window: u64,
+}
+
+fn codex_token_count_from_line(line: &str) -> Option<CodexTokenStatus> {
+    let json = serde_json::from_str::<serde_json::Value>(line).ok()?;
+    let timestamp = json
+        .get("timestamp")
+        .and_then(|value| value.as_str())
+        .and_then(parse_iso_timestamp_millis)?;
+    let payload = json.get("payload")?;
+    if payload.get("type").and_then(|value| value.as_str()) != Some("token_count") {
+        return None;
+    }
+
+    let info = payload.get("info")?;
+    let context_window = json_number(info, "model_context_window");
+    let usage = info.get("total_token_usage")?;
+    let total_tokens = json_number(usage, "total_tokens")
+        .max(json_number(usage, "input_tokens") + json_number(usage, "output_tokens"));
+
+    Some(CodexTokenStatus {
+        timestamp,
+        total_tokens,
+        context_window,
+    })
 }
 
 fn json_number(json: &serde_json::Value, key: &str) -> u64 {

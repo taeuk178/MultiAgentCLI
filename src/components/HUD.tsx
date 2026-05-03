@@ -39,6 +39,7 @@ interface CardProps {
   model: string;
   contextLabel: string;
   contextPercent: number | null;
+  contextResetSeconds: number | null;
   streaming: boolean;
   disabled: boolean;
   onClick: () => void;
@@ -51,6 +52,7 @@ function HUDCard({
   model,
   contextLabel,
   contextPercent,
+  contextResetSeconds,
   streaming,
   disabled,
   onClick,
@@ -58,7 +60,11 @@ function HUDCard({
   const info = PROVIDERS[provider];
   const ledColor = LED_COLOR[health];
   const barWidth = contextPercent == null ? 0 : Math.min(100, contextPercent);
-  const contextText = contextPercent == null ? "--" : `${contextPercent}%`;
+  const contextText = formatContextStatus(
+    contextLabel,
+    contextPercent,
+    contextResetSeconds,
+  );
 
   const activeBorderStyle = active
     ? {
@@ -137,9 +143,7 @@ function HUDCard({
       >
         <span title={model}>model:{model}</span>
         <span style={{ color: "var(--fg-faint)" }}>·</span>
-        <span>
-          {contextLabel}: {contextText}
-        </span>
+        <span>{contextText}</span>
       </div>
 
       {/* Progress bar */}
@@ -209,7 +213,8 @@ export function HUD({
         const streaming = false; // wired up at M6
         const ctxTokens = estimateContextTokens(conv?.messages ?? []);
         const runtime = providerStatuses[pid];
-        const fallbackCtxPct = ctxTokens > 0 ? ctxPct(ctxTokens, PROVIDERS[pid].ctxWindow) : null;
+        const fallbackCtxPct =
+          ctxTokens > 0 ? ctxPct(ctxTokens, PROVIDERS[pid].ctxWindow) : null;
         const contextPercent = runtime.contextPercent ?? fallbackCtxPct;
 
         return (
@@ -221,6 +226,7 @@ export function HUD({
             model={runtime.model}
             contextLabel={runtime.contextLabel}
             contextPercent={contextPercent}
+            contextResetSeconds={runtime.contextResetSeconds}
             streaming={streaming}
             disabled={isRunning && !active}
             onClick={() => onProviderSwitch(pid)}
@@ -229,4 +235,35 @@ export function HUD({
       })}
     </div>
   );
+}
+
+function formatContextStatus(
+  label: string,
+  percent: number | null,
+  resetSeconds: number | null,
+): string {
+  const value = percent == null ? "--" : `${percent}%`;
+  const reset = resetSeconds == null ? "" : ` (${formatRemaining(resetSeconds)})`;
+
+  if (label === "5h") {
+    return `${label} ${value}${reset}`;
+  }
+
+  return `${label}: ${value}${reset}`;
+}
+
+function formatRemaining(seconds: number): string {
+  const totalMinutes = Math.max(0, Math.ceil(seconds / 60));
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+
+  if (hours <= 0) {
+    return `${minutes}m`;
+  }
+
+  if (minutes === 0) {
+    return `${hours}h`;
+  }
+
+  return `${hours}h ${minutes}m`;
 }

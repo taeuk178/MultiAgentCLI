@@ -8,6 +8,7 @@ export interface ProviderRuntimeStatus {
   model: string;
   contextLabel: string;
   contextPercent: number | null;
+  contextResetSeconds: number | null;
 }
 
 export interface ProviderInfo {

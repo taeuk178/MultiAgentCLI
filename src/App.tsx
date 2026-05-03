@@ -57,6 +57,21 @@ export default function App() {
 
   const activeConv = conversations.find((c) => c.id === activeConvId) ?? null;
 
+  const applyProviderRuntime = useCallback((statuses: ProviderRuntimeStatus[]) => {
+    setProviderRuntime((prev) => {
+      const next = { ...prev };
+      for (const status of statuses) {
+        next[status.providerId] = status;
+      }
+      return next;
+    });
+  }, []);
+
+  const refreshProviderRuntime = useCallback(async () => {
+    const statuses = await providerStatuses();
+    applyProviderRuntime(statuses);
+  }, [applyProviderRuntime]);
+
   useEffect(() => {
     if (!pendingStartedAt) return;
     const id = window.setInterval(() => setNow(Date.now()), 1000);
@@ -69,13 +84,7 @@ export default function App() {
     providerStatuses()
       .then((statuses) => {
         if (cancelled) return;
-        setProviderRuntime((prev) => {
-          const next = { ...prev };
-          for (const status of statuses) {
-            next[status.providerId] = status;
-          }
-          return next;
-        });
+        applyProviderRuntime(statuses);
       })
       .catch(() => {
         if (cancelled) return;
@@ -91,7 +100,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [applyProviderRuntime]);
 
   const updateConv = useCallback(
     (id: string, patch: Partial<ConversationEntry>) => {
@@ -199,11 +208,12 @@ export default function App() {
       );
       updateConv(activeConv.id, { messages: [...history, providerMessage] });
     } finally {
+      refreshProviderRuntime().catch(() => undefined);
       setPendingConvId(null);
       setPendingLabel(null);
       setPendingStartedAt(null);
     }
-  }, [composerText, activeConv, isRunning, updateConv]);
+  }, [composerText, activeConv, isRunning, refreshProviderRuntime, updateConv]);
 
   const activeProvider = activeConv?.provider ?? "claude";
 
@@ -414,8 +424,9 @@ function makeDefaultProviderRuntime(): Record<ProviderId, ProviderRuntimeStatus>
       providerId: "claude",
       health: "unknown",
       model: "checking",
-      contextLabel: "5h context",
+      contextLabel: "5h",
       contextPercent: null,
+      contextResetSeconds: null,
     },
     codex: {
       providerId: "codex",
@@ -423,6 +434,7 @@ function makeDefaultProviderRuntime(): Record<ProviderId, ProviderRuntimeStatus>
       model: "checking",
       contextLabel: "ctx",
       contextPercent: null,
+      contextResetSeconds: null,
     },
     gemini: {
       providerId: "gemini",
@@ -430,6 +442,7 @@ function makeDefaultProviderRuntime(): Record<ProviderId, ProviderRuntimeStatus>
       model: "checking",
       contextLabel: "ctx",
       contextPercent: null,
+      contextResetSeconds: null,
     },
   };
 }
