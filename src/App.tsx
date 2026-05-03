@@ -7,6 +7,7 @@ import { HUD } from "./components/HUD";
 import { Composer } from "./components/Composer";
 import { TerminalPane } from "./components/TerminalPane";
 import { ptyCreate, ptyWrite } from "./lib/ipc";
+import { runOrchestrated, type OrchPhase } from "./lib/orchestrate";
 import {
   type ConversationEntry,
   type HealthStatus,
@@ -41,7 +42,8 @@ export default function App() {
     codex: "healthy",
     gemini: "healthy",
   });
-  const [isRunning] = useState(false);
+  const [orchPhase, setOrchPhase] = useState<OrchPhase | null>(null);
+  const isRunning = orchPhase !== null && orchPhase !== "done";
   const [logsOpen, setLogsOpen] = useState(false);
   const [composerText, setComposerText] = useState("");
 
@@ -131,29 +133,39 @@ export default function App() {
   );
 
   const handleSend = useCallback(async () => {
-    if (!composerText.trim() || !activeConv) return;
+    if (!composerText.trim() || !activeConv || isRunning) return;
     const message = composerText.trim();
     setComposerText("");
 
     const primaryTab = activeConv.tabs.find(
       (t) => t.providerId === activeConv.provider
     );
-    if (primaryTab) {
+    if (!primaryTab) return;
+
+    if (!activeConv.advisor) {
+      // advisor 없음 — 직접 전송
       await ptyWrite(primaryTab.tabId, message + "\r").catch(console.error);
+      return;
     }
 
-    // With advisor: also send to advisor PTY after a short buffer
-    if (activeConv.advisor) {
-      const advisorTab = activeConv.tabs.find(
-        (t) => t.providerId === activeConv.advisor
+    const advisorTab = activeConv.tabs.find(
+      (t) => t.providerId === activeConv.advisor
+    );
+    if (!advisorTab) return;
+
+    // draft → review → synth 오케스트레이션
+    setOrchPhase("drafting");
+    try {
+      await runOrchestrated(
+        primaryTab.tabId,
+        advisorTab.tabId,
+        message,
+        setOrchPhase,
       );
-      if (advisorTab) {
-        setTimeout(() => {
-          ptyWrite(advisorTab.tabId, message + "\r").catch(console.error);
-        }, 400);
-      }
+    } finally {
+      setOrchPhase(null);
     }
-  }, [composerText, activeConv]);
+  }, [composerText, activeConv, isRunning]);
 
   const activeProvider = activeConv?.provider ?? "claude";
 
@@ -321,11 +333,12 @@ export default function App() {
             value={composerText}
             provider={activeProvider}
             advisor={activeConv.advisor}
+            orchPhase={orchPhase}
             isRunning={isRunning}
             disabled={!activeConv}
             onChange={setComposerText}
             onSend={handleSend}
-            onStop={() => {}}
+            onStop={() => setOrchPhase(null)}
           />
         )}
       </div>

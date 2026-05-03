@@ -2,11 +2,13 @@ import { useEffect, useRef } from "react";
 import { IconAttach, IconSend, IconStop } from "./Icons";
 import type { ProviderId } from "../lib/types";
 import { PROVIDERS } from "../lib/types";
+import type { OrchPhase } from "../lib/orchestrate";
 
 interface Props {
   value: string;
   provider: ProviderId;
   advisor?: ProviderId | null;
+  orchPhase?: OrchPhase | null;
   isRunning: boolean;
   disabled?: boolean;
   onChange: (v: string) => void;
@@ -14,10 +16,18 @@ interface Props {
   onStop: () => void;
 }
 
+const PHASE_LABEL: Record<OrchPhase, string> = {
+  drafting: "drafting…",
+  reviewing: "reviewing…",
+  synthesizing: "synthesizing…",
+  done: "done",
+};
+
 export function Composer({
   value,
   provider,
   advisor,
+  orchPhase,
   isRunning,
   disabled,
   onChange,
@@ -33,8 +43,8 @@ export function Composer({
     ta.style.height = Math.min(ta.scrollHeight, 160) + "px";
   }, [value]);
 
-  const placeholder = isRunning
-    ? "Running… press esc to stop"
+  const placeholder = orchPhase && orchPhase !== "done"
+    ? `${PHASE_LABEL[orchPhase]} — esc to stop`
     : advisor
     ? `Message ${PROVIDERS[provider].label} + ${PROVIDERS[advisor].label} — ⌘+Return to send`
     : `Message ${PROVIDERS[provider].label} — Return for new line, ⌘+Return to send`;
@@ -84,9 +94,39 @@ export function Composer({
           >
             {PROVIDERS[advisor].glyph} {PROVIDERS[advisor].label}
           </span>
-          <span style={{ color: "var(--fg-faint)", marginLeft: 4, fontSize: 10 }}>
-            동시 전송
-          </span>
+          {orchPhase && orchPhase !== "done" ? (
+            <span
+              style={{
+                marginLeft: 6,
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 5,
+                padding: "1px 7px",
+                borderRadius: 4,
+                background: "rgba(91,141,239,0.15)",
+                border: "1px solid rgba(91,141,239,0.25)",
+                color: "var(--accent)",
+                fontSize: 10,
+                fontWeight: 600,
+              }}
+            >
+              <span
+                style={{
+                  width: 5,
+                  height: 5,
+                  borderRadius: "50%",
+                  background: "var(--accent)",
+                  animation: "led-pulse 1.4s ease-in-out infinite",
+                  flexShrink: 0,
+                }}
+              />
+              {PHASE_LABEL[orchPhase]}
+            </span>
+          ) : (
+            <span style={{ color: "var(--fg-faint)", marginLeft: 4, fontSize: 10 }}>
+              draft → review → synth
+            </span>
+          )}
         </div>
       )}
       <div
