@@ -6,6 +6,8 @@ export interface ProviderRuntimeStatus {
   providerId: ProviderId;
   health: HealthStatus;
   model: string;
+  contextLabel: string;
+  contextPercent: number | null;
 }
 
 export interface ProviderInfo {

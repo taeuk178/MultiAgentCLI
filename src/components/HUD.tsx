@@ -37,7 +37,8 @@ interface CardProps {
   active: boolean;
   health: HealthStatus;
   model: string;
-  ctxPctNum: number;
+  contextLabel: string;
+  contextPercent: number | null;
   streaming: boolean;
   disabled: boolean;
   onClick: () => void;
@@ -48,14 +49,16 @@ function HUDCard({
   active,
   health,
   model,
-  ctxPctNum,
+  contextLabel,
+  contextPercent,
   streaming,
   disabled,
   onClick,
 }: CardProps) {
   const info = PROVIDERS[provider];
   const ledColor = LED_COLOR[health];
-  const barWidth = Math.min(100, ctxPctNum * 4);
+  const barWidth = contextPercent == null ? 0 : Math.min(100, contextPercent);
+  const contextText = contextPercent == null ? "--" : `${contextPercent}%`;
 
   const activeBorderStyle = active
     ? {
@@ -134,7 +137,9 @@ function HUDCard({
       >
         <span title={model}>model:{model}</span>
         <span style={{ color: "var(--fg-faint)" }}>·</span>
-        <span>ctx:{ctxPctNum}%</span>
+        <span>
+          {contextLabel}: {contextText}
+        </span>
       </div>
 
       {/* Progress bar */}
@@ -204,6 +209,8 @@ export function HUD({
         const streaming = false; // wired up at M6
         const ctxTokens = estimateContextTokens(conv?.messages ?? []);
         const runtime = providerStatuses[pid];
+        const fallbackCtxPct = ctxTokens > 0 ? ctxPct(ctxTokens, PROVIDERS[pid].ctxWindow) : null;
+        const contextPercent = runtime.contextPercent ?? fallbackCtxPct;
 
         return (
           <HUDCard
@@ -212,7 +219,8 @@ export function HUD({
             active={!!active}
             health={health[pid]}
             model={runtime.model}
-            ctxPctNum={ctxPct(ctxTokens, PROVIDERS[pid].ctxWindow)}
+            contextLabel={runtime.contextLabel}
+            contextPercent={contextPercent}
             streaming={streaming}
             disabled={isRunning && !active}
             onClick={() => onProviderSwitch(pid)}

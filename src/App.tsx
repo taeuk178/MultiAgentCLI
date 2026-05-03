@@ -410,9 +410,27 @@ export default function App() {
 
 function makeDefaultProviderRuntime(): Record<ProviderId, ProviderRuntimeStatus> {
   return {
-    claude: { providerId: "claude", health: "unknown", model: "checking" },
-    codex: { providerId: "codex", health: "unknown", model: "checking" },
-    gemini: { providerId: "gemini", health: "unknown", model: "checking" },
+    claude: {
+      providerId: "claude",
+      health: "unknown",
+      model: "checking",
+      contextLabel: "5h context",
+      contextPercent: null,
+    },
+    codex: {
+      providerId: "codex",
+      health: "unknown",
+      model: "checking",
+      contextLabel: "ctx",
+      contextPercent: null,
+    },
+    gemini: {
+      providerId: "gemini",
+      health: "unknown",
+      model: "checking",
+      contextLabel: "ctx",
+      contextPercent: null,
+    },
   };
 }
 

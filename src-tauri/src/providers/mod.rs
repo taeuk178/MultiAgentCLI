@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
@@ -19,6 +19,8 @@ pub struct ProviderRuntimeStatus {
     provider_id: ProviderId,
     health: String,
     model: String,
+    context_label: String,
+    context_percent: Option<u8>,
 }
 
 pub struct SpawnConfig {
@@ -127,6 +129,8 @@ pub fn runtime_statuses() -> Vec<ProviderRuntimeStatus> {
             let healthy = command_exists(&provider);
             ProviderRuntimeStatus {
                 model: configured_model(&provider),
+                context_label: context_label(&provider).to_string(),
+                context_percent: context_percent(&provider),
                 provider_id: provider,
                 health: if healthy { "healthy" } else { "error" }.to_string(),
             }
@@ -206,6 +210,252 @@ fn configured_model(provider: &ProviderId) -> String {
     };
 
     normalize_model_name(provider, &model)
+}
+
+fn context_label(provider: &ProviderId) -> &'static str {
+    match provider {
+        ProviderId::Claude => "5h context",
+        ProviderId::Codex | ProviderId::Gemini => "ctx",
+    }
+}
+
+fn context_percent(provider: &ProviderId) -> Option<u8> {
+    match provider {
+        ProviderId::Claude => read_claude_five_hour_percent(),
+        ProviderId::Codex | ProviderId::Gemini => None,
+    }
+}
+
+fn read_claude_five_hour_percent() -> Option<u8> {
+    read_percent_env(["CLAUDE_5H_CONTEXT_PERCENT", "CLAUDE_5H_USAGE_PERCENT"])
+        .or_else(read_claude_auth_status_percent)
+        .or_else(read_claude_five_hour_log_percent)
+}
+
+fn read_percent_env<const N: usize>(names: [&str; N]) -> Option<u8> {
+    names.into_iter().find_map(|name| {
+        let value = std::env::var(name).ok()?;
+        parse_percent(&value)
+    })
+}
+
+fn parse_percent(value: &str) -> Option<u8> {
+    let numeric = value
+        .trim()
+        .trim_end_matches('%')
+        .parse::<f64>()
+        .ok()?
+        .round();
+    if !numeric.is_finite() {
+        return None;
+    }
+
+    Some(numeric.clamp(0.0, 100.0) as u8)
+}
+
+fn read_claude_auth_status_percent() -> Option<u8> {
+    let output = Command::new("claude")
+        .arg("auth")
+        .arg("status")
+        .output()
+        .ok()?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json = serde_json::from_str::<serde_json::Value>(&stdout).ok()?;
+
+    find_percent_by_keys(
+        &json,
+        &[
+            "fiveHourContextPercent",
+            "fiveHourUsagePercent",
+            "fiveHourLimitPercent",
+            "fiveHourPercent",
+            "usagePercent",
+            "percentUsed",
+        ],
+    )
+}
+
+fn find_percent_by_keys(json: &serde_json::Value, keys: &[&str]) -> Option<u8> {
+    match json {
+        serde_json::Value::Object(map) => {
+            for (key, value) in map {
+                if keys.iter().any(|candidate| key == candidate) {
+                    if let Some(percent) = value.as_f64().map(|value| value.round() as i64) {
+                        return Some(percent.clamp(0, 100) as u8);
+                    }
+                    if let Some(percent) = value.as_str().and_then(parse_percent) {
+                        return Some(percent);
+                    }
+                }
+            }
+
+            map.values()
+                .find_map(|value| find_percent_by_keys(value, keys))
+        }
+        serde_json::Value::Array(values) => values
+            .iter()
+            .find_map(|value| find_percent_by_keys(value, keys)),
+        _ => None,
+    }
+}
+
+fn read_claude_five_hour_log_percent() -> Option<u8> {
+    let limit = std::env::var("CLAUDE_5H_TOKEN_LIMIT")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(125_000_000);
+
+    let now = SystemTime::now();
+    let cutoff = now.checked_sub(Duration::from_secs(5 * 60 * 60))?;
+    let home = std::env::var("HOME").ok()?;
+    let projects_dir = PathBuf::from(home).join(".claude/projects");
+    let tokens = claude_usage_tokens_since(&projects_dir, cutoff);
+    if tokens == 0 {
+        return None;
+    }
+
+    let percent = ((tokens as f64 / limit as f64) * 100.0).round();
+    Some(percent.clamp(0.0, 100.0) as u8)
+}
+
+fn claude_usage_tokens_since(root: &PathBuf, cutoff: SystemTime) -> u64 {
+    let mut files = Vec::new();
+    collect_jsonl_files(root, &mut files, cutoff, 0);
+
+    files
+        .iter()
+        .filter_map(|path| fs::read_to_string(path).ok())
+        .flat_map(|raw| {
+            raw.lines()
+                .filter_map(|line| claude_usage_tokens_from_line(line, cutoff))
+                .collect::<Vec<_>>()
+        })
+        .sum()
+}
+
+fn collect_jsonl_files(dir: &PathBuf, files: &mut Vec<PathBuf>, cutoff: SystemTime, depth: usize) {
+    if depth > 8 {
+        return;
+    }
+
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let file_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("");
+        if file_name == ".omc" {
+            continue;
+        }
+
+        if path.is_dir() {
+            collect_jsonl_files(&path, files, cutoff, depth + 1);
+            continue;
+        }
+
+        if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
+            continue;
+        }
+
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        if metadata
+            .modified()
+            .ok()
+            .is_some_and(|modified| modified < cutoff)
+        {
+            continue;
+        }
+        if metadata.len() <= 20 * 1024 * 1024 {
+            files.push(path);
+        }
+    }
+}
+
+fn claude_usage_tokens_from_line(line: &str, cutoff: SystemTime) -> Option<u64> {
+    let json = serde_json::from_str::<serde_json::Value>(line).ok()?;
+    let timestamp = json
+        .get("timestamp")
+        .and_then(|value| value.as_str())
+        .and_then(parse_iso_timestamp_millis)?;
+    if timestamp < cutoff {
+        return None;
+    }
+
+    let usage = json
+        .get("message")
+        .and_then(|message| message.get("usage"))
+        .or_else(|| json.get("usage"))
+        .or_else(|| {
+            json.get("data")
+                .and_then(|data| data.get("message"))
+                .and_then(|message| message.get("usage"))
+        })
+        .or_else(|| json.get("data").and_then(|data| data.get("usage")))?;
+
+    Some(
+        json_number(usage, "input_tokens")
+            + json_number(usage, "output_tokens")
+            + json_number(usage, "cache_creation_input_tokens")
+            + json_number(usage, "cache_read_input_tokens"),
+    )
+    .filter(|tokens| *tokens > 0)
+}
+
+fn json_number(json: &serde_json::Value, key: &str) -> u64 {
+    json.get(key)
+        .and_then(|value| value.as_u64())
+        .unwrap_or_default()
+}
+
+fn parse_iso_timestamp_millis(value: &str) -> Option<SystemTime> {
+    let (date, time) = value.split_once('T')?;
+    let mut date_parts = date.split('-');
+    let year = date_parts.next()?.parse::<i32>().ok()?;
+    let month = date_parts.next()?.parse::<u32>().ok()?;
+    let day = date_parts.next()?.parse::<u32>().ok()?;
+
+    let time = time.trim_end_matches('Z');
+    let time = time.split_once(['+', '-']).map_or(time, |(time, _)| time);
+    let mut time_parts = time.split(':');
+    let hour = time_parts.next()?.parse::<u32>().ok()?;
+    let minute = time_parts.next()?.parse::<u32>().ok()?;
+    let second_part = time_parts.next()?;
+    let second = second_part
+        .split_once('.')
+        .map_or(second_part, |(seconds, _)| seconds)
+        .parse::<u32>()
+        .ok()?;
+
+    let days = days_from_civil(year, month, day)?;
+    let seconds = days * 86_400 + hour as i64 * 3_600 + minute as i64 * 60 + second as i64;
+    if seconds < 0 {
+        return None;
+    }
+
+    UNIX_EPOCH.checked_add(Duration::from_secs(seconds as u64))
+}
+
+fn days_from_civil(year: i32, month: u32, day: u32) -> Option<i64> {
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+
+    let year = year - i32::from(month <= 2);
+    let era = if year >= 0 { year } else { year - 399 } / 400;
+    let yoe = year - era * 400;
+    let month = month as i32;
+    let day = day as i32;
+    let doy = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+
+    Some((era * 146_097 + doe - 719_468) as i64)
 }
 
 fn read_codex_model() -> Result<String, std::io::Error> {
