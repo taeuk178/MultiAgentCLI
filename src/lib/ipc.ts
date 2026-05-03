@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { ProviderId } from "./types";
+import type { ProviderId, ProviderRuntimeStatus } from "./types";
 
 export interface PtyOutputPayload {
   tab_id: string;
@@ -39,6 +39,10 @@ export function providerChat(
   cwd?: string | null,
 ): Promise<string> {
   return invoke("provider_chat", { providerId, prompt, cwd: cwd ?? null });
+}
+
+export function providerStatuses(): Promise<ProviderRuntimeStatus[]> {
+  return invoke("provider_statuses");
 }
 
 export function onPtyOutput(

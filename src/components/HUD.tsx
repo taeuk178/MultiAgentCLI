@@ -1,9 +1,16 @@
-import type { ConversationEntry, HealthStatus, ProviderId } from "../lib/types";
+import type {
+  ChatMessage,
+  ConversationEntry,
+  HealthStatus,
+  ProviderId,
+  ProviderRuntimeStatus,
+} from "../lib/types";
 import { PROVIDER_IDS, PROVIDERS } from "../lib/types";
 
 interface Props {
   conv: ConversationEntry | null;
   health: Record<ProviderId, HealthStatus>;
+  providerStatuses: Record<ProviderId, ProviderRuntimeStatus>;
   isRunning: boolean;
   onProviderSwitch: (provider: ProviderId) => void;
 }
@@ -15,20 +22,21 @@ const LED_COLOR: Record<HealthStatus, string> = {
   disabled: "var(--fg-faint)",
 };
 
-function sessionAge(startedAt: number): string {
-  const m = Math.round((Date.now() - startedAt) / 60_000);
-  return m + "m";
-}
-
 function ctxPct(ctxTokens: number, ctxWindow: number): number {
   return Math.round((ctxTokens / ctxWindow) * 100);
+}
+
+function estimateContextTokens(messages: ChatMessage[]): number {
+  return Math.ceil(
+    messages.reduce((sum, message) => sum + message.content.length, 0) / 4,
+  );
 }
 
 interface CardProps {
   provider: ProviderId;
   active: boolean;
   health: HealthStatus;
-  sessionAgeStr: string;
+  model: string;
   ctxPctNum: number;
   streaming: boolean;
   disabled: boolean;
@@ -39,7 +47,7 @@ function HUDCard({
   provider,
   active,
   health,
-  sessionAgeStr,
+  model,
   ctxPctNum,
   streaming,
   disabled,
@@ -124,7 +132,7 @@ function HUDCard({
           color: "var(--fg-dim)",
         }}
       >
-        <span>session:{sessionAgeStr}</span>
+        <span title={model}>model:{model}</span>
         <span style={{ color: "var(--fg-faint)" }}>·</span>
         <span>ctx:{ctxPctNum}%</span>
       </div>
@@ -155,7 +163,13 @@ function HUDCard({
   );
 }
 
-export function HUD({ conv, health, isRunning, onProviderSwitch }: Props) {
+export function HUD({
+  conv,
+  health,
+  providerStatuses,
+  isRunning,
+  onProviderSwitch,
+}: Props) {
   return (
     <div
       style={{
@@ -186,9 +200,10 @@ export function HUD({ conv, health, isRunning, onProviderSwitch }: Props) {
 
       {/* Cards */}
       {PROVIDER_IDS.map((pid) => {
-        const session = conv?.sessions[pid] ?? null;
         const active = conv?.provider === pid;
         const streaming = false; // wired up at M6
+        const ctxTokens = estimateContextTokens(conv?.messages ?? []);
+        const runtime = providerStatuses[pid];
 
         return (
           <HUDCard
@@ -196,12 +211,8 @@ export function HUD({ conv, health, isRunning, onProviderSwitch }: Props) {
             provider={pid}
             active={!!active}
             health={health[pid]}
-            sessionAgeStr={session ? sessionAge(session.startedAt) : "—"}
-            ctxPctNum={
-              session
-                ? ctxPct(session.ctxTokens, PROVIDERS[pid].ctxWindow)
-                : 0
-            }
+            model={runtime.model}
+            ctxPctNum={ctxPct(ctxTokens, PROVIDERS[pid].ctxWindow)}
             streaming={streaming}
             disabled={isRunning && !active}
             onClick={() => onProviderSwitch(pid)}

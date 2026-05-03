@@ -2,6 +2,12 @@ export type ProviderId = "claude" | "codex" | "gemini";
 export type HealthStatus = "healthy" | "error" | "unknown" | "disabled";
 export type ChatRole = "user" | "provider";
 
+export interface ProviderRuntimeStatus {
+  providerId: ProviderId;
+  health: HealthStatus;
+  model: string;
+}
+
 export interface ProviderInfo {
   id: ProviderId;
   label: string;

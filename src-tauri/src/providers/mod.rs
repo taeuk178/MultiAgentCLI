@@ -3,14 +3,22 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ProviderId {
     Claude,
     Codex,
     Gemini,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderRuntimeStatus {
+    provider_id: ProviderId,
+    health: String,
+    model: String,
 }
 
 pub struct SpawnConfig {
@@ -112,6 +120,20 @@ pub fn run_chat(provider: &ProviderId, prompt: &str, cwd: Option<&str>) -> Resul
     }
 }
 
+pub fn runtime_statuses() -> Vec<ProviderRuntimeStatus> {
+    [ProviderId::Claude, ProviderId::Codex, ProviderId::Gemini]
+        .into_iter()
+        .map(|provider| {
+            let healthy = command_exists(&provider);
+            ProviderRuntimeStatus {
+                model: configured_model(&provider),
+                provider_id: provider,
+                health: if healthy { "healthy" } else { "error" }.to_string(),
+            }
+        })
+        .collect()
+}
+
 pub fn utf8_locale(name: &str) -> String {
     match std::env::var(name) {
         Ok(value)
@@ -151,4 +173,58 @@ fn strip_codex_noise(output: &str) -> String {
         .join("\n")
         .trim()
         .to_string()
+}
+
+fn command_exists(provider: &ProviderId) -> bool {
+    let command = match provider {
+        ProviderId::Claude => "claude",
+        ProviderId::Codex => "codex",
+        ProviderId::Gemini => "gemini",
+    };
+
+    Command::new(command)
+        .arg("--version")
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
+fn configured_model(provider: &ProviderId) -> String {
+    match provider {
+        ProviderId::Claude => std::env::var("ANTHROPIC_MODEL")
+            .or_else(|_| std::env::var("CLAUDE_MODEL"))
+            .unwrap_or_else(|_| "default".to_string()),
+        ProviderId::Codex => std::env::var("OPENAI_MODEL")
+            .or_else(|_| std::env::var("CODEX_MODEL"))
+            .or_else(|_| read_codex_model())
+            .unwrap_or_else(|_| "default".to_string()),
+        ProviderId::Gemini => {
+            std::env::var("GEMINI_MODEL").unwrap_or_else(|_| "default".to_string())
+        }
+    }
+}
+
+fn read_codex_model() -> Result<String, std::io::Error> {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let config = fs::read_to_string(PathBuf::from(home).join(".codex/config.toml"))?;
+
+    config
+        .lines()
+        .find_map(|line| {
+            let trimmed = line.trim();
+            if !trimmed.starts_with("model") {
+                return None;
+            }
+
+            let (_, value) = trimmed.split_once('=')?;
+            Some(
+                value
+                    .trim()
+                    .trim_matches('"')
+                    .trim_matches('\'')
+                    .to_string(),
+            )
+        })
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "codex model not found"))
 }

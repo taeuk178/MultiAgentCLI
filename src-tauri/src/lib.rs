@@ -1,7 +1,7 @@
 mod providers;
 mod pty_manager;
 
-use providers::{run_chat, spawn_config, ProviderId};
+use providers::{run_chat, runtime_statuses, spawn_config, ProviderId, ProviderRuntimeStatus};
 use pty_manager::PtyManager;
 use tauri::State;
 
@@ -51,6 +51,13 @@ async fn provider_chat(
         .map_err(|e| format!("provider task failed: {}", e))?
 }
 
+#[tauri::command]
+async fn provider_statuses() -> Result<Vec<ProviderRuntimeStatus>, String> {
+    tauri::async_runtime::spawn_blocking(runtime_statuses)
+        .await
+        .map_err(|e| format!("provider status task failed: {}", e))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -63,6 +70,7 @@ pub fn run() {
             pty_resize,
             pty_close,
             provider_chat,
+            provider_statuses,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -6,7 +6,7 @@ import { ProjectRow } from "./components/ProjectRow";
 import { HUD } from "./components/HUD";
 import { Composer } from "./components/Composer";
 import { ChatPane } from "./components/ChatPane";
-import { providerChat } from "./lib/ipc";
+import { providerChat, providerStatuses } from "./lib/ipc";
 import {
   type ChatMessage,
   type ConversationEntry,
@@ -14,6 +14,7 @@ import {
   PROVIDERS,
   PROVIDER_IDS,
   type ProviderId,
+  type ProviderRuntimeStatus,
 } from "./lib/types";
 
 type SidebarPanelMode = "local" | "remote";
@@ -41,11 +42,9 @@ function makeConversation(defaultProvider: ProviderId = "claude"): ConversationE
 export default function App() {
   const [conversations, setConversations] = useState<ConversationEntry[]>([]);
   const [activeConvId, setActiveConvId] = useState<string | null>(null);
-  const [health] = useState<Record<ProviderId, HealthStatus>>({
-    claude: "healthy",
-    codex: "healthy",
-    gemini: "healthy",
-  });
+  const [providerRuntime, setProviderRuntime] = useState<
+    Record<ProviderId, ProviderRuntimeStatus>
+  >(makeDefaultProviderRuntime());
   const [pendingConvId, setPendingConvId] = useState<string | null>(null);
   const isRunning = pendingConvId === activeConvId;
   const [pendingLabel, setPendingLabel] = useState<string | null>(null);
@@ -63,6 +62,36 @@ export default function App() {
     const id = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(id);
   }, [pendingStartedAt]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    providerStatuses()
+      .then((statuses) => {
+        if (cancelled) return;
+        setProviderRuntime((prev) => {
+          const next = { ...prev };
+          for (const status of statuses) {
+            next[status.providerId] = status;
+          }
+          return next;
+        });
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setProviderRuntime((prev) => {
+          const next = { ...prev };
+          for (const id of PROVIDER_IDS) {
+            next[id] = { ...next[id], health: "error" };
+          }
+          return next;
+        });
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const updateConv = useCallback(
     (id: string, patch: Partial<ConversationEntry>) => {
@@ -207,7 +236,7 @@ export default function App() {
         }}
       >
         <TitleBar
-          health={health}
+          health={providerHealth(providerRuntime)}
           rightSidebarOpen={rightSidebarOpen}
           onToggleRightSidebar={() => setRightSidebarOpen((v) => !v)}
         />
@@ -221,7 +250,8 @@ export default function App() {
 
         <HUD
           conv={activeConv}
-          health={health}
+          health={providerHealth(providerRuntime)}
+          providerStatuses={providerRuntime}
           isRunning={isRunning}
           onProviderSwitch={handleProviderSwitch}
         />
@@ -376,6 +406,24 @@ export default function App() {
       )}
     </div>
   );
+}
+
+function makeDefaultProviderRuntime(): Record<ProviderId, ProviderRuntimeStatus> {
+  return {
+    claude: { providerId: "claude", health: "unknown", model: "checking" },
+    codex: { providerId: "codex", health: "unknown", model: "checking" },
+    gemini: { providerId: "gemini", health: "unknown", model: "checking" },
+  };
+}
+
+function providerHealth(
+  runtime: Record<ProviderId, ProviderRuntimeStatus>,
+): Record<ProviderId, HealthStatus> {
+  return {
+    claude: runtime.claude.health,
+    codex: runtime.codex.health,
+    gemini: runtime.gemini.health,
+  };
 }
 
 function RightSidebar({
