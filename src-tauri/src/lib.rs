@@ -50,6 +50,7 @@ pub fn run() {
     tauri::Builder::default()
         .manage(PtyManager::new())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             pty_create,
             pty_write,

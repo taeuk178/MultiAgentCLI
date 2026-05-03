@@ -97,6 +97,18 @@ export default function App() {
     [activeConvId, updateConv]
   );
 
+  const handleProjectChange = useCallback(
+    (path: string) => {
+      if (!activeConvId || !activeConv) return;
+      updateConv(activeConvId, { project: path });
+      // cd into the selected folder in all active PTY sessions
+      for (const tab of activeConv.tabs) {
+        ptyWrite(tab.tabId, `cd "${path}"\r`).catch(() => {});
+      }
+    },
+    [activeConvId, activeConv, updateConv]
+  );
+
   const handleSend = useCallback(() => {
     if (!composerText.trim() || !activeConv) return;
     const tab = activeConv.tabs.find(
@@ -148,6 +160,7 @@ export default function App() {
           conv={activeConv}
           isRunning={isRunning}
           onAdvisorChange={handleAdvisorChange}
+          onProjectChange={handleProjectChange}
           onClearChat={() => {}}
         />
 

@@ -1,4 +1,3 @@
-import { IconLink } from "./Icons";
 import type { ConversationEntry, HealthStatus, ProviderId } from "../lib/types";
 import { PROVIDER_IDS, PROVIDERS } from "../lib/types";
 
@@ -31,7 +30,6 @@ interface CardProps {
   health: HealthStatus;
   sessionAgeStr: string;
   ctxPctNum: number;
-  attached: boolean;
   streaming: boolean;
   disabled: boolean;
   onClick: () => void;
@@ -43,7 +41,6 @@ function HUDCard({
   health,
   sessionAgeStr,
   ctxPctNum,
-  attached,
   streaming,
   disabled,
   onClick,
@@ -92,24 +89,6 @@ function HUDCard({
           : "var(--bg-card)";
       }}
     >
-      {/* "Active" tag */}
-      {active && (
-        <span
-          style={{
-            position: "absolute",
-            top: 9,
-            right: 12,
-            fontSize: 9,
-            fontWeight: 700,
-            letterSpacing: "0.5px",
-            textTransform: "uppercase",
-            color: info.color,
-          }}
-        >
-          Active
-        </span>
-      )}
-
       {/* Header row */}
       <div
         style={{
@@ -133,17 +112,6 @@ function HUDCard({
           }}
         />
         <span>{info.label}</span>
-        {/* Link icon */}
-        <span
-          style={{
-            marginLeft: "auto",
-            display: "inline-flex",
-            alignItems: "center",
-            color: attached ? info.color : "var(--fg-dim)",
-          }}
-        >
-          <IconLink size={11} />
-        </span>
       </div>
 
       {/* Meta row */}
@@ -234,7 +202,6 @@ export function HUD({ conv, health, isRunning, onProviderSwitch }: Props) {
                 ? ctxPct(session.ctxTokens, PROVIDERS[pid].ctxWindow)
                 : 0
             }
-            attached={!!session}
             streaming={streaming}
             disabled={isRunning && !active}
             onClick={() => onProviderSwitch(pid)}

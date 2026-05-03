@@ -1,12 +1,13 @@
+import { open } from "@tauri-apps/plugin-dialog";
 import { AdvisorPopover } from "./AdvisorPopover";
-import { IconFolder, IconLogin, IconLogout, IconTrash } from "./Icons";
+import { IconFolder, IconTrash } from "./Icons";
 import type { ConversationEntry, ProviderId } from "../lib/types";
-import { PROVIDERS } from "../lib/types";
 
 interface Props {
   conv: ConversationEntry | null;
   isRunning: boolean;
   onAdvisorChange: (advisor: ProviderId | null) => void;
+  onProjectChange: (path: string) => void;
   onClearChat: () => void;
 }
 
@@ -14,13 +15,11 @@ function GhostBtn({
   children,
   onClick,
   disabled,
-  danger,
   title,
 }: {
   children: React.ReactNode;
   onClick?: () => void;
   disabled?: boolean;
-  danger?: boolean;
   title?: string;
 }) {
   return (
@@ -35,36 +34,24 @@ function GhostBtn({
         height: 24,
         padding: "0 9px",
         borderRadius: 6,
-        border: danger
-          ? "1px solid rgba(255,95,87,0.3)"
-          : "1px solid var(--border)",
+        border: "1px solid var(--border)",
         background: "transparent",
-        color: danger ? "#ff8b85" : "var(--fg-2)",
+        color: "var(--fg-2)",
         fontSize: 11.5,
         fontWeight: 500,
         cursor: disabled ? "not-allowed" : "pointer",
         opacity: disabled ? 0.45 : 1,
-        transition: "background 120ms, border-color 120ms",
+        transition: "background 120ms",
         whiteSpace: "nowrap",
         fontFamily: "var(--ui)",
       }}
       onMouseEnter={(e) => {
         if (disabled) return;
-        if (danger) {
-          (e.currentTarget as HTMLElement).style.background =
-            "rgba(255,95,87,0.12)";
-          (e.currentTarget as HTMLElement).style.borderColor =
-            "rgba(255,95,87,0.5)";
-        } else {
-          (e.currentTarget as HTMLElement).style.background =
-            "rgba(255,255,255,0.04)";
-        }
+        (e.currentTarget as HTMLElement).style.background =
+          "rgba(255,255,255,0.04)";
       }}
       onMouseLeave={(e) => {
         (e.currentTarget as HTMLElement).style.background = "transparent";
-        (e.currentTarget as HTMLElement).style.borderColor = danger
-          ? "rgba(255,95,87,0.3)"
-          : "var(--border)";
       }}
     >
       {children}
@@ -72,10 +59,27 @@ function GhostBtn({
   );
 }
 
-export function ProjectRow({ conv, isRunning, onAdvisorChange, onClearChat }: Props) {
+export function ProjectRow({
+  conv,
+  isRunning,
+  onAdvisorChange,
+  onProjectChange,
+  onClearChat,
+}: Props) {
   const provider = conv?.provider ?? "claude";
-  const info = PROVIDERS[provider];
-  const hasMessages = false; // will be wired when chat is implemented
+  const hasMessages = false;
+
+  const handlePickFolder = async () => {
+    const selected = await open({
+      directory: true,
+      multiple: false,
+      defaultPath: conv?.project ?? undefined,
+      title: "프로젝트 폴더 선택",
+    });
+    if (typeof selected === "string" && selected) {
+      onProjectChange(selected);
+    }
+  };
 
   return (
     <div
@@ -89,8 +93,8 @@ export function ProjectRow({ conv, isRunning, onAdvisorChange, onClearChat }: Pr
         flexShrink: 0,
       }}
     >
-      {/* Project button */}
-      <GhostBtn>
+      {/* Project folder picker */}
+      <GhostBtn onClick={conv ? handlePickFolder : undefined} disabled={!conv}>
         <IconFolder size={13} />
         <span
           style={{
@@ -114,19 +118,6 @@ export function ProjectRow({ conv, isRunning, onAdvisorChange, onClearChat }: Pr
         disabled={isRunning || !conv}
         onChange={onAdvisorChange}
       />
-
-      {/* Login / Logout */}
-      {info.hasShellAuth ? (
-        <GhostBtn danger title={`Logout ${info.label}`}>
-          <IconLogout size={13} />
-          <span>Logout {info.label}</span>
-        </GhostBtn>
-      ) : (
-        <GhostBtn title="Sign in via Terminal">
-          <IconLogin size={13} />
-          <span>Login via Terminal</span>
-        </GhostBtn>
-      )}
 
       {/* Clear chat */}
       <GhostBtn
