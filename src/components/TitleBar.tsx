@@ -1,12 +1,11 @@
-import { IconRefresh, IconTerminal } from "./Icons";
+import { IconSidebar } from "./Icons";
 import type { HealthStatus, ProviderId } from "../lib/types";
 import { PROVIDERS, PROVIDER_IDS } from "../lib/types";
 
 interface Props {
   health: Record<ProviderId, HealthStatus>;
-  logsOpen: boolean;
-  onToggleLogs: () => void;
-  onRefreshHealth: () => void;
+  rightSidebarOpen: boolean;
+  onToggleRightSidebar: () => void;
 }
 
 const STATUS_LABEL: Record<HealthStatus, string> = {
@@ -170,7 +169,11 @@ function IconBtn({
   );
 }
 
-export function TitleBar({ health, logsOpen, onToggleLogs, onRefreshHealth }: Props) {
+export function TitleBar({
+  health,
+  rightSidebarOpen,
+  onToggleRightSidebar,
+}: Props) {
   return (
     <div
       style={{
@@ -228,18 +231,14 @@ export function TitleBar({ health, logsOpen, onToggleLogs, onRefreshHealth }: Pr
 
         <div style={{ width: 4 }} />
 
-        {/* Refresh */}
-        <IconBtn title="Refresh health" onClick={onRefreshHealth}>
-          <IconRefresh size={13} />
-        </IconBtn>
-
-        {/* Logs toggle */}
         <IconBtn
-          title={logsOpen ? "Hide Logs" : "Show Logs"}
-          active={logsOpen}
-          onClick={onToggleLogs}
+          title={rightSidebarOpen ? "Hide right sidebar" : "Show right sidebar"}
+          active={rightSidebarOpen}
+          onClick={onToggleRightSidebar}
         >
-          <IconTerminal size={13} />
+          <span style={{ transform: "scaleX(-1)", display: "inline-flex" }}>
+            <IconSidebar size={14} />
+          </span>
         </IconBtn>
       </div>
     </div>
