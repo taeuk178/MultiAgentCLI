@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Sidebar } from "./components/Sidebar";
 import { TitleBar } from "./components/TitleBar";
@@ -47,10 +47,18 @@ export default function App() {
   const [pendingConvId, setPendingConvId] = useState<string | null>(null);
   const isRunning = pendingConvId === activeConvId;
   const [pendingLabel, setPendingLabel] = useState<string | null>(null);
+  const [pendingStartedAt, setPendingStartedAt] = useState<number | null>(null);
+  const [now, setNow] = useState(Date.now());
   const [logsOpen, setLogsOpen] = useState(false);
   const [composerText, setComposerText] = useState("");
 
   const activeConv = conversations.find((c) => c.id === activeConvId) ?? null;
+
+  useEffect(() => {
+    if (!pendingStartedAt) return;
+    const id = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [pendingStartedAt]);
 
   const updateConv = useCallback(
     (id: string, patch: Partial<ConversationEntry>) => {
@@ -135,6 +143,8 @@ export default function App() {
 
     updateConv(activeConv.id, { messages: history });
     setPendingConvId(activeConv.id);
+    setPendingStartedAt(Date.now());
+    setNow(Date.now());
 
     try {
       const response = advisor
@@ -158,6 +168,7 @@ export default function App() {
     } finally {
       setPendingConvId(null);
       setPendingLabel(null);
+      setPendingStartedAt(null);
     }
   }, [composerText, activeConv, isRunning, updateConv]);
 
@@ -337,6 +348,7 @@ export default function App() {
             />
             <span>
               {pendingLabel ?? `${PROVIDERS[activeProvider].label}가 입력 중...`}
+              {pendingStartedAt ? ` ${formatElapsed(now - pendingStartedAt)}` : ""}
             </span>
           </div>
         )}
@@ -354,6 +366,18 @@ export default function App() {
       </div>
     </div>
   );
+}
+
+function formatElapsed(ms: number): string {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+
+  if (minutes === 0) {
+    return `(${seconds}s)`;
+  }
+
+  return `(${minutes}m ${seconds}s)`;
 }
 
 function makeMessage(
