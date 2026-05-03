@@ -229,9 +229,9 @@ fn runtime_context(provider: &ProviderId) -> RuntimeContext {
             reset_seconds: None,
         }),
         ProviderId::Codex => RuntimeContext {
-            label: "ctx".to_string(),
-            percent: read_codex_context_percent(),
-            reset_seconds: None,
+            label: "5h".to_string(),
+            percent: read_codex_five_hour_percent(),
+            reset_seconds: read_codex_five_hour_reset_seconds(),
         },
         ProviderId::Gemini => RuntimeContext {
             label: "ctx".to_string(),
@@ -489,7 +489,19 @@ fn claude_usage_from_line(line: &str, cutoff: SystemTime) -> Option<(u64, System
     (tokens > 0).then_some((tokens, timestamp))
 }
 
-fn read_codex_context_percent() -> Option<u8> {
+fn read_codex_five_hour_percent() -> Option<u8> {
+    read_latest_codex_token_status().and_then(|status| status.five_hour_remaining_percent)
+}
+
+fn read_codex_five_hour_reset_seconds() -> Option<u64> {
+    let now = SystemTime::now();
+    read_latest_codex_token_status()
+        .and_then(|status| status.five_hour_resets_at)
+        .and_then(|reset_at| reset_at.duration_since(now).ok())
+        .map(|duration| duration.as_secs())
+}
+
+fn read_latest_codex_token_status() -> Option<CodexTokenStatus> {
     let now = SystemTime::now();
     let cutoff = now.checked_sub(Duration::from_secs(5 * 60 * 60))?;
     let home = std::env::var("HOME").ok()?;
@@ -506,19 +518,12 @@ fn read_codex_context_percent() -> Option<u8> {
                 .collect::<Vec<_>>()
         })
         .max_by_key(|status| status.timestamp)
-        .and_then(|status| {
-            if status.context_window == 0 {
-                return None;
-            }
-            let percent = (status.total_tokens as f64 / status.context_window as f64) * 100.0;
-            Some(percent.round().clamp(0.0, 100.0) as u8)
-        })
 }
 
 struct CodexTokenStatus {
     timestamp: SystemTime,
-    total_tokens: u64,
-    context_window: u64,
+    five_hour_remaining_percent: Option<u8>,
+    five_hour_resets_at: Option<SystemTime>,
 }
 
 fn codex_token_count_from_line(line: &str) -> Option<CodexTokenStatus> {
@@ -532,16 +537,23 @@ fn codex_token_count_from_line(line: &str) -> Option<CodexTokenStatus> {
         return None;
     }
 
-    let info = payload.get("info")?;
-    let context_window = json_number(info, "model_context_window");
-    let usage = info.get("total_token_usage")?;
-    let total_tokens = json_number(usage, "total_tokens")
-        .max(json_number(usage, "input_tokens") + json_number(usage, "output_tokens"));
+    let primary = payload
+        .get("rate_limits")
+        .and_then(|rate_limits| rate_limits.get("primary"));
+    let used_percent = primary
+        .and_then(|primary| primary.get("used_percent"))
+        .and_then(|value| value.as_u64())
+        .map(|value| value.min(100) as u8);
+    let five_hour_remaining_percent = used_percent.map(|used| 100_u8.saturating_sub(used));
+    let five_hour_resets_at = primary
+        .and_then(|primary| primary.get("resets_at"))
+        .and_then(|value| value.as_u64())
+        .and_then(|seconds| UNIX_EPOCH.checked_add(Duration::from_secs(seconds)));
 
     Some(CodexTokenStatus {
         timestamp,
-        total_tokens,
-        context_window,
+        five_hour_remaining_percent,
+        five_hour_resets_at,
     })
 }
 

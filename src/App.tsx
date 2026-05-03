@@ -432,7 +432,7 @@ function makeDefaultProviderRuntime(): Record<ProviderId, ProviderRuntimeStatus>
       providerId: "codex",
       health: "unknown",
       model: "checking",
-      contextLabel: "ctx",
+      contextLabel: "5h",
       contextPercent: null,
       contextResetSeconds: null,
     },
