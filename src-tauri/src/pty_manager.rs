@@ -6,7 +6,7 @@ use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 
-use crate::providers::SpawnConfig;
+use crate::providers::{utf8_locale, SpawnConfig};
 
 #[derive(Serialize, Clone)]
 struct PtyOutputPayload {
@@ -53,6 +53,8 @@ impl PtyManager {
             cmd.arg(arg);
         }
         cmd.env("TERM", "xterm-256color");
+        cmd.env("LANG", utf8_locale("LANG"));
+        cmd.env("LC_CTYPE", utf8_locale("LC_CTYPE"));
         if let Some(cwd) = &config.cwd {
             cmd.cwd(cwd);
         }
@@ -63,14 +65,8 @@ impl PtyManager {
             .map_err(|e| format!("failed to spawn '{}': {}", config.command, e))?;
         drop(pair.slave);
 
-        let mut reader = pair
-            .master
-            .try_clone_reader()
-            .map_err(|e| e.to_string())?;
-        let writer = pair
-            .master
-            .take_writer()
-            .map_err(|e| e.to_string())?;
+        let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
+        let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
 
         let tab_id_reader = tab_id.clone();
         std::thread::spawn(move || {
@@ -92,10 +88,13 @@ impl PtyManager {
             }
         });
 
-        self.sessions
-            .lock()
-            .map_err(|e| e.to_string())?
-            .insert(tab_id, PtySession { master: pair.master, writer });
+        self.sessions.lock().map_err(|e| e.to_string())?.insert(
+            tab_id,
+            PtySession {
+                master: pair.master,
+                writer,
+            },
+        );
 
         Ok(())
     }

@@ -33,6 +33,14 @@ export function ptyClose(tabId: string): Promise<void> {
   return invoke("pty_close", { tabId });
 }
 
+export function providerChat(
+  providerId: ProviderId,
+  prompt: string,
+  cwd?: string | null,
+): Promise<string> {
+  return invoke("provider_chat", { providerId, prompt, cwd: cwd ?? null });
+}
+
 export function onPtyOutput(
   handler: (payload: PtyOutputPayload) => void,
 ): Promise<UnlistenFn> {

@@ -1,7 +1,7 @@
 mod providers;
 mod pty_manager;
 
-use providers::{spawn_config, ProviderId};
+use providers::{run_chat, spawn_config, ProviderId};
 use pty_manager::PtyManager;
 use tauri::State;
 
@@ -21,11 +21,7 @@ fn pty_create(
 }
 
 #[tauri::command]
-fn pty_write(
-    state: State<'_, PtyManager>,
-    tab_id: String,
-    data: String,
-) -> Result<(), String> {
+fn pty_write(state: State<'_, PtyManager>, tab_id: String, data: String) -> Result<(), String> {
     state.write(&tab_id, data.as_bytes())
 }
 
@@ -40,11 +36,19 @@ fn pty_resize(
 }
 
 #[tauri::command]
-fn pty_close(
-    state: State<'_, PtyManager>,
-    tab_id: String,
-) -> Result<(), String> {
+fn pty_close(state: State<'_, PtyManager>, tab_id: String) -> Result<(), String> {
     state.close(&tab_id)
+}
+
+#[tauri::command]
+async fn provider_chat(
+    provider_id: ProviderId,
+    prompt: String,
+    cwd: Option<String>,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || run_chat(&provider_id, &prompt, cwd.as_deref()))
+        .await
+        .map_err(|e| format!("provider task failed: {}", e))?
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -58,6 +62,7 @@ pub fn run() {
             pty_write,
             pty_resize,
             pty_close,
+            provider_chat,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

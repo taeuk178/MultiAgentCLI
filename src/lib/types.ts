@@ -1,5 +1,6 @@
 export type ProviderId = "claude" | "codex" | "gemini";
 export type HealthStatus = "healthy" | "error" | "unknown" | "disabled";
+export type ChatRole = "user" | "provider";
 
 export interface ProviderInfo {
   id: ProviderId;
@@ -59,6 +60,14 @@ export interface PtyTab {
   conversationId: string;
 }
 
+export interface ChatMessage {
+  id: string;
+  role: ChatRole;
+  providerId?: ProviderId;
+  content: string;
+  createdAt: number;
+}
+
 export interface ConversationEntry {
   id: string;
   title: string;
@@ -66,5 +75,6 @@ export interface ConversationEntry {
   provider: ProviderId;
   advisor: ProviderId | null;
   project: string | null;
+  messages: ChatMessage[];
   sessions: Record<ProviderId, SessionInfo | null>;
 }

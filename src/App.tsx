@@ -5,12 +5,13 @@ import { TitleBar } from "./components/TitleBar";
 import { ProjectRow } from "./components/ProjectRow";
 import { HUD } from "./components/HUD";
 import { Composer } from "./components/Composer";
-import { TerminalPane } from "./components/TerminalPane";
-import { ptyCreate, ptyWrite } from "./lib/ipc";
-import { runOrchestrated, type OrchPhase } from "./lib/orchestrate";
+import { ChatPane } from "./components/ChatPane";
+import { providerChat } from "./lib/ipc";
 import {
+  type ChatMessage,
   type ConversationEntry,
   type HealthStatus,
+  PROVIDERS,
   PROVIDER_IDS,
   type ProviderId,
 } from "./lib/types";
@@ -30,6 +31,7 @@ function makeConversation(defaultProvider: ProviderId = "claude"): ConversationE
     provider: defaultProvider,
     advisor: null,
     project: null,
+    messages: [],
     sessions: { claude: null, codex: null, gemini: null },
   };
 }
@@ -42,8 +44,8 @@ export default function App() {
     codex: "healthy",
     gemini: "healthy",
   });
-  const [orchPhase, setOrchPhase] = useState<OrchPhase | null>(null);
-  const isRunning = orchPhase !== null && orchPhase !== "done";
+  const [pendingConvId, setPendingConvId] = useState<string | null>(null);
+  const isRunning = pendingConvId === activeConvId;
   const [logsOpen, setLogsOpen] = useState(false);
   const [composerText, setComposerText] = useState("");
 
@@ -68,14 +70,6 @@ export default function App() {
 
     const conv = makeConversation();
     if (projectPath) conv.project = projectPath;
-
-    for (const tab of conv.tabs) {
-      try {
-        await ptyCreate(tab.tabId, tab.providerId, 120, 40, projectPath ?? undefined);
-      } catch (err) {
-        console.warn(`[pty] ${tab.providerId} failed:`, err);
-      }
-    }
     setConversations((prev) => [conv, ...prev]);
     setActiveConvId(conv.id);
   }, []);
@@ -101,22 +95,10 @@ export default function App() {
     [activeConvId, isRunning, updateConv]
   );
 
-  const handleAdvisorChange = useCallback(
-    (advisor: ProviderId | null) => {
-      if (!activeConvId) return;
-      updateConv(activeConvId, { advisor });
-    },
-    [activeConvId, updateConv]
-  );
-
   const handleProjectChange = useCallback(
     (path: string) => {
       if (!activeConvId || !activeConv) return;
       updateConv(activeConvId, { project: path });
-      // cd into the selected folder in all active PTY sessions
-      for (const tab of activeConv.tabs) {
-        ptyWrite(tab.tabId, `cd "${path}"\r`).catch(() => {});
-      }
     },
     [activeConvId, activeConv, updateConv]
   );
@@ -125,47 +107,38 @@ export default function App() {
     (id: string) => {
       const conv = conversations.find((c) => c.id === id);
       if (!conv) return;
-      for (const tab of conv.tabs) {
-        ptyWrite(tab.tabId, "clear\r").catch(() => {});
-      }
+      updateConv(id, { messages: [] });
     },
-    [conversations]
+    [conversations, updateConv]
   );
 
   const handleSend = useCallback(async () => {
     if (!composerText.trim() || !activeConv || isRunning) return;
     const message = composerText.trim();
     setComposerText("");
+    const provider = activeConv.provider;
+    const userMessage = makeMessage("user", message);
+    const history = [...activeConv.messages, userMessage];
 
-    const primaryTab = activeConv.tabs.find(
-      (t) => t.providerId === activeConv.provider
-    );
-    if (!primaryTab) return;
+    updateConv(activeConv.id, { messages: history });
+    setPendingConvId(activeConv.id);
 
-    if (!activeConv.advisor) {
-      // advisor 없음 — 직접 전송
-      await ptyWrite(primaryTab.tabId, message + "\r").catch(console.error);
-      return;
-    }
-
-    const advisorTab = activeConv.tabs.find(
-      (t) => t.providerId === activeConv.advisor
-    );
-    if (!advisorTab) return;
-
-    // draft → review → synth 오케스트레이션
-    setOrchPhase("drafting");
     try {
-      await runOrchestrated(
-        primaryTab.tabId,
-        advisorTab.tabId,
-        message,
-        setOrchPhase,
+      const prompt = buildChatPrompt(history);
+      const response = await providerChat(provider, prompt, activeConv.project);
+      const providerMessage = makeMessage("provider", response || "(빈 응답)", provider);
+      updateConv(activeConv.id, { messages: [...history, providerMessage] });
+    } catch (err) {
+      const providerMessage = makeMessage(
+        "provider",
+        `실행 실패: ${err instanceof Error ? err.message : String(err)}`,
+        provider,
       );
+      updateConv(activeConv.id, { messages: [...history, providerMessage] });
     } finally {
-      setOrchPhase(null);
+      setPendingConvId(null);
     }
-  }, [composerText, activeConv, isRunning]);
+  }, [composerText, activeConv, isRunning, updateConv]);
 
   const activeProvider = activeConv?.provider ?? "claude";
 
@@ -206,8 +179,6 @@ export default function App() {
 
         <ProjectRow
           conv={activeConv}
-          isRunning={isRunning}
-          onAdvisorChange={handleAdvisorChange}
           onProjectChange={handleProjectChange}
         />
 
@@ -218,27 +189,14 @@ export default function App() {
           onProviderSwitch={handleProviderSwitch}
         />
 
-        {/* Terminal area */}
+        {/* Chat area */}
         <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
           {activeConv ? (
-            activeConv.tabs.map(({ tabId, providerId }) => (
-              <div
-                key={tabId}
-                style={{
-                  position: "absolute",
-                  inset: 0,
-                  visibility:
-                    providerId === activeProvider ? "visible" : "hidden",
-                  pointerEvents:
-                    providerId === activeProvider ? "auto" : "none",
-                }}
-              >
-                <TerminalPane
-                  tabId={tabId}
-                  active={providerId === activeProvider}
-                />
-              </div>
-            ))
+            <ChatPane
+              messages={activeConv.messages}
+              activeProvider={activeProvider}
+              isRunning={isRunning}
+            />
           ) : (
             <div
               style={{
@@ -329,21 +287,79 @@ export default function App() {
           )}
         </div>
 
-        {/* Composer — 어드바이저 선택 시에만 표시 */}
-        {activeConv?.advisor && (
+        {activeConv && isRunning && (
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              padding: "9px 22px",
+              borderTop: "1px solid var(--divider)",
+              background: "var(--bg-content)",
+              color: "var(--fg-dim)",
+              fontFamily: "var(--ui)",
+              fontSize: 12,
+              flexShrink: 0,
+            }}
+          >
+            <span
+              style={{
+                width: 7,
+                height: 7,
+                borderRadius: "50%",
+                background: PROVIDERS[activeProvider].color,
+                animation: "led-pulse 1.2s ease-in-out infinite",
+                flexShrink: 0,
+              }}
+            />
+            <span>
+              {PROVIDERS[activeProvider].label}가 입력 중...
+            </span>
+          </div>
+        )}
+
+        {activeConv && (
           <Composer
             value={composerText}
             provider={activeProvider}
-            advisor={activeConv.advisor}
-            orchPhase={orchPhase}
             isRunning={isRunning}
             disabled={!activeConv}
             onChange={setComposerText}
             onSend={handleSend}
-            onStop={() => setOrchPhase(null)}
           />
         )}
       </div>
     </div>
   );
+}
+
+function makeMessage(
+  role: ChatMessage["role"],
+  content: string,
+  providerId?: ProviderId,
+): ChatMessage {
+  return {
+    id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    role,
+    providerId,
+    content,
+    createdAt: Date.now(),
+  };
+}
+
+function buildChatPrompt(messages: ChatMessage[]): string {
+  const transcript = messages
+    .map((message) => {
+      const speaker = message.role === "user" ? "User" : "Assistant";
+      return `${speaker}: ${message.content}`;
+    })
+    .join("\n\n");
+
+  return [
+    "You are a chat assistant in a multi-provider desktop app.",
+    "Reply only to the latest user message.",
+    "Do not repeat this transcript unless the user asks for it.",
+    "",
+    transcript,
+  ].join("\n");
 }

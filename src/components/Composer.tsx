@@ -1,38 +1,24 @@
 import { useEffect, useRef } from "react";
-import { IconAttach, IconSend, IconStop } from "./Icons";
+import { IconAttach, IconSend } from "./Icons";
 import type { ProviderId } from "../lib/types";
 import { PROVIDERS } from "../lib/types";
-import type { OrchPhase } from "../lib/orchestrate";
 
 interface Props {
   value: string;
   provider: ProviderId;
-  advisor?: ProviderId | null;
-  orchPhase?: OrchPhase | null;
   isRunning: boolean;
   disabled?: boolean;
   onChange: (v: string) => void;
   onSend: () => void;
-  onStop: () => void;
 }
-
-const PHASE_LABEL: Record<OrchPhase, string> = {
-  drafting: "drafting…",
-  reviewing: "reviewing…",
-  synthesizing: "synthesizing…",
-  done: "done",
-};
 
 export function Composer({
   value,
   provider,
-  advisor,
-  orchPhase,
   isRunning,
   disabled,
   onChange,
   onSend,
-  onStop,
 }: Props) {
   const taRef = useRef<HTMLTextAreaElement>(null);
 
@@ -43,11 +29,9 @@ export function Composer({
     ta.style.height = Math.min(ta.scrollHeight, 160) + "px";
   }, [value]);
 
-  const placeholder = orchPhase && orchPhase !== "done"
-    ? `${PHASE_LABEL[orchPhase]} — esc to stop`
-    : advisor
-    ? `Message ${PROVIDERS[provider].label} + ${PROVIDERS[advisor].label} — ⌘+Return to send`
-    : `Message ${PROVIDERS[provider].label} — Return for new line, ⌘+Return to send`;
+  const placeholder = isRunning
+    ? `${PROVIDERS[provider].label} 응답 대기 중`
+    : `Message ${PROVIDERS[provider].label} - Cmd+Return`;
 
   return (
     <div
@@ -58,77 +42,6 @@ export function Composer({
         flexShrink: 0,
       }}
     >
-      {/* Flow badge */}
-      {advisor && (
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 5,
-            fontFamily: "var(--mono)",
-            fontSize: 10.5,
-            color: "var(--fg-dim)",
-            marginBottom: 8,
-          }}
-        >
-          <span
-            style={{
-              padding: "1px 6px",
-              borderRadius: 3,
-              background: PROVIDERS[provider].bgColor,
-              color: PROVIDERS[provider].color,
-              fontWeight: 700,
-            }}
-          >
-            {PROVIDERS[provider].glyph} {PROVIDERS[provider].label}
-          </span>
-          <span style={{ color: "var(--fg-faint)" }}>→</span>
-          <span
-            style={{
-              padding: "1px 6px",
-              borderRadius: 3,
-              background: PROVIDERS[advisor].bgColor,
-              color: PROVIDERS[advisor].color,
-              fontWeight: 700,
-            }}
-          >
-            {PROVIDERS[advisor].glyph} {PROVIDERS[advisor].label}
-          </span>
-          {orchPhase && orchPhase !== "done" ? (
-            <span
-              style={{
-                marginLeft: 6,
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 5,
-                padding: "1px 7px",
-                borderRadius: 4,
-                background: "rgba(91,141,239,0.15)",
-                border: "1px solid rgba(91,141,239,0.25)",
-                color: "var(--accent)",
-                fontSize: 10,
-                fontWeight: 600,
-              }}
-            >
-              <span
-                style={{
-                  width: 5,
-                  height: 5,
-                  borderRadius: "50%",
-                  background: "var(--accent)",
-                  animation: "led-pulse 1.4s ease-in-out infinite",
-                  flexShrink: 0,
-                }}
-              />
-              {PHASE_LABEL[orchPhase]}
-            </span>
-          ) : (
-            <span style={{ color: "var(--fg-faint)", marginLeft: 4, fontSize: 10 }}>
-              draft → review → synth
-            </span>
-          )}
-        </div>
-      )}
       <div
         className="composer-box"
         style={{
@@ -147,10 +60,6 @@ export function Composer({
             if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
               e.preventDefault();
               onSend();
-            }
-            if (e.key === "Escape" && isRunning) {
-              e.preventDefault();
-              onStop();
             }
           }}
           placeholder={placeholder}
@@ -246,10 +155,10 @@ export function Composer({
 
           <div style={{ flex: 1 }} />
 
-          {/* Send / Stop */}
+          {/* Send */}
           {isRunning ? (
             <button
-              onClick={onStop}
+              disabled
               style={{
                 display: "inline-flex",
                 alignItems: "center",
@@ -257,29 +166,19 @@ export function Composer({
                 height: 24,
                 padding: "0 9px",
                 borderRadius: 6,
-                border: "1px solid rgba(255,95,87,0.3)",
+                border: "1px solid var(--border)",
                 background: "transparent",
-                color: "#ff8b85",
+                color: "var(--fg-dim)",
                 fontSize: 11.5,
                 fontWeight: 500,
-                cursor: "pointer",
+                cursor: "wait",
+                opacity: 0.75,
                 transition: "background 120ms",
                 fontFamily: "var(--ui)",
               }}
-              onMouseEnter={(e) => {
-                (e.currentTarget as HTMLElement).style.background =
-                  "rgba(255,95,87,0.12)";
-                (e.currentTarget as HTMLElement).style.borderColor =
-                  "rgba(255,95,87,0.5)";
-              }}
-              onMouseLeave={(e) => {
-                (e.currentTarget as HTMLElement).style.background = "transparent";
-                (e.currentTarget as HTMLElement).style.borderColor =
-                  "rgba(255,95,87,0.3)";
-              }}
             >
-              <IconStop size={12} />
-              <span>Stop</span>
+              <IconSend size={13} />
+              <span>Send</span>
             </button>
           ) : (
             <button
