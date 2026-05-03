@@ -1,9 +1,12 @@
 import { open } from "@tauri-apps/plugin-dialog";
+import { AdvisorPopover } from "./AdvisorPopover";
 import { IconFolder } from "./Icons";
-import type { ConversationEntry } from "../lib/types";
+import type { ConversationEntry, ProviderId } from "../lib/types";
 
 interface Props {
   conv: ConversationEntry | null;
+  isRunning: boolean;
+  onAdvisorChange: (advisor: ProviderId | null) => void;
   onProjectChange: (path: string) => void;
 }
 
@@ -57,8 +60,12 @@ function GhostBtn({
 
 export function ProjectRow({
   conv,
+  isRunning,
+  onAdvisorChange,
   onProjectChange,
 }: Props) {
+  const provider = conv?.provider ?? "claude";
+
   const handlePickFolder = async () => {
     const selected = await open({
       directory: true,
@@ -100,6 +107,13 @@ export function ProjectRow({
       </GhostBtn>
 
       <div style={{ flex: 1 }} />
+
+      <AdvisorPopover
+        advisor={conv?.advisor ?? null}
+        provider={provider}
+        disabled={isRunning || !conv}
+        onChange={onAdvisorChange}
+      />
     </div>
   );
 }

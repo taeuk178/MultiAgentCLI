@@ -46,6 +46,7 @@ export default function App() {
   });
   const [pendingConvId, setPendingConvId] = useState<string | null>(null);
   const isRunning = pendingConvId === activeConvId;
+  const [pendingLabel, setPendingLabel] = useState<string | null>(null);
   const [logsOpen, setLogsOpen] = useState(false);
   const [composerText, setComposerText] = useState("");
 
@@ -90,7 +91,18 @@ export default function App() {
   const handleProviderSwitch = useCallback(
     (provider: ProviderId) => {
       if (!activeConvId || isRunning) return;
-      updateConv(activeConvId, { provider });
+      updateConv(activeConvId, {
+        provider,
+        advisor: activeConv?.advisor === provider ? null : activeConv?.advisor ?? null,
+      });
+    },
+    [activeConvId, activeConv?.advisor, isRunning, updateConv]
+  );
+
+  const handleAdvisorChange = useCallback(
+    (advisor: ProviderId | null) => {
+      if (!activeConvId || isRunning) return;
+      updateConv(activeConvId, { advisor });
     },
     [activeConvId, isRunning, updateConv]
   );
@@ -117,6 +129,7 @@ export default function App() {
     const message = composerText.trim();
     setComposerText("");
     const provider = activeConv.provider;
+    const advisor = activeConv.advisor;
     const userMessage = makeMessage("user", message);
     const history = [...activeConv.messages, userMessage];
 
@@ -124,19 +137,27 @@ export default function App() {
     setPendingConvId(activeConv.id);
 
     try {
-      const prompt = buildChatPrompt(history);
-      const response = await providerChat(provider, prompt, activeConv.project);
-      const providerMessage = makeMessage("provider", response || "(빈 응답)", provider);
+      const response = advisor
+        ? await runAdvisedChat(provider, advisor, history, activeConv.project, setPendingLabel)
+        : await runSingleProviderChat(provider, history, activeConv.project, setPendingLabel);
+      const providerMessage = makeMessage(
+        "provider",
+        response || "(빈 응답)",
+        provider,
+        advisor ?? undefined,
+      );
       updateConv(activeConv.id, { messages: [...history, providerMessage] });
     } catch (err) {
       const providerMessage = makeMessage(
         "provider",
         `실행 실패: ${err instanceof Error ? err.message : String(err)}`,
         provider,
+        advisor ?? undefined,
       );
       updateConv(activeConv.id, { messages: [...history, providerMessage] });
     } finally {
       setPendingConvId(null);
+      setPendingLabel(null);
     }
   }, [composerText, activeConv, isRunning, updateConv]);
 
@@ -179,6 +200,8 @@ export default function App() {
 
         <ProjectRow
           conv={activeConv}
+          isRunning={isRunning}
+          onAdvisorChange={handleAdvisorChange}
           onProjectChange={handleProjectChange}
         />
 
@@ -313,7 +336,7 @@ export default function App() {
               }}
             />
             <span>
-              {PROVIDERS[activeProvider].label}가 입력 중...
+              {pendingLabel ?? `${PROVIDERS[activeProvider].label}가 입력 중...`}
             </span>
           </div>
         )}
@@ -337,14 +360,55 @@ function makeMessage(
   role: ChatMessage["role"],
   content: string,
   providerId?: ProviderId,
+  advisorId?: ProviderId,
 ): ChatMessage {
   return {
     id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
     role,
     providerId,
+    advisorId,
     content,
     createdAt: Date.now(),
   };
+}
+
+async function runSingleProviderChat(
+  provider: ProviderId,
+  messages: ChatMessage[],
+  project: string | null,
+  setPendingLabel: (label: string | null) => void,
+): Promise<string> {
+  setPendingLabel(`${PROVIDERS[provider].label}가 입력 중...`);
+  return providerChat(provider, buildChatPrompt(messages), project);
+}
+
+async function runAdvisedChat(
+  provider: ProviderId,
+  advisor: ProviderId,
+  messages: ChatMessage[],
+  project: string | null,
+  setPendingLabel: (label: string | null) => void,
+): Promise<string> {
+  const userMessage = messages[messages.length - 1]?.content ?? "";
+  const primaryName = PROVIDERS[provider].label;
+  const advisorName = PROVIDERS[advisor].label;
+
+  setPendingLabel(`${primaryName}가 초안을 작성 중...`);
+  const draft = await providerChat(provider, buildDraftPrompt(messages), project);
+
+  setPendingLabel(`${advisorName}가 초안을 검토 중...`);
+  const review = await providerChat(
+    advisor,
+    buildAdvisorPrompt(userMessage, draft, primaryName),
+    project,
+  );
+
+  setPendingLabel(`${primaryName}와 ${advisorName}가 최종 답변을 조율 중...`);
+  return providerChat(
+    provider,
+    buildFinalPrompt(messages, draft, review, advisorName),
+    project,
+  );
 }
 
 function buildChatPrompt(messages: ChatMessage[]): string {
@@ -361,5 +425,57 @@ function buildChatPrompt(messages: ChatMessage[]): string {
     "Do not repeat this transcript unless the user asks for it.",
     "",
     transcript,
+  ].join("\n");
+}
+
+function buildDraftPrompt(messages: ChatMessage[]): string {
+  return [
+    "You are the primary provider in a multi-provider chat orchestration.",
+    "Write a clear draft answer to the latest user message.",
+    "Do not mention that this is a draft.",
+    "",
+    buildChatPrompt(messages),
+  ].join("\n");
+}
+
+function buildAdvisorPrompt(
+  userMessage: string,
+  draft: string,
+  primaryName: string,
+): string {
+  return [
+    "You are the advisor provider in a multi-provider chat orchestration.",
+    `The primary provider (${primaryName}) wrote this draft answer:`,
+    "",
+    draft,
+    "",
+    "User's latest message:",
+    userMessage,
+    "",
+    "Review the draft. Point out what should be corrected, strengthened, removed, or kept.",
+    "Return concise, actionable feedback for the primary provider. Do not answer the user directly.",
+  ].join("\n");
+}
+
+function buildFinalPrompt(
+  messages: ChatMessage[],
+  draft: string,
+  review: string,
+  advisorName: string,
+): string {
+  return [
+    "You are the primary provider in a multi-provider chat orchestration.",
+    "Use your draft and the advisor feedback to produce the final answer for the user.",
+    "Do not expose the orchestration steps unless the user asks.",
+    "Reply only with the final answer.",
+    "",
+    "Conversation:",
+    buildChatPrompt(messages),
+    "",
+    "Your draft:",
+    draft,
+    "",
+    `${advisorName}'s feedback:`,
+    review,
   ].join("\n");
 }

@@ -64,6 +64,7 @@ export interface ChatMessage {
   id: string;
   role: ChatRole;
   providerId?: ProviderId;
+  advisorId?: ProviderId;
   content: string;
   createdAt: number;
 }

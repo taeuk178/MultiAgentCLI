@@ -47,6 +47,7 @@ export function ChatPane({ messages, activeProvider, isRunning }: Props) {
           const provider = message.providerId
             ? PROVIDERS[message.providerId]
             : PROVIDERS[activeProvider];
+          const advisor = message.advisorId ? PROVIDERS[message.advisorId] : null;
 
           return (
             <article
@@ -67,7 +68,7 @@ export function ChatPane({ messages, activeProvider, isRunning }: Props) {
                   color: isUser ? "var(--fg-dim)" : provider.color,
                 }}
               >
-                {isUser ? "You" : provider.label}
+                {isUser ? "You" : advisor ? `${provider.label} + ${advisor.label}` : provider.label}
               </div>
               <div
                 style={{
