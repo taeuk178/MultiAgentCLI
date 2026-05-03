@@ -1,0 +1,33 @@
+# Node
+node_modules/
+.pnpm-store/
+dist/
+.vite/
+
+# Tauri
+src-tauri/target/
+src-tauri/Cargo.lock
+
+# OS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Build
+out/
+build/
