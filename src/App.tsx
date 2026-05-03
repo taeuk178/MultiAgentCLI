@@ -1,16 +1,21 @@
 import { useCallback, useState } from "react";
+import { Sidebar } from "./components/Sidebar";
+import { TitleBar } from "./components/TitleBar";
+import { ProjectRow } from "./components/ProjectRow";
+import { HUD } from "./components/HUD";
+import { Composer } from "./components/Composer";
 import { TerminalPane } from "./components/TerminalPane";
-import { ptyCreate } from "./lib/ipc";
+import { ptyCreate, ptyWrite } from "./lib/ipc";
 import {
   type ConversationEntry,
+  type HealthStatus,
   PROVIDER_IDS,
-  PROVIDERS,
   type ProviderId,
 } from "./lib/types";
 
 let convCounter = 1;
 
-function makeConversation(): ConversationEntry {
+function makeConversation(defaultProvider: ProviderId = "claude"): ConversationEntry {
   const id = `conv-${Date.now()}`;
   return {
     id,
@@ -20,16 +25,35 @@ function makeConversation(): ConversationEntry {
       providerId: pid,
       conversationId: id,
     })),
+    provider: defaultProvider,
+    advisor: null,
+    project: null,
+    sessions: { claude: null, codex: null, gemini: null },
   };
 }
 
 export default function App() {
   const [conversations, setConversations] = useState<ConversationEntry[]>([]);
   const [activeConvId, setActiveConvId] = useState<string | null>(null);
-  const [activeProvider, setActiveProvider] = useState<ProviderId>("claude");
+  const [health] = useState<Record<ProviderId, HealthStatus>>({
+    claude: "healthy",
+    codex: "healthy",
+    gemini: "healthy",
+  });
+  const [isRunning] = useState(false);
+  const [logsOpen, setLogsOpen] = useState(false);
+  const [composerText, setComposerText] = useState("");
 
-  const activeConv =
-    conversations.find((c) => c.id === activeConvId) ?? null;
+  const activeConv = conversations.find((c) => c.id === activeConvId) ?? null;
+
+  const updateConv = useCallback(
+    (id: string, patch: Partial<ConversationEntry>) => {
+      setConversations((prev) =>
+        prev.map((c) => (c.id === id ? { ...c, ...patch } : c))
+      );
+    },
+    []
+  );
 
   const handleNew = useCallback(async () => {
     const conv = makeConversation();
@@ -37,203 +61,222 @@ export default function App() {
       try {
         await ptyCreate(tab.tabId, tab.providerId, 120, 40);
       } catch (err) {
-        console.warn(`[pty] ${tab.providerId} failed to start:`, err);
+        console.warn(`[pty] ${tab.providerId} failed:`, err);
       }
     }
-    setConversations((prev) => [...prev, conv]);
+    setConversations((prev) => [conv, ...prev]);
     setActiveConvId(conv.id);
-    setActiveProvider("claude");
   }, []);
 
+  const handleDelete = useCallback(
+    (id: string) => {
+      setConversations((prev) => {
+        const next = prev.filter((c) => c.id !== id);
+        if (id === activeConvId) {
+          setActiveConvId(next[0]?.id ?? null);
+        }
+        return next;
+      });
+    },
+    [activeConvId]
+  );
+
+  const handleProviderSwitch = useCallback(
+    (provider: ProviderId) => {
+      if (!activeConvId || isRunning) return;
+      updateConv(activeConvId, { provider });
+    },
+    [activeConvId, isRunning, updateConv]
+  );
+
+  const handleAdvisorChange = useCallback(
+    (advisor: ProviderId | null) => {
+      if (!activeConvId) return;
+      updateConv(activeConvId, { advisor });
+    },
+    [activeConvId, updateConv]
+  );
+
+  const handleSend = useCallback(() => {
+    if (!composerText.trim() || !activeConv) return;
+    const tab = activeConv.tabs.find(
+      (t) => t.providerId === activeConv.provider
+    );
+    if (tab) {
+      ptyWrite(tab.tabId, composerText + "\r").catch(console.error);
+    }
+    setComposerText("");
+  }, [composerText, activeConv]);
+
+  const activeProvider = activeConv?.provider ?? "claude";
+
   return (
-    <div style={{ display: "flex", width: "100%", height: "100%" }}>
-      {/* ── Sidebar ── */}
-      <aside
-        style={{
-          width: 240,
-          flexShrink: 0,
-          display: "flex",
-          flexDirection: "column",
-          height: "100%",
-          background: "#111111",
-          borderRight: "1px solid #2a2a2a",
-        }}
-      >
-        {/* Header */}
-        <div
-          style={{
-            padding: "12px 16px",
-            borderBottom: "1px solid #2a2a2a",
-            fontSize: 13,
-            fontWeight: 600,
-            color: "#e8e8e8",
-            letterSpacing: "-0.01em",
-          }}
-        >
-          Multi Agent CLI
-        </div>
+    <div
+      style={{
+        display: "flex",
+        width: "100%",
+        height: "100%",
+        background: "var(--bg-window)",
+      }}
+    >
+      <Sidebar
+        conversations={conversations}
+        activeId={activeConvId}
+        onSelect={setActiveConvId}
+        onDelete={handleDelete}
+        onNew={handleNew}
+      />
 
-        {/* New conversation */}
-        <button
-          onClick={handleNew}
-          style={{
-            margin: "10px 12px 6px",
-            padding: "7px 12px",
-            background: "#1c1c1c",
-            border: "1px solid #2a2a2a",
-            borderRadius: 6,
-            color: "#e8e8e8",
-            fontSize: 12,
-            fontFamily: "inherit",
-            cursor: "pointer",
-            textAlign: "left",
-          }}
-        >
-          + New Conversation
-        </button>
-
-        {/* Conversation list */}
-        <div style={{ flex: 1, overflowY: "auto" }}>
-          {conversations.map((conv) => {
-            const isActive = conv.id === activeConvId;
-            return (
-              <button
-                key={conv.id}
-                onClick={() => setActiveConvId(conv.id)}
-                style={{
-                  display: "block",
-                  width: "100%",
-                  padding: "8px 16px",
-                  background: isActive ? "#1c1c1c" : "transparent",
-                  color: isActive ? "#e8e8e8" : "#888888",
-                  fontSize: 12,
-                  fontFamily: "inherit",
-                  cursor: "pointer",
-                  textAlign: "left",
-                  whiteSpace: "nowrap",
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  border: "none",
-                  borderLeft: isActive
-                    ? "2px solid #d97757"
-                    : "2px solid transparent",
-                }}
-              >
-                {conv.title}
-              </button>
-            );
-          })}
-        </div>
-
-        {/* Provider color dots */}
-        <div
-          style={{
-            display: "flex",
-            gap: 8,
-            padding: "10px 16px",
-            borderTop: "1px solid #2a2a2a",
-          }}
-        >
-          {PROVIDER_IDS.map((pid) => (
-            <div
-              key={pid}
-              title={PROVIDERS[pid].label}
-              style={{
-                width: 8,
-                height: 8,
-                borderRadius: "50%",
-                background: PROVIDERS[pid].color,
-              }}
-            />
-          ))}
-        </div>
-      </aside>
-
-      {/* ── Main ── */}
-      <main
+      <div
         style={{
           flex: 1,
           minWidth: 0,
           display: "flex",
           flexDirection: "column",
           height: "100%",
-          background: "#0a0a0a",
+          background: "var(--bg-content)",
         }}
       >
-        {activeConv ? (
-          <>
-            {/* Provider tab bar */}
+        <TitleBar
+          health={health}
+          logsOpen={logsOpen}
+          onToggleLogs={() => setLogsOpen((v) => !v)}
+          onRefreshHealth={() => {}}
+        />
+
+        <ProjectRow
+          conv={activeConv}
+          isRunning={isRunning}
+          onAdvisorChange={handleAdvisorChange}
+          onClearChat={() => {}}
+        />
+
+        <HUD
+          conv={activeConv}
+          health={health}
+          isRunning={isRunning}
+          onProviderSwitch={handleProviderSwitch}
+        />
+
+        {/* Terminal area */}
+        <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
+          {activeConv ? (
+            activeConv.tabs.map(({ tabId, providerId }) => (
+              <div
+                key={tabId}
+                style={{
+                  position: "absolute",
+                  inset: 0,
+                  display:
+                    providerId === activeProvider ? "block" : "none",
+                }}
+              >
+                <TerminalPane
+                  tabId={tabId}
+                  active={providerId === activeProvider}
+                />
+              </div>
+            ))
+          ) : (
             <div
               style={{
+                width: "100%",
+                height: "100%",
                 display: "flex",
-                alignItems: "flex-end",
-                padding: "0 8px",
-                borderBottom: "1px solid #2a2a2a",
-                flexShrink: 0,
+                alignItems: "center",
+                justifyContent: "center",
+                flexDirection: "column",
+                gap: 14,
+                color: "var(--fg-dim)",
+                userSelect: "none",
               }}
             >
-              {activeConv.tabs.map(({ providerId }) => {
-                const info = PROVIDERS[providerId];
-                const isActive = providerId === activeProvider;
-                return (
-                  <button
-                    key={providerId}
-                    onClick={() => setActiveProvider(providerId)}
-                    style={{
-                      padding: "8px 20px",
-                      background: isActive ? "#1c1c1c" : "transparent",
-                      color: isActive ? info.color : "#666666",
-                      fontSize: 12,
-                      fontWeight: isActive ? 600 : 400,
-                      fontFamily: "inherit",
-                      cursor: "pointer",
-                      border: "none",
-                      borderBottom: isActive
-                        ? `2px solid ${info.color}`
-                        : "2px solid transparent",
-                      transition: "color 0.15s, border-color 0.15s",
-                    }}
-                  >
-                    {info.label}
-                  </button>
-                );
-              })}
-            </div>
-
-            {/* Terminal panes */}
-            <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
-              {activeConv.tabs.map(({ tabId, providerId }) => (
+              <div
+                style={{
+                  width: 56,
+                  height: 56,
+                  borderRadius: 14,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  fontFamily: "var(--mono)",
+                  fontSize: 22,
+                  fontWeight: 700,
+                  background: "var(--p-claude-bg)",
+                  color: "var(--p-claude)",
+                  border: "1px solid var(--p-claude)",
+                }}
+              >
+                C
+              </div>
+              <div style={{ textAlign: "center" }}>
                 <div
-                  key={tabId}
                   style={{
-                    position: "absolute",
-                    inset: 0,
-                    display: providerId === activeProvider ? "block" : "none",
+                    fontSize: 15,
+                    fontWeight: 600,
+                    color: "var(--fg)",
+                    marginBottom: 6,
                   }}
                 >
-                  <TerminalPane
-                    tabId={tabId}
-                    active={providerId === activeProvider}
-                  />
+                  New Chat를 눌러 시작하세요
                 </div>
-              ))}
+                <div style={{ fontSize: 12, color: "var(--fg-dim)" }}>
+                  사이드바의 New Chat 버튼으로 대화를 만드세요.
+                </div>
+              </div>
+              <div style={{ display: "flex", gap: 6 }}>
+                {(["⌘", "↵", "send", "·", "esc", "stop"] as const).map(
+                  (k, i) =>
+                    k === "·" ? (
+                      <span
+                        key={i}
+                        style={{ alignSelf: "center", color: "var(--fg-faint)" }}
+                      >
+                        ·
+                      </span>
+                    ) : k === "send" || k === "stop" ? (
+                      <span
+                        key={i}
+                        style={{
+                          alignSelf: "center",
+                          fontSize: 11,
+                          color: "var(--fg-dim)",
+                        }}
+                      >
+                        {k}
+                      </span>
+                    ) : (
+                      <kbd
+                        key={i}
+                        style={{
+                          fontFamily: "var(--mono)",
+                          fontSize: 10.5,
+                          padding: "2px 6px",
+                          borderRadius: 4,
+                          background: "rgba(255,255,255,0.06)",
+                          border: "1px solid var(--border)",
+                          color: "var(--fg-2)",
+                        }}
+                      >
+                        {k}
+                      </kbd>
+                    )
+                )}
+              </div>
             </div>
-          </>
-        ) : (
-          <div
-            style={{
-              flex: 1,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              color: "#3a3a3a",
-              fontSize: 13,
-            }}
-          >
-            New Conversation을 눌러 시작하세요
-          </div>
-        )}
-      </main>
+          )}
+        </div>
+
+        <Composer
+          value={composerText}
+          provider={activeProvider}
+          isRunning={isRunning}
+          disabled={!activeConv}
+          onChange={setComposerText}
+          onSend={handleSend}
+          onStop={() => {}}
+        />
+      </div>
     </div>
   );
 }

@@ -1,20 +1,45 @@
 @import "tailwindcss";
 
-@theme {
-  --color-bg: #0a0a0a;
-  --color-surface: #141414;
-  --color-content: #1c1c1c;
-  --color-border: #2a2a2a;
-  --color-sidebar: #111111;
-  --color-text: #e8e8e8;
-  --color-text-dim: #888888;
-  --color-text-muted: #444444;
-  --color-claude: #d97757;
-  --color-codex: #4a9eff;
-  --color-gemini: #34a853;
-  --font-mono: "JetBrains Mono", "Fira Code", "Cascadia Code", ui-monospace, monospace;
+/* ── Design tokens ─────────────────────────────────── */
+:root {
+  --bg-window:     #232325;
+  --bg-sidebar:    #1e1e20;
+  --bg-content:    #1a1a1c;
+  --bg-row:        #28282b;
+  --bg-row-hover:  #303033;
+  --bg-row-active: #34343a;
+  --bg-card:       #28282b;
+  --bg-card-hi:    #2e2e32;
+  --bg-input:      #1f1f22;
+  --bg-overlay:    #232326;
+
+  --fg:            #ececef;
+  --fg-2:          #c8c8cd;
+  --fg-dim:        #8a8a92;
+  --fg-faint:      #5f5f67;
+
+  --divider:       rgba(255, 255, 255, 0.07);
+  --divider-2:     rgba(255, 255, 255, 0.04);
+  --border:        rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.14);
+
+  --p-claude:      #e6884a;
+  --p-claude-bg:   #3a2a1e;
+  --p-codex:       #4f9aff;
+  --p-codex-bg:    #1d2a3d;
+  --p-gemini:      #b07ff5;
+  --p-gemini-bg:   #2c2240;
+
+  --accent:        #5b8def;
+  --danger:        #ff5f57;
+  --warn:          #f0b429;
+  --ok:            #3ecf8e;
+
+  --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --ui:   -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", sans-serif;
 }
 
+/* ── Reset ─────────────────────────────────────────── */
 *,
 *::before,
 *::after {
@@ -29,10 +54,12 @@ body,
   width: 100vw;
   height: 100vh;
   overflow: hidden;
-  background: var(--color-bg);
-  color: var(--color-text);
-  font-family: var(--font-mono);
+  background: var(--bg-window);
+  color: var(--fg);
+  font-family: var(--ui);
+  font-size: 13px;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 button {
@@ -41,14 +68,50 @@ button {
   background: none;
   padding: 0;
   font-family: inherit;
+  color: inherit;
 }
 
-/* xterm.js overrides */
+/* ── Scrollbars ────────────────────────────────────── */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.10);
+  border-radius: 6px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.18);
+  background-clip: content-box;
+  border: 2px solid transparent;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* ── xterm.js ──────────────────────────────────────── */
 .xterm {
   width: 100%;
   height: 100%;
 }
-
 .xterm-viewport {
   overflow-y: auto !important;
+}
+
+/* ── Animations ────────────────────────────────────── */
+@keyframes pop-in {
+  from { opacity: 0; transform: translateY(-4px) scale(0.98); }
+  to   { opacity: 1; transform: translateY(0)    scale(1); }
+}
+
+@keyframes stream-pulse {
+  0%, 100% { opacity: 0.85; }
+  50%       { opacity: 0.4; }
+}
+
+@keyframes led-pulse {
+  0%, 100% { opacity: 0.4; transform: scale(0.7); }
+  50%       { opacity: 1;   transform: scale(1); }
 }
