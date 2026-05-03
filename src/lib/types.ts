@@ -6,9 +6,9 @@ export interface ProviderRuntimeStatus {
   providerId: ProviderId;
   health: HealthStatus;
   model: string;
-  contextLabel: string;
-  contextPercent: number | null;
-  contextResetSeconds: number | null;
+  contextUsedPercent: number | null;
+  fiveHourPercent: number | null;
+  fiveHourResetSeconds: number | null;
 }
 
 export interface ProviderInfo {

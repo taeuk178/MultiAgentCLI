@@ -37,9 +37,9 @@ interface CardProps {
   active: boolean;
   health: HealthStatus;
   model: string;
-  contextLabel: string;
-  contextPercent: number | null;
-  contextResetSeconds: number | null;
+  contextUsedPercent: number | null;
+  fiveHourPercent: number | null;
+  fiveHourResetSeconds: number | null;
   streaming: boolean;
   disabled: boolean;
   onClick: () => void;
@@ -50,21 +50,16 @@ function HUDCard({
   active,
   health,
   model,
-  contextLabel,
-  contextPercent,
-  contextResetSeconds,
+  contextUsedPercent,
+  fiveHourPercent,
+  fiveHourResetSeconds,
   streaming,
   disabled,
   onClick,
 }: CardProps) {
   const info = PROVIDERS[provider];
   const ledColor = LED_COLOR[health];
-  const barWidth = contextPercent == null ? 0 : Math.min(100, contextPercent);
-  const contextText = formatContextStatus(
-    contextLabel,
-    contextPercent,
-    contextResetSeconds,
-  );
+  const barWidth = contextUsedPercent == null ? 0 : Math.min(100, contextUsedPercent);
 
   const activeBorderStyle = active
     ? {
@@ -143,7 +138,12 @@ function HUDCard({
       >
         <span title={model}>model:{model}</span>
         <span style={{ color: "var(--fg-faint)" }}>·</span>
-        <span>{contextText}</span>
+        <span>Context Used {formatPercent(contextUsedPercent)}</span>
+        <span style={{ color: "var(--fg-faint)" }}>·</span>
+        <span>
+          5h {formatPercent(fiveHourPercent)}
+          {formatReset(fiveHourResetSeconds)}
+        </span>
       </div>
 
       {/* Progress bar */}
@@ -215,7 +215,7 @@ export function HUD({
         const runtime = providerStatuses[pid];
         const fallbackCtxPct =
           ctxTokens > 0 ? ctxPct(ctxTokens, PROVIDERS[pid].ctxWindow) : null;
-        const contextPercent = runtime.contextPercent ?? fallbackCtxPct;
+        const contextUsedPercent = runtime.contextUsedPercent ?? fallbackCtxPct;
 
         return (
           <HUDCard
@@ -224,9 +224,9 @@ export function HUD({
             active={!!active}
             health={health[pid]}
             model={runtime.model}
-            contextLabel={runtime.contextLabel}
-            contextPercent={contextPercent}
-            contextResetSeconds={runtime.contextResetSeconds}
+            contextUsedPercent={contextUsedPercent}
+            fiveHourPercent={runtime.fiveHourPercent}
+            fiveHourResetSeconds={runtime.fiveHourResetSeconds}
             streaming={streaming}
             disabled={isRunning && !active}
             onClick={() => onProviderSwitch(pid)}
@@ -237,33 +237,17 @@ export function HUD({
   );
 }
 
-function formatContextStatus(
-  label: string,
-  percent: number | null,
-  resetSeconds: number | null,
-): string {
-  const value = percent == null ? "--" : `${percent}%`;
-  const reset = resetSeconds == null ? "" : ` (${formatRemaining(resetSeconds)})`;
-
-  if (label === "5h") {
-    return `${label} ${value}${reset}`;
-  }
-
-  return `${label}: ${value}${reset}`;
+function formatPercent(percent: number | null): string {
+  return percent == null ? "--" : `${percent}%`;
 }
 
-function formatRemaining(seconds: number): string {
+function formatReset(seconds: number | null): string {
+  if (seconds == null) {
+    return "";
+  }
+
   const totalMinutes = Math.max(0, Math.ceil(seconds / 60));
   const hours = Math.floor(totalMinutes / 60);
   const minutes = totalMinutes % 60;
-
-  if (hours <= 0) {
-    return `${minutes}m`;
-  }
-
-  if (minutes === 0) {
-    return `${hours}h`;
-  }
-
-  return `${hours}h ${minutes}m`;
+  return ` (${hours}h${minutes}m)`;
 }

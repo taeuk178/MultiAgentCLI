@@ -1,6 +1,7 @@
 use std::fs;
+use std::io::Write;
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -19,15 +20,15 @@ pub struct ProviderRuntimeStatus {
     provider_id: ProviderId,
     health: String,
     model: String,
-    context_label: String,
-    context_percent: Option<u8>,
-    context_reset_seconds: Option<u64>,
+    context_used_percent: Option<u8>,
+    five_hour_percent: Option<u8>,
+    five_hour_reset_seconds: Option<u64>,
 }
 
-struct RuntimeContext {
-    label: String,
-    percent: Option<u8>,
-    reset_seconds: Option<u64>,
+struct RuntimeUsage {
+    context_used_percent: Option<u8>,
+    five_hour_percent: Option<u8>,
+    five_hour_reset_seconds: Option<u64>,
 }
 
 pub struct SpawnConfig {
@@ -134,12 +135,12 @@ pub fn runtime_statuses() -> Vec<ProviderRuntimeStatus> {
         .into_iter()
         .map(|provider| {
             let healthy = command_exists(&provider);
-            let context = runtime_context(&provider);
+            let usage = runtime_usage(&provider);
             ProviderRuntimeStatus {
                 model: configured_model(&provider),
-                context_label: context.label,
-                context_percent: context.percent,
-                context_reset_seconds: context.reset_seconds,
+                context_used_percent: usage.context_used_percent,
+                five_hour_percent: usage.five_hour_percent,
+                five_hour_reset_seconds: usage.five_hour_reset_seconds,
                 provider_id: provider,
                 health: if healthy { "healthy" } else { "error" }.to_string(),
             }
@@ -221,35 +222,37 @@ fn configured_model(provider: &ProviderId) -> String {
     normalize_model_name(provider, &model)
 }
 
-fn runtime_context(provider: &ProviderId) -> RuntimeContext {
+fn runtime_usage(provider: &ProviderId) -> RuntimeUsage {
     match provider {
-        ProviderId::Claude => read_claude_five_hour_context().unwrap_or_else(|| RuntimeContext {
-            label: "5h".to_string(),
-            percent: None,
-            reset_seconds: None,
-        }),
-        ProviderId::Codex => RuntimeContext {
-            label: "5h".to_string(),
-            percent: read_codex_five_hour_percent(),
-            reset_seconds: read_codex_five_hour_reset_seconds(),
-        },
-        ProviderId::Gemini => RuntimeContext {
-            label: "ctx".to_string(),
-            percent: None,
-            reset_seconds: None,
+        ProviderId::Claude => read_claude_usage(),
+        ProviderId::Codex => read_codex_usage(),
+        ProviderId::Gemini => RuntimeUsage {
+            context_used_percent: None,
+            five_hour_percent: None,
+            five_hour_reset_seconds: None,
         },
     }
 }
 
-fn read_claude_five_hour_context() -> Option<RuntimeContext> {
-    read_percent_env(["CLAUDE_5H_CONTEXT_PERCENT", "CLAUDE_5H_USAGE_PERCENT"])
-        .map(|percent| RuntimeContext {
-            label: "5h".to_string(),
-            percent: Some(percent),
-            reset_seconds: read_seconds_env(["CLAUDE_5H_RESET_SECONDS"]),
+fn read_claude_usage() -> RuntimeUsage {
+    let from_env =
+        read_percent_env(["CLAUDE_5H_CONTEXT_PERCENT", "CLAUDE_5H_USAGE_PERCENT"]).map(|percent| {
+            RuntimeUsage {
+                context_used_percent: read_claude_context_used_percent(),
+                five_hour_percent: Some(percent),
+                five_hour_reset_seconds: read_seconds_env(["CLAUDE_5H_RESET_SECONDS"]),
+            }
+        });
+
+    from_env
+        .or_else(read_claude_oauth_usage)
+        .or_else(read_claude_auth_status_usage)
+        .or_else(read_claude_log_usage)
+        .unwrap_or_else(|| RuntimeUsage {
+            context_used_percent: read_claude_context_used_percent(),
+            five_hour_percent: None,
+            five_hour_reset_seconds: None,
         })
-        .or_else(read_claude_auth_status_percent)
-        .or_else(read_claude_five_hour_log_context)
 }
 
 fn read_percent_env<const N: usize>(names: [&str; N]) -> Option<u8> {
@@ -279,7 +282,256 @@ fn parse_percent(value: &str) -> Option<u8> {
     Some(numeric.clamp(0.0, 100.0) as u8)
 }
 
-fn read_claude_auth_status_percent() -> Option<RuntimeContext> {
+fn json_percent(value: &serde_json::Value) -> Option<u8> {
+    if let Some(percent) = value.as_f64() {
+        return Some(percent.round().clamp(0.0, 100.0) as u8);
+    }
+
+    value.as_str().and_then(parse_percent)
+}
+
+struct ClaudeOAuthCredentials {
+    access_token: String,
+    expires_at: Option<u64>,
+    refresh_token: Option<String>,
+}
+
+fn read_claude_oauth_usage() -> Option<RuntimeUsage> {
+    let mut credentials = read_claude_oauth_credentials()?;
+    if claude_oauth_credentials_expired(&credentials) {
+        let refresh_token = credentials.refresh_token.as_deref()?;
+        credentials.access_token = refresh_claude_access_token(refresh_token)?;
+    }
+
+    let response = fetch_claude_oauth_usage(&credentials.access_token)?;
+    let five_hour = response.get("five_hour")?;
+    let percent = five_hour.get("utilization").and_then(json_percent)?;
+    let reset_seconds = five_hour
+        .get("resets_at")
+        .and_then(|value| value.as_str())
+        .and_then(parse_iso_timestamp_millis)
+        .and_then(|reset_at| reset_at.duration_since(SystemTime::now()).ok())
+        .map(|duration| duration.as_secs());
+
+    Some(RuntimeUsage {
+        context_used_percent: read_claude_context_used_percent(),
+        five_hour_percent: Some(percent),
+        five_hour_reset_seconds: reset_seconds,
+    })
+}
+
+fn read_claude_oauth_credentials() -> Option<ClaudeOAuthCredentials> {
+    read_claude_keychain_credentials().or_else(read_claude_file_credentials)
+}
+
+fn read_claude_keychain_credentials() -> Option<ClaudeOAuthCredentials> {
+    if cfg!(not(target_os = "macos")) {
+        return None;
+    }
+
+    let service_name = claude_keychain_service_name();
+    let user = std::env::var("USER").ok().filter(|value| !value.is_empty());
+    let mut candidates = Vec::new();
+    if let Some(user) = user {
+        candidates.push(Some(user));
+    }
+    candidates.push(None);
+
+    candidates.into_iter().find_map(|account| {
+        let mut command = Command::new("/usr/bin/security");
+        command
+            .arg("find-generic-password")
+            .arg("-s")
+            .arg(&service_name);
+        if let Some(account) = account {
+            command.arg("-a").arg(account);
+        }
+        let output = command.arg("-w").output().ok()?;
+        if !output.status.success() {
+            return None;
+        }
+
+        let raw = String::from_utf8_lossy(&output.stdout);
+        claude_oauth_credentials_from_json(raw.trim())
+    })
+}
+
+fn claude_keychain_service_name() -> String {
+    if let Ok(config_dir) = std::env::var("CLAUDE_CONFIG_DIR") {
+        if !config_dir.is_empty() {
+            if let Some(hash) = sha256_prefix_with_shasum(&config_dir) {
+                return format!("Claude Code-credentials-{hash}");
+            }
+        }
+    }
+
+    "Claude Code-credentials".to_string()
+}
+
+fn sha256_prefix_with_shasum(value: &str) -> Option<String> {
+    let mut child = Command::new("shasum")
+        .arg("-a")
+        .arg("256")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    child.stdin.as_mut()?.write_all(value.as_bytes()).ok()?;
+    let output = child.wait_with_output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    let digest = String::from_utf8_lossy(&output.stdout);
+    digest
+        .split_whitespace()
+        .next()
+        .filter(|value| value.len() >= 8)
+        .map(|value| value[..8].to_string())
+}
+
+fn read_claude_file_credentials() -> Option<ClaudeOAuthCredentials> {
+    let raw = fs::read_to_string(claude_config_dir().join(".credentials.json")).ok()?;
+    claude_oauth_credentials_from_json(&raw)
+}
+
+fn claude_config_dir() -> PathBuf {
+    std::env::var("CLAUDE_CONFIG_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".claude")
+        })
+}
+
+fn claude_oauth_credentials_from_json(raw: &str) -> Option<ClaudeOAuthCredentials> {
+    let json = serde_json::from_str::<serde_json::Value>(raw).ok()?;
+    let credentials = json.get("claudeAiOauth").unwrap_or(&json);
+    let access_token = credentials
+        .get("accessToken")
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.is_empty())?
+        .to_string();
+
+    Some(ClaudeOAuthCredentials {
+        access_token,
+        expires_at: credentials
+            .get("expiresAt")
+            .and_then(|value| value.as_u64()),
+        refresh_token: credentials
+            .get("refreshToken")
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string),
+    })
+}
+
+fn claude_oauth_credentials_expired(credentials: &ClaudeOAuthCredentials) -> bool {
+    let Some(expires_at) = credentials.expires_at else {
+        return false;
+    };
+
+    expires_at <= current_unix_millis()
+}
+
+fn current_unix_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or_default()
+}
+
+fn refresh_claude_access_token(refresh_token: &str) -> Option<String> {
+    let client_id = std::env::var("CLAUDE_CODE_OAUTH_CLIENT_ID")
+        .unwrap_or_else(|_| "9d1c250a-e61b-44d9-88ed-5944d1962f5e".to_string());
+    let body = format!(
+        "grant_type=refresh_token&refresh_token={}&client_id={}",
+        form_encode(refresh_token),
+        form_encode(&client_id)
+    );
+    let config = curl_config(
+        "https://platform.claude.com/v1/oauth/token",
+        &[
+            "Content-Type: application/x-www-form-urlencoded".to_string(),
+            format!("Content-Length: {}", body.len()),
+        ],
+        Some(&body),
+    );
+    let json = run_curl_config(&config)?;
+
+    serde_json::from_str::<serde_json::Value>(&json)
+        .ok()?
+        .get("access_token")
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
+
+fn fetch_claude_oauth_usage(access_token: &str) -> Option<serde_json::Value> {
+    let config = curl_config(
+        "https://api.anthropic.com/api/oauth/usage",
+        &[
+            format!("Authorization: Bearer {access_token}"),
+            "anthropic-beta: oauth-2025-04-20".to_string(),
+            "Content-Type: application/json".to_string(),
+        ],
+        None,
+    );
+    let raw = run_curl_config(&config)?;
+    serde_json::from_str(&raw).ok()
+}
+
+fn curl_config(url: &str, headers: &[String], body: Option<&str>) -> String {
+    let mut config = format!(
+        "silent\nshow-error\nfail\nmax-time = 5\nurl = \"{}\"\n",
+        curl_quote(url)
+    );
+    for header in headers {
+        config.push_str(&format!("header = \"{}\"\n", curl_quote(header)));
+    }
+    if let Some(body) = body {
+        config.push_str("request = \"POST\"\n");
+        config.push_str(&format!("data = \"{}\"\n", curl_quote(body)));
+    }
+    config
+}
+
+fn run_curl_config(config: &str) -> Option<String> {
+    let mut child = Command::new("curl")
+        .arg("-K")
+        .arg("-")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    child.stdin.as_mut()?.write_all(config.as_bytes()).ok()?;
+    let output = child.wait_with_output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    let raw = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!raw.is_empty()).then_some(raw)
+}
+
+fn curl_quote(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn form_encode(value: &str) -> String {
+    value
+        .bytes()
+        .flat_map(|byte| match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                vec![byte as char]
+            }
+            _ => format!("%{byte:02X}").chars().collect(),
+        })
+        .collect()
+}
+
+fn read_claude_auth_status_usage() -> Option<RuntimeUsage> {
     let output = Command::new("claude")
         .arg("auth")
         .arg("status")
@@ -300,10 +552,10 @@ fn read_claude_auth_status_percent() -> Option<RuntimeContext> {
         ],
     )?;
 
-    Some(RuntimeContext {
-        label: "5h".to_string(),
-        percent: Some(percent),
-        reset_seconds: find_seconds_by_keys(
+    Some(RuntimeUsage {
+        context_used_percent: read_claude_context_used_percent(),
+        five_hour_percent: Some(percent),
+        five_hour_reset_seconds: find_seconds_by_keys(
             &json,
             &[
                 "fiveHourResetSeconds",
@@ -320,10 +572,7 @@ fn find_percent_by_keys(json: &serde_json::Value, keys: &[&str]) -> Option<u8> {
         serde_json::Value::Object(map) => {
             for (key, value) in map {
                 if keys.iter().any(|candidate| key == candidate) {
-                    if let Some(percent) = value.as_f64().map(|value| value.round() as i64) {
-                        return Some(percent.clamp(0, 100) as u8);
-                    }
-                    if let Some(percent) = value.as_str().and_then(parse_percent) {
+                    if let Some(percent) = json_percent(value) {
                         return Some(percent);
                     }
                 }
@@ -363,7 +612,7 @@ fn find_seconds_by_keys(json: &serde_json::Value, keys: &[&str]) -> Option<u64> 
     }
 }
 
-fn read_claude_five_hour_log_context() -> Option<RuntimeContext> {
+fn read_claude_log_usage() -> Option<RuntimeUsage> {
     let limit = std::env::var("CLAUDE_5H_TOKEN_LIMIT")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
@@ -385,11 +634,52 @@ fn read_claude_five_hour_log_context() -> Option<RuntimeContext> {
         .and_then(|reset_at| reset_at.duration_since(now).ok())
         .map(|duration| duration.as_secs());
 
-    Some(RuntimeContext {
-        label: "5h".to_string(),
-        percent: Some(percent.clamp(0.0, 100.0) as u8),
-        reset_seconds,
+    Some(RuntimeUsage {
+        context_used_percent: read_claude_context_used_percent(),
+        five_hour_percent: Some(percent.clamp(0.0, 100.0) as u8),
+        five_hour_reset_seconds: reset_seconds,
     })
+}
+
+fn read_claude_context_used_percent() -> Option<u8> {
+    let home = std::env::var("HOME").ok()?;
+    let projects_dir = PathBuf::from(home).join(".claude/projects");
+    let latest = latest_claude_usage(&projects_dir)?;
+    let tokens = latest.input_tokens
+        + latest.output_tokens
+        + latest.cache_creation_input_tokens
+        + latest.cache_read_input_tokens;
+    if tokens == 0 {
+        return None;
+    }
+
+    let percent = (tokens as f64 / 1_000_000.0) * 100.0;
+    Some(percent.round().clamp(0.0, 100.0) as u8)
+}
+
+struct ClaudeUsageLine {
+    timestamp: SystemTime,
+    input_tokens: u64,
+    output_tokens: u64,
+    cache_creation_input_tokens: u64,
+    cache_read_input_tokens: u64,
+}
+
+fn latest_claude_usage(root: &PathBuf) -> Option<ClaudeUsageLine> {
+    let now = SystemTime::now();
+    let cutoff = now.checked_sub(Duration::from_secs(5 * 60 * 60))?;
+    let mut files = Vec::new();
+    collect_jsonl_files(root, &mut files, cutoff, 0);
+
+    files
+        .iter()
+        .filter_map(|path| fs::read_to_string(path).ok())
+        .flat_map(|raw| {
+            raw.lines()
+                .filter_map(claude_usage_line_from_line)
+                .collect::<Vec<_>>()
+        })
+        .max_by_key(|usage| usage.timestamp)
 }
 
 fn claude_usage_tokens_since(root: &PathBuf, cutoff: SystemTime) -> (u64, Option<SystemTime>) {
@@ -461,14 +751,25 @@ fn collect_jsonl_files(dir: &PathBuf, files: &mut Vec<PathBuf>, cutoff: SystemTi
 }
 
 fn claude_usage_from_line(line: &str, cutoff: SystemTime) -> Option<(u64, SystemTime)> {
+    let usage = claude_usage_line_from_line(line)?;
+    if usage.timestamp < cutoff {
+        return None;
+    }
+
+    let tokens = usage.input_tokens
+        + usage.output_tokens
+        + usage.cache_creation_input_tokens
+        + usage.cache_read_input_tokens;
+
+    (tokens > 0).then_some((tokens, usage.timestamp))
+}
+
+fn claude_usage_line_from_line(line: &str) -> Option<ClaudeUsageLine> {
     let json = serde_json::from_str::<serde_json::Value>(line).ok()?;
     let timestamp = json
         .get("timestamp")
         .and_then(|value| value.as_str())
         .and_then(parse_iso_timestamp_millis)?;
-    if timestamp < cutoff {
-        return None;
-    }
 
     let usage = json
         .get("message")
@@ -481,24 +782,31 @@ fn claude_usage_from_line(line: &str, cutoff: SystemTime) -> Option<(u64, System
         })
         .or_else(|| json.get("data").and_then(|data| data.get("usage")))?;
 
-    let tokens = json_number(usage, "input_tokens")
-        + json_number(usage, "output_tokens")
-        + json_number(usage, "cache_creation_input_tokens")
-        + json_number(usage, "cache_read_input_tokens");
-
-    (tokens > 0).then_some((tokens, timestamp))
+    Some(ClaudeUsageLine {
+        timestamp,
+        input_tokens: json_number(usage, "input_tokens"),
+        output_tokens: json_number(usage, "output_tokens"),
+        cache_creation_input_tokens: json_number(usage, "cache_creation_input_tokens"),
+        cache_read_input_tokens: json_number(usage, "cache_read_input_tokens"),
+    })
 }
 
-fn read_codex_five_hour_percent() -> Option<u8> {
-    read_latest_codex_token_status().and_then(|status| status.five_hour_remaining_percent)
-}
-
-fn read_codex_five_hour_reset_seconds() -> Option<u64> {
+fn read_codex_usage() -> RuntimeUsage {
     let now = SystemTime::now();
-    read_latest_codex_token_status()
+    let status = read_latest_codex_token_status();
+    let five_hour_reset_seconds = status
+        .as_ref()
         .and_then(|status| status.five_hour_resets_at)
         .and_then(|reset_at| reset_at.duration_since(now).ok())
-        .map(|duration| duration.as_secs())
+        .map(|duration| duration.as_secs());
+
+    RuntimeUsage {
+        context_used_percent: status
+            .as_ref()
+            .and_then(|status| status.context_used_percent),
+        five_hour_percent: status.and_then(|status| status.five_hour_remaining_percent),
+        five_hour_reset_seconds,
+    }
 }
 
 fn read_latest_codex_token_status() -> Option<CodexTokenStatus> {
@@ -522,6 +830,7 @@ fn read_latest_codex_token_status() -> Option<CodexTokenStatus> {
 
 struct CodexTokenStatus {
     timestamp: SystemTime,
+    context_used_percent: Option<u8>,
     five_hour_remaining_percent: Option<u8>,
     five_hour_resets_at: Option<SystemTime>,
 }
@@ -537,13 +846,25 @@ fn codex_token_count_from_line(line: &str) -> Option<CodexTokenStatus> {
         return None;
     }
 
+    let context_used_percent = payload.get("info").and_then(|info| {
+        let context_window = json_number(info, "model_context_window");
+        let usage = info.get("last_token_usage")?;
+        let tokens = json_number(usage, "total_tokens")
+            .max(json_number(usage, "input_tokens") + json_number(usage, "output_tokens"));
+        if context_window == 0 || tokens == 0 {
+            return None;
+        }
+
+        let percent = (tokens as f64 / context_window as f64) * 100.0;
+        Some(percent.round().clamp(0.0, 100.0) as u8)
+    });
+
     let primary = payload
         .get("rate_limits")
         .and_then(|rate_limits| rate_limits.get("primary"));
     let used_percent = primary
         .and_then(|primary| primary.get("used_percent"))
-        .and_then(|value| value.as_u64())
-        .map(|value| value.min(100) as u8);
+        .and_then(json_percent);
     let five_hour_remaining_percent = used_percent.map(|used| 100_u8.saturating_sub(used));
     let five_hour_resets_at = primary
         .and_then(|primary| primary.get("resets_at"))
@@ -552,6 +873,7 @@ fn codex_token_count_from_line(line: &str) -> Option<CodexTokenStatus> {
 
     Some(CodexTokenStatus {
         timestamp,
+        context_used_percent,
         five_hour_remaining_percent,
         five_hour_resets_at,
     })
