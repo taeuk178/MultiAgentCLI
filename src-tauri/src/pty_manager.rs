@@ -53,6 +53,9 @@ impl PtyManager {
             cmd.arg(arg);
         }
         cmd.env("TERM", "xterm-256color");
+        if let Some(cwd) = &config.cwd {
+            cmd.cwd(cwd);
+        }
 
         let _child = pair
             .slave

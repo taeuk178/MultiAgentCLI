@@ -13,8 +13,10 @@ fn pty_create(
     provider_id: ProviderId,
     cols: u16,
     rows: u16,
+    cwd: Option<String>,
 ) -> Result<(), String> {
-    let config = spawn_config(&provider_id);
+    let mut config = spawn_config(&provider_id);
+    config.cwd = cwd;
     state.create(app, tab_id, config, cols, rows)
 }
 

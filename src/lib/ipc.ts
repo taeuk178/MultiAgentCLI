@@ -12,8 +12,9 @@ export function ptyCreate(
   providerId: ProviderId,
   cols: number,
   rows: number,
+  cwd?: string,
 ): Promise<void> {
-  return invoke("pty_create", { tabId, providerId, cols, rows });
+  return invoke("pty_create", { tabId, providerId, cols, rows, cwd: cwd ?? null });
 }
 
 export function ptyWrite(tabId: string, data: string): Promise<void> {

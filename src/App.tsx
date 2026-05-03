@@ -69,10 +69,7 @@ export default function App() {
 
     for (const tab of conv.tabs) {
       try {
-        await ptyCreate(tab.tabId, tab.providerId, 120, 40);
-        if (projectPath) {
-          await ptyWrite(tab.tabId, `cd "${projectPath}"\r`);
-        }
+        await ptyCreate(tab.tabId, tab.providerId, 120, 40, projectPath ?? undefined);
       } catch (err) {
         console.warn(`[pty] ${tab.providerId} failed:`, err);
       }
