@@ -6,6 +6,7 @@ import { PROVIDERS } from "../lib/types";
 interface Props {
   value: string;
   provider: ProviderId;
+  advisor?: ProviderId | null;
   isRunning: boolean;
   disabled?: boolean;
   onChange: (v: string) => void;
@@ -16,6 +17,7 @@ interface Props {
 export function Composer({
   value,
   provider,
+  advisor,
   isRunning,
   disabled,
   onChange,
@@ -33,6 +35,8 @@ export function Composer({
 
   const placeholder = isRunning
     ? "Running… press esc to stop"
+    : advisor
+    ? `Message ${PROVIDERS[provider].label} + ${PROVIDERS[advisor].label} — ⌘+Return to send`
     : `Message ${PROVIDERS[provider].label} — Return for new line, ⌘+Return to send`;
 
   return (
@@ -40,10 +44,51 @@ export function Composer({
       style={{
         borderTop: "1px solid var(--divider)",
         background: "var(--bg-content)",
-        padding: "12px 16px 14px",
+        padding: "8px 16px 14px",
         flexShrink: 0,
       }}
     >
+      {/* Flow badge */}
+      {advisor && (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 5,
+            fontFamily: "var(--mono)",
+            fontSize: 10.5,
+            color: "var(--fg-dim)",
+            marginBottom: 8,
+          }}
+        >
+          <span
+            style={{
+              padding: "1px 6px",
+              borderRadius: 3,
+              background: PROVIDERS[provider].bgColor,
+              color: PROVIDERS[provider].color,
+              fontWeight: 700,
+            }}
+          >
+            {PROVIDERS[provider].glyph} {PROVIDERS[provider].label}
+          </span>
+          <span style={{ color: "var(--fg-faint)" }}>→</span>
+          <span
+            style={{
+              padding: "1px 6px",
+              borderRadius: 3,
+              background: PROVIDERS[advisor].bgColor,
+              color: PROVIDERS[advisor].color,
+              fontWeight: 700,
+            }}
+          >
+            {PROVIDERS[advisor].glyph} {PROVIDERS[advisor].label}
+          </span>
+          <span style={{ color: "var(--fg-faint)", marginLeft: 4, fontSize: 10 }}>
+            동시 전송
+          </span>
+        </div>
+      )}
       <div
         className="composer-box"
         style={{

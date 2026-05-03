@@ -130,15 +130,29 @@ export default function App() {
     [conversations]
   );
 
-  const handleSend = useCallback(() => {
+  const handleSend = useCallback(async () => {
     if (!composerText.trim() || !activeConv) return;
-    const tab = activeConv.tabs.find(
+    const message = composerText.trim();
+    setComposerText("");
+
+    const primaryTab = activeConv.tabs.find(
       (t) => t.providerId === activeConv.provider
     );
-    if (tab) {
-      ptyWrite(tab.tabId, composerText + "\r").catch(console.error);
+    if (primaryTab) {
+      await ptyWrite(primaryTab.tabId, message + "\r").catch(console.error);
     }
-    setComposerText("");
+
+    // With advisor: also send to advisor PTY after a short buffer
+    if (activeConv.advisor) {
+      const advisorTab = activeConv.tabs.find(
+        (t) => t.providerId === activeConv.advisor
+      );
+      if (advisorTab) {
+        setTimeout(() => {
+          ptyWrite(advisorTab.tabId, message + "\r").catch(console.error);
+        }, 400);
+      }
+    }
   }, [composerText, activeConv]);
 
   const activeProvider = activeConv?.provider ?? "claude";
@@ -301,15 +315,19 @@ export default function App() {
           )}
         </div>
 
-        <Composer
-          value={composerText}
-          provider={activeProvider}
-          isRunning={isRunning}
-          disabled={!activeConv}
-          onChange={setComposerText}
-          onSend={handleSend}
-          onStop={() => {}}
-        />
+        {/* Composer — 어드바이저 선택 시에만 표시 */}
+        {activeConv?.advisor && (
+          <Composer
+            value={composerText}
+            provider={activeProvider}
+            advisor={activeConv.advisor}
+            isRunning={isRunning}
+            disabled={!activeConv}
+            onChange={setComposerText}
+            onSend={handleSend}
+            onStop={() => {}}
+          />
+        )}
       </div>
     </div>
   );
