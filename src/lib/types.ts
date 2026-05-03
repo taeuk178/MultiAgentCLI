@@ -26,7 +26,7 @@ export const PROVIDERS: Record<ProviderId, ProviderInfo> = {
     glyph: "C",
     color: "var(--p-claude)",
     bgColor: "var(--p-claude-bg)",
-    ctxWindow: 200_000,
+    ctxWindow: 1_000_000,
     supportsResume: true,
     hasShellAuth: true,
   },
