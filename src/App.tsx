@@ -227,8 +227,10 @@ export default function App() {
                 style={{
                   position: "absolute",
                   inset: 0,
-                  display:
-                    providerId === activeProvider ? "block" : "none",
+                  visibility:
+                    providerId === activeProvider ? "visible" : "hidden",
+                  pointerEvents:
+                    providerId === activeProvider ? "auto" : "none",
                 }}
               >
                 <TerminalPane

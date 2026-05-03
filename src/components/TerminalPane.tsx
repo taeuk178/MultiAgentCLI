@@ -82,12 +82,19 @@ export function TerminalPane({ tabId, active }: Props) {
     };
   }, [tabId]);
 
-  // Re-fit when tab becomes visible
+  // Re-fit when tab becomes visible — rAF ensures layout is complete
   useEffect(() => {
     if (active && fitRef.current) {
-      fitRef.current.fit();
+      const id = requestAnimationFrame(() => {
+        fitRef.current?.fit();
+        if (termRef.current && fitRef.current) {
+          const { cols, rows } = termRef.current;
+          ptyResize(tabId, cols, rows).catch(console.error);
+        }
+      });
+      return () => cancelAnimationFrame(id);
     }
-  }, [active]);
+  }, [active, tabId]);
 
   return (
     <div
@@ -96,7 +103,6 @@ export function TerminalPane({ tabId, active }: Props) {
         width: "100%",
         height: "100%",
         padding: "4px",
-        display: active ? "block" : "none",
       }}
     />
   );
