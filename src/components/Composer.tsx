@@ -4,6 +4,16 @@ import { IconButton, Keycap } from "./ui";
 import type { ConversationMode, ProviderId } from "../lib/types";
 import { PROVIDERS } from "../lib/types";
 
+const DEV_MODE_RAW_INPUT: Record<string, string> = {
+  ArrowUp: "\x1b[A",
+  ArrowDown: "\x1b[B",
+  ArrowRight: "\x1b[C",
+  ArrowLeft: "\x1b[D",
+  Enter: "\r",
+  Escape: "\x1b",
+  Tab: "\t",
+};
+
 interface Props {
   value: string;
   provider: ProviderId;
@@ -12,6 +22,7 @@ interface Props {
   disabled?: boolean;
   onChange: (v: string) => void;
   onSend: () => void;
+  onRawInput?: (data: string) => void;
 }
 
 export function Composer({
@@ -22,6 +33,7 @@ export function Composer({
   disabled,
   onChange,
   onSend,
+  onRawInput,
 }: Props) {
   const taRef = useRef<HTMLTextAreaElement>(null);
 
@@ -65,6 +77,15 @@ export function Composer({
             if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
               e.preventDefault();
               onSend();
+              return;
+            }
+
+            if (mode === "develop" && !value && onRawInput && !e.nativeEvent.isComposing) {
+              const rawInput = devModeRawInput(e.key);
+              if (rawInput) {
+                e.preventDefault();
+                onRawInput(rawInput);
+              }
             }
           }}
           placeholder={placeholder}
@@ -176,4 +197,8 @@ export function Composer({
       </div>
     </div>
   );
+}
+
+function devModeRawInput(key: string): string | null {
+  return DEV_MODE_RAW_INPUT[key] ?? null;
 }

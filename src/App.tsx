@@ -292,6 +292,8 @@ export default function App() {
             ) : interactiveTabs.has(activeTab.tabId) ? (
               <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
                 <TerminalControlBar
+                  onUp={() => handlePtyControl("\x1b[A")}
+                  onDown={() => handlePtyControl("\x1b[B")}
                   onEnter={() => handlePtyControl("\r")}
                   onEscape={() => handlePtyControl("\x1b")}
                   onInterrupt={() => handlePtyControl("\x03")}
@@ -337,6 +339,7 @@ export default function App() {
             disabled={!activeConv}
             onChange={setComposerText}
             onSend={handleSend}
+            onRawInput={handlePtyControl}
           />
         )}
       </div>
@@ -370,15 +373,21 @@ function TerminalLoading({ label }: { label: string }) {
 }
 
 function TerminalControlBar({
+  onUp,
+  onDown,
   onEnter,
   onEscape,
   onInterrupt,
 }: {
+  onUp: () => void;
+  onDown: () => void;
   onEnter: () => void;
   onEscape: () => void;
   onInterrupt: () => void;
 }) {
   const controls = [
+    { label: "↑", title: "Up", onClick: onUp },
+    { label: "↓", title: "Down", onClick: onDown },
     { label: "Enter", onClick: onEnter },
     { label: "Esc", onClick: onEscape },
     { label: "Ctrl+C", onClick: onInterrupt },
@@ -411,6 +420,7 @@ function TerminalControlBar({
       {controls.map((control) => (
         <button
           key={control.label}
+          title={control.title}
           className="terminal-control-button"
           onClick={control.onClick}
           style={{
