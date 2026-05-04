@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { IconPlus, IconX } from "./Icons";
-import type { ConversationEntry, ProviderId } from "../lib/types";
+import { ProviderDot } from "./ui";
+import type { ConversationEntry } from "../lib/types";
 import { PROVIDERS } from "../lib/types";
 
 interface Props {
@@ -16,21 +17,6 @@ interface CtxMenu {
   id: string;
   x: number;
   y: number;
-}
-
-function ProviderDot({ providerId }: { providerId: ProviderId }) {
-  return (
-    <span
-      style={{
-        width: 6,
-        height: 6,
-        borderRadius: "50%",
-        background: PROVIDERS[providerId].color,
-        flexShrink: 0,
-        display: "inline-block",
-      }}
-    />
-  );
 }
 
 function ContextMenu({

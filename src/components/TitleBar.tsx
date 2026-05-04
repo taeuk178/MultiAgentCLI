@@ -1,4 +1,5 @@
 import { IconSidebar } from "./Icons";
+import { IconButton } from "./ui";
 import type { HealthStatus, ProviderId } from "../lib/types";
 import { PROVIDERS, PROVIDER_IDS } from "../lib/types";
 
@@ -121,54 +122,6 @@ function HealthPill({
   );
 }
 
-function IconBtn({
-  children,
-  active,
-  title,
-  onClick,
-}: {
-  children: React.ReactNode;
-  active?: boolean;
-  title?: string;
-  onClick?: () => void;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      title={title}
-      style={{
-        width: 28,
-        height: 28,
-        display: "inline-flex",
-        alignItems: "center",
-        justifyContent: "center",
-        borderRadius: 6,
-        border: "1px solid transparent",
-        background: active ? "rgba(255,255,255,0.08)" : "transparent",
-        color: active ? "var(--fg)" : "var(--fg-dim)",
-        cursor: "pointer",
-        transition: "all 120ms",
-        flexShrink: 0,
-      }}
-      onMouseEnter={(e) => {
-        (e.currentTarget as HTMLElement).style.background =
-          "rgba(255,255,255,0.06)";
-        (e.currentTarget as HTMLElement).style.color = "var(--fg)";
-      }}
-      onMouseLeave={(e) => {
-        (e.currentTarget as HTMLElement).style.background = active
-          ? "rgba(255,255,255,0.08)"
-          : "transparent";
-        (e.currentTarget as HTMLElement).style.color = active
-          ? "var(--fg)"
-          : "var(--fg-dim)";
-      }}
-    >
-      {children}
-    </button>
-  );
-}
-
 export function TitleBar({
   health,
   rightSidebarOpen,
@@ -231,7 +184,7 @@ export function TitleBar({
 
         <div style={{ width: 4 }} />
 
-        <IconBtn
+        <IconButton
           title={rightSidebarOpen ? "Hide right sidebar" : "Show right sidebar"}
           active={rightSidebarOpen}
           onClick={onToggleRightSidebar}
@@ -239,7 +192,7 @@ export function TitleBar({
           <span style={{ transform: "scaleX(-1)", display: "inline-flex" }}>
             <IconSidebar size={14} />
           </span>
-        </IconBtn>
+        </IconButton>
       </div>
     </div>
   );

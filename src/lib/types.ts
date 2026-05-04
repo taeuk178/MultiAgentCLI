@@ -1,18 +1,8 @@
-export type ProviderId = "claude" | "codex" | "gemini";
 export type HealthStatus = "healthy" | "error" | "unknown" | "disabled";
 export type ChatRole = "user" | "provider";
 
-export interface ProviderRuntimeStatus {
-  providerId: ProviderId;
-  health: HealthStatus;
-  model: string;
-  contextUsedPercent: number | null;
-  fiveHourPercent: number | null;
-  fiveHourResetSeconds: number | null;
-}
-
 export interface ProviderInfo {
-  id: ProviderId;
+  id: string;
   label: string;
   glyph: string;
   color: string;
@@ -22,7 +12,7 @@ export interface ProviderInfo {
   hasShellAuth: boolean;
 }
 
-export const PROVIDERS: Record<ProviderId, ProviderInfo> = {
+export const PROVIDERS = {
   claude: {
     id: "claude",
     label: "Claude",
@@ -53,9 +43,20 @@ export const PROVIDERS: Record<ProviderId, ProviderInfo> = {
     supportsResume: false,
     hasShellAuth: false,
   },
-};
+} as const satisfies Record<string, ProviderInfo>;
 
-export const PROVIDER_IDS: ProviderId[] = ["claude", "codex", "gemini"];
+export type ProviderId = keyof typeof PROVIDERS;
+
+export const PROVIDER_IDS = Object.keys(PROVIDERS) as ProviderId[];
+
+export interface ProviderRuntimeStatus {
+  providerId: ProviderId;
+  health: HealthStatus;
+  model: string;
+  contextUsedPercent: number | null;
+  fiveHourPercent: number | null;
+  fiveHourResetSeconds: number | null;
+}
 
 export interface SessionInfo {
   id: string;

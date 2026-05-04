@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { IconCheck, IconChevDown } from "./Icons";
+import { ProviderDot } from "./ui";
 import type { ProviderId } from "../lib/types";
 import { PROVIDER_IDS, PROVIDERS } from "../lib/types";
 
@@ -225,15 +226,7 @@ export function AdvisorPopover({ advisor, provider, disabled, onChange }: Props)
                             "var(--bg-card)";
                       }}
                     >
-                      <span
-                        style={{
-                          width: 8,
-                          height: 8,
-                          borderRadius: "50%",
-                          background: info.color,
-                          flexShrink: 0,
-                        }}
-                      />
+                      <ProviderDot providerId={p} size={8} />
                       <span style={{ flex: 1 }}>{info.label}</span>
                       <span
                         style={{

@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { IconAttach, IconSend } from "./Icons";
+import { IconButton, Keycap } from "./ui";
 import type { ProviderId } from "../lib/types";
 import { PROVIDERS } from "../lib/types";
 
@@ -88,30 +89,12 @@ export function Composer({
             marginTop: 6,
           }}
         >
-          {/* Attach */}
-          <button
+          <IconButton
             title="Attach file"
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              justifyContent: "center",
-              width: 28,
-              height: 28,
-              borderRadius: 6,
-              color: "var(--fg-dim)",
-              background: "transparent",
-              cursor: "pointer",
-              transition: "color 120ms",
-            }}
-            onMouseEnter={(e) =>
-              ((e.currentTarget as HTMLElement).style.color = "var(--fg)")
-            }
-            onMouseLeave={(e) =>
-              ((e.currentTarget as HTMLElement).style.color = "var(--fg-dim)")
-            }
+            style={{ border: "none" }}
           >
             <IconAttach size={13} />
-          </button>
+          </IconButton>
 
           {/* Keycap hint */}
           <span
@@ -124,32 +107,8 @@ export function Composer({
               gap: 4,
             }}
           >
-            <kbd
-              style={{
-                fontFamily: "var(--mono)",
-                fontSize: 10,
-                padding: "1px 5px",
-                borderRadius: 3,
-                background: "rgba(255,255,255,0.06)",
-                border: "1px solid var(--border)",
-                color: "var(--fg-2)",
-              }}
-            >
-              ⌘
-            </kbd>
-            <kbd
-              style={{
-                fontFamily: "var(--mono)",
-                fontSize: 10,
-                padding: "1px 5px",
-                borderRadius: 3,
-                background: "rgba(255,255,255,0.06)",
-                border: "1px solid var(--border)",
-                color: "var(--fg-2)",
-              }}
-            >
-              ↵
-            </kbd>
+            <Keycap>⌘</Keycap>
+            <Keycap>↵</Keycap>
             <span>send</span>
           </span>
 

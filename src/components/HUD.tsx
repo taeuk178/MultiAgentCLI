@@ -9,7 +9,6 @@ import { PROVIDER_IDS, PROVIDERS } from "../lib/types";
 
 interface Props {
   conv: ConversationEntry | null;
-  health: Record<ProviderId, HealthStatus>;
   providerStatuses: Record<ProviderId, ProviderRuntimeStatus>;
   isRunning: boolean;
   onProviderSwitch: (provider: ProviderId) => void;
@@ -33,31 +32,26 @@ function estimateContextTokens(messages: ChatMessage[]): number {
 }
 
 interface CardProps {
-  provider: ProviderId;
+  providerId: ProviderId;
+  runtime: ProviderRuntimeStatus;
   active: boolean;
-  health: HealthStatus;
-  model: string;
   contextUsedPercent: number | null;
-  fiveHourPercent: number | null;
-  fiveHourResetSeconds: number | null;
   streaming: boolean;
   disabled: boolean;
   onClick: () => void;
 }
 
 function HUDCard({
-  provider,
+  providerId,
+  runtime,
   active,
-  health,
-  model,
   contextUsedPercent,
-  fiveHourPercent,
-  fiveHourResetSeconds,
   streaming,
   disabled,
   onClick,
 }: CardProps) {
-  const info = PROVIDERS[provider];
+  const info = PROVIDERS[providerId];
+  const health = runtime.health;
   const ledColor = LED_COLOR[health];
   const barWidth = contextUsedPercent == null ? 0 : Math.min(100, contextUsedPercent);
 
@@ -136,13 +130,13 @@ function HUDCard({
           color: "var(--fg-dim)",
         }}
       >
-        <span title={model}>model:{model}</span>
+        <span title={runtime.model}>model:{runtime.model}</span>
         <span style={{ color: "var(--fg-faint)" }}>·</span>
         <span>Context Used {formatPercent(contextUsedPercent)}</span>
         <span style={{ color: "var(--fg-faint)" }}>·</span>
         <span>
-          5h {formatPercent(fiveHourPercent)}
-          {formatReset(fiveHourResetSeconds)}
+          5h {formatPercent(runtime.fiveHourPercent)}
+          {formatReset(runtime.fiveHourResetSeconds)}
         </span>
       </div>
 
@@ -174,7 +168,6 @@ function HUDCard({
 
 export function HUD({
   conv,
-  health,
   providerStatuses,
   isRunning,
   onProviderSwitch,
@@ -220,13 +213,10 @@ export function HUD({
         return (
           <HUDCard
             key={pid}
-            provider={pid}
+            providerId={pid}
+            runtime={runtime}
             active={!!active}
-            health={health[pid]}
-            model={runtime.model}
             contextUsedPercent={contextUsedPercent}
-            fiveHourPercent={runtime.fiveHourPercent}
-            fiveHourResetSeconds={runtime.fiveHourResetSeconds}
             streaming={streaming}
             disabled={isRunning && !active}
             onClick={() => onProviderSwitch(pid)}
