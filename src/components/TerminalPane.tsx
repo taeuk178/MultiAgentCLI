@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
-import { onPtyOutput, ptyResize, ptyWrite } from "../lib/ipc";
+import { onPtyOutput, ptyResize } from "../lib/ipc";
 
 interface Props {
   tabId: string;
@@ -64,10 +64,6 @@ export function TerminalPane({ tabId, active }: Props) {
       if (tab_id === tabId) term.write(data);
     });
 
-    const disposeOnData = term.onData((data) => {
-      ptyWrite(tabId, data).catch(console.error);
-    });
-
     const observer = new ResizeObserver(() => {
       fit.fit();
       ptyResize(tabId, term.cols, term.rows).catch(console.error);
@@ -76,7 +72,6 @@ export function TerminalPane({ tabId, active }: Props) {
 
     return () => {
       unlistenPromise.then((fn) => fn());
-      disposeOnData.dispose();
       observer.disconnect();
       term.dispose();
     };

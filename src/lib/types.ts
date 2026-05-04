@@ -7,6 +7,7 @@ import type {
 export type { HealthStatus, ProviderId, ProviderRuntimeStatus };
 
 export type ChatRole = "user" | "provider";
+export type ConversationMode = "quick" | "develop";
 
 export interface ProviderInfo {
   id: ProviderId;
@@ -78,6 +79,7 @@ export interface ChatMessage {
 export interface ConversationEntry {
   id: string;
   title: string;
+  mode: ConversationMode;
   tabs: PtyTab[];
   provider: ProviderId;
   advisor: ProviderId | null;

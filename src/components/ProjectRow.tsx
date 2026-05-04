@@ -18,6 +18,7 @@ export function ProjectRow({
   onProjectChange,
 }: Props) {
   const provider = conv?.provider ?? "claude";
+  const mode = conv?.mode ?? "quick";
 
   const handlePickFolder = async () => {
     const selected = await open({
@@ -61,12 +62,36 @@ export function ProjectRow({
 
       <div style={{ flex: 1 }} />
 
+      {conv && <ModeChip mode={mode} />}
+
       <AdvisorPopover
         advisor={conv?.advisor ?? null}
         provider={provider}
-        disabled={isRunning || !conv}
+        disabled={isRunning || !conv || mode === "develop"}
         onChange={onAdvisorChange}
       />
     </div>
+  );
+}
+
+function ModeChip({ mode }: { mode: "quick" | "develop" }) {
+  return (
+    <span
+      style={{
+        height: 24,
+        display: "inline-flex",
+        alignItems: "center",
+        padding: "0 8px",
+        borderRadius: 6,
+        border: "1px solid var(--border)",
+        background: "var(--bg-card)",
+        color: "var(--fg-dim)",
+        fontFamily: "var(--mono)",
+        fontSize: 10.5,
+        fontWeight: 700,
+      }}
+    >
+      {mode === "quick" ? "Quick" : "Dev"}
+    </span>
   );
 }

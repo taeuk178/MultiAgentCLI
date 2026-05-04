@@ -1,12 +1,13 @@
 import { useEffect, useRef } from "react";
 import { IconAttach, IconSend } from "./Icons";
 import { IconButton, Keycap } from "./ui";
-import type { ProviderId } from "../lib/types";
+import type { ConversationMode, ProviderId } from "../lib/types";
 import { PROVIDERS } from "../lib/types";
 
 interface Props {
   value: string;
   provider: ProviderId;
+  mode: ConversationMode;
   isRunning: boolean;
   disabled?: boolean;
   onChange: (v: string) => void;
@@ -16,6 +17,7 @@ interface Props {
 export function Composer({
   value,
   provider,
+  mode,
   isRunning,
   disabled,
   onChange,
@@ -32,7 +34,9 @@ export function Composer({
 
   const placeholder = isRunning
     ? `${PROVIDERS[provider].label} 응답 대기 중`
-    : `Message ${PROVIDERS[provider].label} - Cmd+Return`;
+    : mode === "develop"
+      ? `${PROVIDERS[provider].label} 세션에 전송 - Cmd+Return`
+      : `Message ${PROVIDERS[provider].label} - Cmd+Return`;
 
   return (
     <div

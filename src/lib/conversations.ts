@@ -1,5 +1,6 @@
 import type {
   ChatMessage,
+  ConversationMode,
   ConversationEntry,
   HealthStatus,
   ProviderId,
@@ -11,12 +12,14 @@ let convCounter = 1;
 
 export function makeConversation(
   defaultProvider: ProviderId = "claude",
+  mode: ConversationMode = "quick",
 ): ConversationEntry {
   const id = `conv-${Date.now()}`;
 
   return {
     id,
     title: `Conversation ${convCounter++}`,
+    mode,
     tabs: PROVIDER_IDS.map((pid) => ({
       tabId: `${id}-${pid}`,
       providerId: pid,

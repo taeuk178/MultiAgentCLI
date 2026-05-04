@@ -1,9 +1,12 @@
 import { useCallback, useMemo, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { makeConversation } from "../lib/conversations";
-import type { ConversationEntry, ProviderId } from "../lib/types";
+import type { ConversationEntry, ConversationMode, ProviderId } from "../lib/types";
 
-export function useConversations(pendingConvId: string | null) {
+export function useConversations(
+  pendingConvId: string | null,
+  newConversationMode: ConversationMode,
+) {
   const [conversations, setConversations] = useState<ConversationEntry[]>([]);
   const [activeConvId, setActiveConvId] = useState<string | null>(null);
 
@@ -26,11 +29,11 @@ export function useConversations(pendingConvId: string | null) {
     });
     const projectPath = typeof selected === "string" ? selected : null;
 
-    const conv = makeConversation();
+    const conv = makeConversation("claude", newConversationMode);
     if (projectPath) conv.project = projectPath;
     setConversations((prev) => [conv, ...prev]);
     setActiveConvId(conv.id);
-  }, []);
+  }, [newConversationMode]);
 
   const handleDelete = useCallback(
     (id: string) => {

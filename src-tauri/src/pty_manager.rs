@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
 
-use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+use portable_pty::{native_pty_system, Child, CommandBuilder, PtySize};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 
@@ -14,9 +14,15 @@ struct PtyOutputPayload {
     data: String,
 }
 
+#[derive(Serialize, Clone)]
+struct PtyExitPayload {
+    tab_id: String,
+}
+
 struct PtySession {
     master: Box<dyn portable_pty::MasterPty + Send>,
     writer: Box<dyn Write + Send>,
+    child: Box<dyn Child + Send + Sync>,
 }
 
 pub struct PtyManager {
@@ -38,6 +44,15 @@ impl PtyManager {
         cols: u16,
         rows: u16,
     ) -> Result<(), String> {
+        if self
+            .sessions
+            .lock()
+            .map_err(|e| e.to_string())?
+            .contains_key(&tab_id)
+        {
+            return Ok(());
+        }
+
         let pty_system = native_pty_system();
         let pair = pty_system
             .openpty(PtySize {
@@ -59,7 +74,7 @@ impl PtyManager {
             cmd.cwd(cwd);
         }
 
-        let _child = pair
+        let child = pair
             .slave
             .spawn_command(cmd)
             .map_err(|e| format!("failed to spawn '{}': {}", config.command, e))?;
@@ -69,6 +84,7 @@ impl PtyManager {
         let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
 
         let tab_id_reader = tab_id.clone();
+        let sessions = self.sessions.clone();
         std::thread::spawn(move || {
             let mut buf = [0u8; 4096];
             loop {
@@ -86,6 +102,16 @@ impl PtyManager {
                     }
                 }
             }
+
+            let _ = sessions
+                .lock()
+                .map(|mut sessions| sessions.remove(&tab_id_reader));
+            let _ = app.emit(
+                "pty-exit",
+                PtyExitPayload {
+                    tab_id: tab_id_reader,
+                },
+            );
         });
 
         self.sessions.lock().map_err(|e| e.to_string())?.insert(
@@ -93,6 +119,7 @@ impl PtyManager {
             PtySession {
                 master: pair.master,
                 writer,
+                child,
             },
         );
 
@@ -121,10 +148,14 @@ impl PtyManager {
     }
 
     pub fn close(&self, tab_id: &str) -> Result<(), String> {
-        self.sessions
+        if let Some(mut session) = self
+            .sessions
             .lock()
             .map_err(|e| e.to_string())?
-            .remove(tab_id);
+            .remove(tab_id)
+        {
+            let _ = session.child.kill();
+        }
         Ok(())
     }
 }

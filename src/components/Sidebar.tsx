@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { IconPlus, IconX } from "./Icons";
 import { ProviderDot } from "./ui";
-import type { ConversationEntry } from "../lib/types";
+import type { ConversationEntry, ConversationMode } from "../lib/types";
 import { PROVIDERS } from "../lib/types";
 
 interface Props {
@@ -11,6 +11,8 @@ interface Props {
   onDelete: (id: string) => void;
   onNew: () => void;
   onClearChat: (id: string) => void;
+  newConversationMode: ConversationMode;
+  onNewConversationModeChange: (mode: ConversationMode) => void;
 }
 
 interface CtxMenu {
@@ -99,6 +101,8 @@ export function Sidebar({
   onDelete,
   onNew,
   onClearChat,
+  newConversationMode,
+  onNewConversationModeChange,
 }: Props) {
   const [ctxMenu, setCtxMenu] = useState<CtxMenu | null>(null);
 
@@ -224,6 +228,8 @@ export function Sidebar({
               >
                 <span>{PROVIDERS[conv.provider].label}</span>
                 <span style={{ color: "var(--fg-faint)" }}>·</span>
+                <ModeBadge mode={conv.mode ?? "quick"} />
+                <span style={{ color: "var(--fg-faint)" }}>·</span>
                 <span
                   style={{
                     overflow: "hidden",
@@ -273,9 +279,13 @@ export function Sidebar({
           borderTop: "1px solid var(--divider)",
           display: "flex",
           flexDirection: "column",
-          gap: 6,
+          gap: 8,
         }}
       >
+        <NewChatModePicker
+          mode={newConversationMode}
+          onChange={onNewConversationModeChange}
+        />
         <button
           className="primary-button"
           onClick={onNew}
@@ -312,5 +322,81 @@ export function Sidebar({
         />
       )}
     </aside>
+  );
+}
+
+function ModeBadge({ mode }: { mode: ConversationMode }) {
+  return (
+    <span
+      className={mode === "develop" ? "conversation-mode-badge is-dev" : "conversation-mode-badge"}
+    >
+      {mode === "quick" ? "Quick" : "Dev"}
+    </span>
+  );
+}
+
+function NewChatModePicker({
+  mode,
+  onChange,
+}: {
+  mode: ConversationMode;
+  onChange: (mode: ConversationMode) => void;
+}) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+      }}
+    >
+      <span
+        style={{
+          color: "var(--fg-dim)",
+          fontSize: 10.5,
+          fontWeight: 700,
+          letterSpacing: "0.4px",
+          textTransform: "uppercase",
+        }}
+      >
+        Mode
+      </span>
+      <div
+        style={{
+          flex: 1,
+          display: "inline-flex",
+          height: 28,
+          padding: 2,
+          borderRadius: 7,
+          border: "1px solid var(--border)",
+          background: "var(--bg-card)",
+        }}
+      >
+        {(["quick", "develop"] as const).map((item) => {
+          const active = mode === item;
+
+          return (
+            <button
+              key={item}
+              className={active ? "mode-segment is-active" : "mode-segment"}
+              onClick={() => onChange(item)}
+              style={{
+                flex: 1,
+                height: 22,
+                padding: "0 8px",
+                borderRadius: 5,
+                color: active ? "var(--fg)" : "var(--fg-dim)",
+                fontSize: 11,
+                fontWeight: active ? 700 : 500,
+                fontFamily: "var(--ui)",
+                cursor: "pointer",
+              }}
+            >
+              {item === "quick" ? "Quick" : "Dev"}
+            </button>
+          );
+        })}
+      </div>
+    </div>
   );
 }

@@ -7,6 +7,10 @@ export interface PtyOutputPayload {
   data: string;
 }
 
+export interface PtyExitPayload {
+  tab_id: string;
+}
+
 export function ptyCreate(
   tabId: string,
   providerId: ProviderId,
@@ -49,4 +53,10 @@ export function onPtyOutput(
   handler: (payload: PtyOutputPayload) => void,
 ): Promise<UnlistenFn> {
   return listen<PtyOutputPayload>("pty-output", (e) => handler(e.payload));
+}
+
+export function onPtyExit(
+  handler: (payload: PtyExitPayload) => void,
+): Promise<UnlistenFn> {
+  return listen<PtyExitPayload>("pty-exit", (e) => handler(e.payload));
 }
