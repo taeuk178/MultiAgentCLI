@@ -42,7 +42,11 @@ function ContextMenu({
 
   const menuItem = (label: string, onClick: () => void, danger = false) => (
     <button
-      onClick={() => { onClick(); onClose(); }}
+      className={danger ? "context-menu-item is-danger" : "context-menu-item"}
+      onClick={() => {
+        onClick();
+        onClose();
+      }}
       style={{
         display: "flex",
         alignItems: "center",
@@ -59,13 +63,6 @@ function ContextMenu({
         transition: "background 80ms",
         border: "none",
       }}
-      onMouseEnter={(e) =>
-        ((e.currentTarget as HTMLElement).style.background =
-          danger ? "rgba(255,95,87,0.1)" : "rgba(255,255,255,0.06)")
-      }
-      onMouseLeave={(e) =>
-        ((e.currentTarget as HTMLElement).style.background = "transparent")
-      }
     >
       {label}
     </button>
@@ -167,6 +164,7 @@ export function Sidebar({
           const isActive = conv.id === activeId;
           return (
             <div
+              className={isActive ? "conversation-row is-active" : "conversation-row"}
               key={conv.id}
               role="button"
               tabIndex={0}
@@ -184,21 +182,7 @@ export function Sidebar({
                 padding: "7px 10px 8px",
                 borderRadius: 6,
                 cursor: "pointer",
-                background: isActive ? "var(--bg-row-active)" : "transparent",
                 transition: "background 100ms",
-              }}
-              onMouseEnter={(e) => {
-                if (!isActive)
-                  (e.currentTarget as HTMLElement).style.background =
-                    "var(--bg-row-hover)";
-                const btn = e.currentTarget.querySelector<HTMLElement>(".delete-x");
-                if (btn) btn.style.display = "flex";
-              }}
-              onMouseLeave={(e) => {
-                if (!isActive)
-                  (e.currentTarget as HTMLElement).style.background = "transparent";
-                const btn = e.currentTarget.querySelector<HTMLElement>(".delete-x");
-                if (btn) btn.style.display = "none";
               }}
             >
               {/* Title row */}
@@ -267,21 +251,12 @@ export function Sidebar({
                   width: 18,
                   height: 18,
                   borderRadius: 4,
-                  display: "none",
+                  display: "flex",
                   alignItems: "center",
                   justifyContent: "center",
                   color: "var(--fg-dim)",
                   background: "transparent",
                   cursor: "pointer",
-                }}
-                onMouseEnter={(e) => {
-                  (e.currentTarget as HTMLElement).style.background =
-                    "rgba(255,255,255,0.08)";
-                  (e.currentTarget as HTMLElement).style.color = "var(--fg)";
-                }}
-                onMouseLeave={(e) => {
-                  (e.currentTarget as HTMLElement).style.background = "transparent";
-                  (e.currentTarget as HTMLElement).style.color = "var(--fg-dim)";
                 }}
               >
                 <IconX size={11} />
@@ -302,6 +277,7 @@ export function Sidebar({
         }}
       >
         <button
+          className="primary-button"
           onClick={onNew}
           style={{
             display: "flex",
@@ -320,12 +296,6 @@ export function Sidebar({
             boxShadow:
               "0 1px 0 rgba(255,255,255,0.15) inset, 0 1px 2px rgba(0,0,0,0.3)",
           }}
-          onMouseEnter={(e) =>
-            ((e.currentTarget as HTMLElement).style.background = "#6f9cf2")
-          }
-          onMouseLeave={(e) =>
-            ((e.currentTarget as HTMLElement).style.background = "var(--accent)")
-          }
         >
           <IconPlus size={13} />
           <span>New Chat</span>

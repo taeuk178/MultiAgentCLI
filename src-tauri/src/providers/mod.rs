@@ -21,11 +21,21 @@ pub enum ProviderId {
     Gemini,
 }
 
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "lowercase")]
+#[allow(dead_code)]
+pub enum HealthStatus {
+    Healthy,
+    Error,
+    Unknown,
+    Disabled,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderRuntimeStatus {
     provider_id: ProviderId,
-    health: String,
+    health: HealthStatus,
     model: String,
     context_used_percent: Option<u8>,
     five_hour_percent: Option<u8>,
@@ -106,7 +116,11 @@ pub fn runtime_statuses() -> Vec<ProviderRuntimeStatus> {
                 five_hour_percent: usage.five_hour_percent,
                 five_hour_reset_seconds: usage.five_hour_reset_seconds,
                 provider_id: provider,
-                health: if healthy { "healthy" } else { "error" }.to_string(),
+                health: if healthy {
+                    HealthStatus::Healthy
+                } else {
+                    HealthStatus::Error
+                },
             }
         })
         .collect()

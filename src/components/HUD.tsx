@@ -64,6 +64,7 @@ function HUDCard({
 
   return (
     <button
+      className={active ? "hud-card is-active" : "hud-card"}
       onClick={onClick}
       disabled={disabled}
       style={{
@@ -84,15 +85,6 @@ function HUDCard({
         color: "inherit",
         minWidth: 0,
         ...activeBorderStyle,
-      }}
-      onMouseEnter={(e) => {
-        if (disabled) return;
-        (e.currentTarget as HTMLElement).style.background = "var(--bg-card-hi)";
-      }}
-      onMouseLeave={(e) => {
-        (e.currentTarget as HTMLElement).style.background = active
-          ? "var(--bg-card-hi)"
-          : "var(--bg-card)";
       }}
     >
       {/* Header row */}

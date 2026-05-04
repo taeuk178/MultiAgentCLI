@@ -72,6 +72,7 @@ export function AdvisorPopover({ advisor, provider, disabled, onChange }: Props)
     <div ref={ref} style={{ position: "relative" }}>
       {/* Trigger button */}
       <button
+        className="advisor-trigger"
         onClick={() => !disabled && setOpen((v) => !v)}
         disabled={disabled}
         style={{
@@ -90,15 +91,6 @@ export function AdvisorPopover({ advisor, provider, disabled, onChange }: Props)
           opacity: disabled ? 0.45 : 1,
           transition: "background 120ms, border-color 120ms",
           whiteSpace: "nowrap",
-        }}
-        onMouseEnter={(e) => {
-          if (disabled) return;
-          (e.currentTarget as HTMLElement).style.background = "var(--bg-card-hi)";
-          (e.currentTarget as HTMLElement).style.borderColor = "var(--border-strong)";
-        }}
-        onMouseLeave={(e) => {
-          (e.currentTarget as HTMLElement).style.background = "var(--bg-card)";
-          (e.currentTarget as HTMLElement).style.borderColor = "var(--border)";
         }}
       >
         {/* LED */}
@@ -195,6 +187,7 @@ export function AdvisorPopover({ advisor, provider, disabled, onChange }: Props)
                   const selected = advisor === p;
                   return (
                     <button
+                      className={selected ? "advisor-pick is-selected" : "advisor-pick"}
                       key={p}
                       onClick={() => onChange(p)}
                       style={{
@@ -214,16 +207,6 @@ export function AdvisorPopover({ advisor, provider, disabled, onChange }: Props)
                         textAlign: "left",
                         cursor: "pointer",
                         transition: "all 120ms",
-                      }}
-                      onMouseEnter={(e) => {
-                        if (!selected)
-                          (e.currentTarget as HTMLElement).style.background =
-                            "var(--bg-card-hi)";
-                      }}
-                      onMouseLeave={(e) => {
-                        if (!selected)
-                          (e.currentTarget as HTMLElement).style.background =
-                            "var(--bg-card)";
                       }}
                     >
                       <ProviderDot providerId={p} size={8} />

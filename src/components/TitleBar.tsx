@@ -108,16 +108,9 @@ function HealthPill({
           zIndex: 100,
           boxShadow: "0 6px 16px rgba(0,0,0,0.4)",
         }}
-        onMouseEnter={(e) => {
-          (e.currentTarget as HTMLElement).style.opacity = "1";
-        }}
       >
         {TOOLTIP[provider]}
       </span>
-
-      <style>{`
-        .health-pill-wrap:hover .health-tip { opacity: 1 !important; }
-      `}</style>
     </div>
   );
 }

@@ -71,6 +71,87 @@ button {
   color: inherit;
 }
 
+/* ── Shared component states ───────────────────────── */
+.ui-ghost-button:not(:disabled):hover {
+  background: rgba(255, 255, 255, 0.04) !important;
+}
+
+.ui-icon-button:not(:disabled):hover {
+  background: rgba(255, 255, 255, 0.06) !important;
+  color: var(--fg) !important;
+}
+
+.ui-icon-button.is-active {
+  background: rgba(255, 255, 255, 0.08) !important;
+  color: var(--fg) !important;
+}
+
+.primary-button:not(:disabled):hover {
+  background: #6f9cf2 !important;
+}
+
+.composer-box:focus-within {
+  border-color: var(--accent) !important;
+  box-shadow: 0 0 0 3px rgba(91, 141, 239, 0.18);
+}
+
+.health-pill-wrap:hover .health-tip {
+  opacity: 1 !important;
+}
+
+.context-menu-item:hover {
+  background: rgba(255, 255, 255, 0.06) !important;
+}
+
+.context-menu-item.is-danger:hover {
+  background: rgba(255, 95, 87, 0.1) !important;
+}
+
+.conversation-row {
+  background: transparent;
+}
+
+.conversation-row.is-active {
+  background: var(--bg-row-active);
+}
+
+.conversation-row:not(.is-active):hover {
+  background: var(--bg-row-hover);
+}
+
+.conversation-row .delete-x {
+  opacity: 0;
+  pointer-events: none;
+  transition: background 120ms, color 120ms, opacity 100ms;
+}
+
+.conversation-row:hover .delete-x {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.delete-x:hover {
+  background: rgba(255, 255, 255, 0.08) !important;
+  color: var(--fg) !important;
+}
+
+.hud-card:not(:disabled):hover {
+  background: var(--bg-card-hi) !important;
+}
+
+.hud-card.is-active {
+  background: var(--bg-card-hi) !important;
+}
+
+.advisor-trigger:not(:disabled):hover {
+  background: var(--bg-card-hi) !important;
+  border-color: var(--border-strong) !important;
+}
+
+.advisor-pick:not(.is-selected):hover {
+  background: var(--bg-card-hi) !important;
+}
+
 /* ── Scrollbars ────────────────────────────────────── */
 ::-webkit-scrollbar {
   width: 10px;

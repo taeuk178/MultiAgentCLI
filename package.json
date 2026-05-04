@@ -4,8 +4,9 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "generate:types": "node scripts/generate-provider-types.mjs",
     "dev": "vite",
-    "build": "tsc && vite build",
+    "build": "pnpm generate:types && tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri"
   },

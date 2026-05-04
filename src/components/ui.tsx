@@ -52,6 +52,7 @@ interface GhostButtonProps {
   disabled?: boolean;
   title?: string;
   style?: CSSProperties;
+  className?: string;
 }
 
 export function GhostButton({
@@ -60,9 +61,11 @@ export function GhostButton({
   disabled,
   title,
   style,
+  className,
 }: GhostButtonProps) {
   return (
     <button
+      className={["ui-ghost-button", className].filter(Boolean).join(" ")}
       onClick={onClick}
       disabled={disabled}
       title={title}
@@ -85,13 +88,6 @@ export function GhostButton({
         fontFamily: "var(--ui)",
         ...style,
       }}
-      onMouseEnter={(e) => {
-        if (disabled) return;
-        e.currentTarget.style.background = "rgba(255,255,255,0.04)";
-      }}
-      onMouseLeave={(e) => {
-        e.currentTarget.style.background = "transparent";
-      }}
     >
       {children}
     </button>
@@ -106,6 +102,7 @@ interface IconButtonProps {
   onClick?: () => void;
   size?: number;
   style?: CSSProperties;
+  className?: string;
 }
 
 export function IconButton({
@@ -116,9 +113,15 @@ export function IconButton({
   onClick,
   size = 28,
   style,
+  className,
 }: IconButtonProps) {
   return (
     <button
+      className={[
+        "ui-icon-button",
+        active ? "is-active" : "",
+        className,
+      ].filter(Boolean).join(" ")}
       onClick={onClick}
       disabled={disabled}
       title={title}
@@ -137,17 +140,6 @@ export function IconButton({
         transition: "all 120ms",
         flexShrink: 0,
         ...style,
-      }}
-      onMouseEnter={(e) => {
-        if (disabled) return;
-        e.currentTarget.style.background = "rgba(255,255,255,0.06)";
-        e.currentTarget.style.color = "var(--fg)";
-      }}
-      onMouseLeave={(e) => {
-        e.currentTarget.style.background = active
-          ? "rgba(255,255,255,0.08)"
-          : "transparent";
-        e.currentTarget.style.color = active ? "var(--fg)" : "var(--fg-dim)";
       }}
     >
       {children}

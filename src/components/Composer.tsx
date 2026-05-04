@@ -141,6 +141,7 @@ export function Composer({
             </button>
           ) : (
             <button
+              className="primary-button"
               onClick={onSend}
               disabled={!value.trim() || disabled}
               style={{
@@ -162,13 +163,6 @@ export function Composer({
                 transition: "background 120ms",
                 fontFamily: "var(--ui)",
               }}
-              onMouseEnter={(e) => {
-                if (!value.trim() || disabled) return;
-                (e.currentTarget as HTMLElement).style.background = "#6f9cf2";
-              }}
-              onMouseLeave={(e) => {
-                (e.currentTarget as HTMLElement).style.background = "var(--accent)";
-              }}
             >
               <IconSend size={13} />
               <span>Send</span>
@@ -176,14 +170,6 @@ export function Composer({
           )}
         </div>
       </div>
-
-      {/* Focus-within style via a global scoped rule */}
-      <style>{`
-        .composer-box:focus-within {
-          border-color: var(--accent) !important;
-          box-shadow: 0 0 0 3px rgba(91,141,239,0.18);
-        }
-      `}</style>
     </div>
   );
 }

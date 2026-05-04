@@ -1,8 +1,15 @@
-export type HealthStatus = "healthy" | "error" | "unknown" | "disabled";
+import type {
+  HealthStatus,
+  ProviderId,
+  ProviderRuntimeStatus,
+} from "./generated/providerTypes";
+
+export type { HealthStatus, ProviderId, ProviderRuntimeStatus };
+
 export type ChatRole = "user" | "provider";
 
 export interface ProviderInfo {
-  id: string;
+  id: ProviderId;
   label: string;
   glyph: string;
   color: string;
@@ -43,20 +50,9 @@ export const PROVIDERS = {
     supportsResume: false,
     hasShellAuth: false,
   },
-} as const satisfies Record<string, ProviderInfo>;
-
-export type ProviderId = keyof typeof PROVIDERS;
+} as const satisfies Record<ProviderId, ProviderInfo>;
 
 export const PROVIDER_IDS = Object.keys(PROVIDERS) as ProviderId[];
-
-export interface ProviderRuntimeStatus {
-  providerId: ProviderId;
-  health: HealthStatus;
-  model: string;
-  contextUsedPercent: number | null;
-  fiveHourPercent: number | null;
-  fiveHourResetSeconds: number | null;
-}
 
 export interface SessionInfo {
   id: string;
