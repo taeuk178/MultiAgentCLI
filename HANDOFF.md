@@ -32,9 +32,10 @@
 ### HUD (statusline)
 
 - `skills/hud/SKILL.md`
-- `scripts/multiagent/hud.sh` — Claude Code stdin의 `rate_limits.{five_hour,seven_day}.used_percentage`, `context_window.used_percentage`를 직접 읽어 5h/wk/ctx 표시. skill/agent 수는 `~/.claude/plugins/cache` 트리에서 카운트.
+- `scripts/multiagent/hud.sh` — Claude Code stdin에서 `rate_limits.{five_hour,seven_day}` 의 `used_percentage`와 `resets_at`(Unix epoch 초)을 읽어 `5h: 25% (1h 49m)`, `wk: 3% (1d 9h)` 형태로 잔여 시간까지 표시. day=0일 땐 `1h 22m`으로 자동 폴백, day=h=0이면 `22m`.
+- skills/agents 수는 `~/.claude/settings.json`의 `enabledPlugins`만 필터링해 `<repo>/<plugin>/<ver>/skills/*/SKILL.md`와 `agents/*.md`만 카운트(사용자/프로젝트 scope 포함, realpath 중복 제거). 비활성 플러그인은 cache에 있어도 무시.
 - `scripts/multiagent/hud-setup.sh` — `~/.claude/settings.json`의 `statusLine`을 multiagent HUD로 교체하고 이전 값을 `~/.claude/multiagent/previous-statusline.json`에 백업. minimal/focused/full layout 전환 지원.
-- 검증된 동작: 3개 layout 모두 정상 출력. 단, install/uninstall은 현재 OMC HUD가 활성 상태라 사용자 동의 후 진행.
+- 검증된 동작: 3개 layout 모두 정상 출력, 실제 stdin 페이로드(`rate_limits.*.resets_at`)와 epoch 환산값을 교차 검증. install/uninstall은 OMC HUD 활성 시 사용자 동의 후 진행.
 
 ### 플러그인 설치
 
@@ -148,6 +149,9 @@ HANDOFF.md                 이 문서
 ## 커밋 히스토리 (claude-plugin 브랜치)
 
 ```
+8f15837 HANDOFF에 HUD 스킬 완료 내역 반영
+d9fc100 multiagent HUD 스킬과 statusline 스크립트 추가
+89d7297 다음 세션 픽업용 HANDOFF 문서 추가
 736b55e Claude Code plugin 골격 추가
 5ba9034 LoadMap을 Claude Code plugin 방향으로 재정의
 ```
