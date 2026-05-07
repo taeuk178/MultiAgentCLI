@@ -2,46 +2,7 @@
 
 다음 세션에서 이어서 작업할 때 참고하는 문서입니다. 작성 시점: 2026-05-07.
 
-## 완료된 부분
-
-### Phase 1. Memory 저장소
-
-- `scripts/multiagent/lib/schema.sql` — SQLite 스키마 (projects, conversations, events, memory_chunks, provider_runs, FTS5 triggers)
-- `scripts/multiagent/lib/common.sh` — DB 헬퍼, project_root/project_id, 로깅
-- `scripts/multiagent/session-start.sh` — 스키마 idempotent 적용, 프로젝트 row upsert
-- 데이터 위치: `~/.claude/multiagent/app.sqlite`, `~/.claude/multiagent/plugin.log`
-
-### Phase 2. Hook 통합
-
-- `scripts/multiagent/user-prompt-submit.sh` — 입력을 events에 저장, pinned + recent 청크를 `[Project memory context]` 블록으로 stdout 출력
-- `scripts/multiagent/stop.sh` — `transcript_path`에서 마지막 assistant 응답 추출 후 events에 저장 (현재는 청크 추출 없이 raw 저장만)
-- `hooks/hooks.json` — UserPromptSubmit, Stop, SessionStart 등록
-
-### Phase 3 (부분). Memory skill
-
-- `skills/memory/SKILL.md`
-- `scripts/multiagent/memory.sh` — search, remember, inject, pin, unpin, list, forget 동작
-- 검증된 동작: remember/list/search/pin
-
-### Phase 4 (부분). Advisor skill 골격
-
-- `skills/advisor/SKILL.md`
-- `scripts/multiagent/advisor.sh` — codex/gemini/ccg dispatcher 작성, provider_runs 저장 로직 포함
-- 미검증: 실제 `codex exec`, `gemini -p`, `claude -p` 호출이 OAuth 구독으로 정상 동작하는지 end-to-end 확인 필요
-
-### HUD (statusline)
-
-- `skills/hud/SKILL.md`
-- `scripts/multiagent/hud.sh` — Claude Code stdin에서 `rate_limits.{five_hour,seven_day}` 의 `used_percentage`와 `resets_at`(Unix epoch 초)을 읽어 `5h: 25% (1h 49m)`, `wk: 3% (1d 9h)` 형태로 잔여 시간까지 표시. day=0일 땐 `1h 22m`으로 자동 폴백, day=h=0이면 `22m`.
-- skills/agents 수는 `~/.claude/settings.json`의 `enabledPlugins`만 필터링해 `<repo>/<plugin>/<ver>/skills/*/SKILL.md`와 `agents/*.md`만 카운트(사용자/프로젝트 scope 포함, realpath 중복 제거). 비활성 플러그인은 cache에 있어도 무시.
-- `scripts/multiagent/hud-setup.sh` — `~/.claude/settings.json`의 `statusLine`을 multiagent HUD로 교체하고 이전 값을 `~/.claude/multiagent/previous-statusline.json`에 백업. minimal/focused/full layout 전환 지원.
-- 검증된 동작: 3개 layout 모두 정상 출력, 실제 stdin 페이로드(`rate_limits.*.resets_at`)와 epoch 환산값을 교차 검증. install/uninstall은 OMC HUD 활성 시 사용자 동의 후 진행.
-
-### 플러그인 설치
-
-- `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json` 작성
-- `claude plugin marketplace add <repo>` + `claude plugin install multiagent@multiagent`로 user scope 설치 검증 완료
-- 설치 후 enabled 상태 확인됨
+> 완료된 Phase 1·2·3(부분)·4(부분)·HUD·플러그인 설치 항목은 README.md에 반영되어 본 문서에서는 제거함. 구현된 내용은 README의 사용/구조/데이터 위치 섹션 참조.
 
 ## 남은 작업
 
@@ -106,6 +67,22 @@
 - 제거 대상: `src/`, `src-tauri/`, `dist/`, `node_modules/`, `index.html`, `vite.config.ts`, `tsconfig*.json`, `package.json`, `pnpm-lock.yaml`, `scripts/generate-provider-types.mjs`.
 - 문서 갱신: `README.md`, `CLAUDE.md`, `LoadMap.md`를 plugin 기준으로 재작성하고 `.gitignore`에서 Tauri/Node 관련 라인 제거.
 - Dev PTY 모드가 필요한 사용자는 SwiftUI 버전 `MultiAgentCLI`를 사용하도록 안내.
+
+## 공존하는 외부 plugin: oh-my-claudecode (omc)
+
+본 multiagent plugin과 별개로 **`oh-my-claudecode` (omc) plugin**이 동일 Claude Code 환경에 설치되어 있을 수 있고, 자체 메모리 시스템을 운영함. 두 plugin이 각자 메모리 저장소를 갖는 구조이므로 충돌·중복 주입 가능성에 유의.
+
+- **저장 위치**: `<project>/.omc/project-memory.json` (per-project, JSON)
+  - vs multiagent: `~/.claude/multiagent/app.sqlite` (per-user, SQLite + FTS5)
+- **주입 시점**: omc의 `project-memory-session.mjs` hook이 SessionStart에서 별도 컨텍스트로 prepend (multiagent의 `[Project memory context]` 블록과는 별개 채널)
+- **자동 갱신**: omc의 `project-memory-posttool.mjs` (PostToolUse)가 Read/Write/Edit/Bash 후 `hotPaths`, `lastAccessed` 등 자동 누적 / `project-memory-precompact.mjs`(PreCompact)가 압축 직전 보존
+- **저장 데이터**:
+  - 자동 스캔: `techStack`, `build`, `conventions`, `directoryMap`, `hotPaths`
+  - 사용자 입력: `customNotes`(학습된 사실), `userDirectives`(작업 시 따라야 할 지시)
+- **MCP tool**: `project_memory_read` / `project_memory_write` / `project_memory_add_note` / `project_memory_add_directive`
+- **plugin 본체 위치**: `~/.claude/plugins/cache/omc/oh-my-claudecode/<ver>/`
+
+설계 시 고려사항 — 우리 plugin의 Memory 청크 주입과 omc의 project-memory 주입이 겹쳐 컨텍스트가 비대해질 수 있음. 향후 두 시스템을 결합하거나 사용자가 한쪽을 비활성화하도록 안내하는 옵션을 고려할 만함.
 
 ## 알려진 제약
 
