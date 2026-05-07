@@ -1,0 +1,18 @@
+{
+  "name": "multiagent",
+  "version": "0.1.0",
+  "description": "Local development memory system with Claude/Codex/Gemini advisor orchestration. OAuth subscription based, no API key required.",
+  "author": {
+    "name": "MultiAgentCLI contributors"
+  },
+  "license": "MIT",
+  "keywords": [
+    "claude-code",
+    "plugin",
+    "memory",
+    "advisor",
+    "multi-agent",
+    "ccg"
+  ],
+  "skills": "./skills/"
+}
