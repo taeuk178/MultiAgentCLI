@@ -1,65 +1,81 @@
-# multi-agent-cli-v2 — Claude 세션 가이드
+# multiagent — Claude 세션 가이드
 
 이 repo에서 동작하는 Claude 세션이 알아야 할 기본 프로토콜.
 
 ## 프로젝트 요지
 
-[`MultiAgentCLI`](../MultiAgentCLI)(SwiftUI)의 후속 버전. Claude, Codex, Gemini CLI를 단일 Tauri GUI에서 운용하고, provider 전환과 advisor orchestration을 제공한다.
+이 repo는 Claude Code plugin입니다. 로컬 작업 기억(SQLite + FTS5)과 advisor orchestration, statusline HUD를 hook·skill·subagent 형태로 제공합니다.
 
-현재 동작과 실행 방법은 `README.md`를 기준으로 한다.
+이전에는 [`MultiAgentCLI`](../MultiAgentCLI)(SwiftUI)의 후속으로 Tauri 데스크톱 앱(v2)을 청사진으로 잡았으나, **Tauri 방향은 폐기**하고 Claude Code plugin으로 전환했습니다. 본 repo에는 더 이상 Rust/React 코드가 없습니다.
+
+현재 동작과 설치 방법은 `README.md`, `INSTALL.md`, 방향성은 `LoadMap.md`를 기준으로 합니다.
 
 ## Stack
 
-- **Tauri 2**: Rust core + WebView (macOS는 WKWebView). macOS sandbox는 v1처럼 OFF로 시작 — 외부 CLI를 spawn해야 하기 때문.
-- **Provider runner**: Rust backend가 `claude`, `codex`, `gemini` CLI를 비대화형 명령으로 실행하고 결과를 Tauri IPC로 반환한다.
-- **portable-pty (Rust crate)**: 인터랙티브 터미널 세션을 위한 기반 코드. 세션 생성·입출력·resize IPC가 준비되어 있다.
-- **xterm.js**: 프런트엔드 터미널 위젯. 현재 채팅 UI와 별도로 `TerminalPane`에서 사용한다.
-- **React + Vite + TS + Tailwind**: 프런트 SPA.
+- **Plugin manifest**: `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`
+- **Hooks (Bash)**: `hooks/hooks.json`이 `SessionStart`, `UserPromptSubmit`, `Stop`을 `scripts/multiagent/*.sh`에 연결
+- **Skills**: `skills/{memory,advisor,hud}/SKILL.md` — Claude가 필요할 때 dispatcher 스크립트를 호출
+- **데이터**: `~/.claude/multiagent/app.sqlite` (FTS5 포함), `~/.claude/multiagent/plugin.log`
+- **Statusline**: `scripts/multiagent/hud.sh`가 Claude Code stdin의 세션 JSON을 읽어 5h/wk/ctx + 잔여 시간과 활성 plugin의 skills/agents 수를 출력
+
+런타임 의존: `bash`, `python3`, `sqlite3`, `uuidgen`. provider 호출은 별도로 설치된 `claude`, `codex`, `gemini` CLI를 사용합니다.
+
+## 디렉토리 구조
+
+```
+multiagent/
+├── .claude-plugin/
+│   ├── plugin.json
+│   └── marketplace.json
+├── hooks/
+│   └── hooks.json
+├── skills/
+│   ├── memory/SKILL.md
+│   ├── advisor/SKILL.md
+│   └── hud/SKILL.md
+├── scripts/multiagent/
+│   ├── lib/
+│   │   ├── common.sh        DB·project·로그 헬퍼
+│   │   └── schema.sql       SQLite 스키마 (idempotent)
+│   ├── session-start.sh     SessionStart hook
+│   ├── user-prompt-submit.sh UserPromptSubmit hook
+│   ├── stop.sh              Stop hook
+│   ├── memory.sh            /memory dispatcher
+│   ├── advisor.sh           /advisor dispatcher
+│   ├── hud.sh               statusline body
+│   └── hud-setup.sh         statusLine install/status/uninstall/layout
+├── INSTALL.md
+├── LoadMap.md
+├── HANDOFF.md
+└── README.md
+```
 
 ## 코드·도구 관례
 
-### 디렉토리 구조
+### 순수 함수 + 결정적 로직 분리
 
-```
-multi-agent-cli-v2/
-├── src-tauri/        Rust backend (provider runner, PtyManager, IPC commands)
-│   ├── src/
-│   └── Cargo.toml
-├── src/              React frontend
-│   ├── components/   재사용 컴포넌트 (Sidebar, HUD, TerminalPane, Composer 등)
-│   ├── lib/          IPC wrapper, 도메인 타입, 순수 헬퍼
-│   ├── index.css     전역 CSS와 디자인 토큰
-│   └── App.tsx
-├── package.json
-└── vite.config.ts
-```
-
-### 순수 함수 + 독립 컴포넌트
-
-v1의 `coding-convention.md` 정신을 그대로 가져온다.
-- 결정적 로직(메타데이터 추출, prompt 합성, 외형 함수)은 순수 함수로 분리
-- 컴포넌트는 입력만 받아 그림을 그린다
-- 부작용(IPC 호출, 외부 CLI 실행, PTY 명령)은 가장자리(서비스 레이어)에 모은다
+- 결정적 로직(메모리 청크 추출, prompt 합성, 포맷 함수)은 가능하면 인라인 Python 또는 별도 헬퍼로 분리합니다.
+- 부작용(SQLite write, 외부 CLI 실행, 파일 I/O)은 dispatcher 스크립트의 가장자리에 모읍니다.
+- hook 스크립트는 절대 사용자 세션을 차단해서는 안 됩니다 — 실패 시에도 stdout은 항상 정상 흐름을 출력합니다.
 
 ### 커밋 메시지
 
 - **전부 한국어.** 제목과 본문 모두. Co-Authored-By 트레일러만 영어 유지.
 - 제목은 50자 이내, 본문은 "왜 그랬는지" 중심으로 2~4줄.
-- 기능 단위로 쪼개서 커밋. 포맷팅·리팩토링·기능 추가를 한 커밋에 섞지 않는다.
+- 기능 단위로 쪼개서 커밋. 포맷팅·리팩토링·기능 추가를 한 커밋에 섞지 않습니다.
 
-### 빌드·검증
+### 검증
 
-- `pnpm dev` — Vite dev server
-- `pnpm tauri dev` — Tauri dev 모드
-- `pnpm build` — TypeScript + Vite build
-- `pnpm tauri build` — 릴리즈 빌드 (macOS 배포 시 codesign·notarization 설정 필요)
+- 단위 검증은 가능한 한 hook을 직접 호출해 확인합니다 (예: `bash scripts/multiagent/hud.sh < sample.json`).
+- 통합 검증은 plugin을 user scope에 설치한 뒤 실제 Claude Code 세션에서 statusline·hook 동작을 확인합니다.
 
 ## 금지 사항
 
-- v1 SwiftUI 코드를 이 repo로 끌어오지 않는다. 도메인 로직만 TypeScript/Rust로 새로 작성한다.
-- macOS sandbox를 다시 켜지 않는다. 외부 프로세스 spawn이 막힌다.
-- frontend에서 claude/codex/gemini CLI를 직접 호출하지 말고 항상 backend IPC wrapper를 거친다.
+- v1 SwiftUI 코드, v2 Tauri 코드를 다시 끌어오지 않습니다. 이 repo는 Claude Code plugin 단일 책임을 가집니다.
+- hook이 사용자 세션을 끊는 식의 에러로 종료하지 않게 합니다 — 실패해도 silent fail + 로그.
+- 사용자/프로젝트의 `~/.claude` 설정을 동의 없이 직접 수정하지 않습니다 (HUD install 등은 명시적 사용자 액션을 거쳐야 함).
 
 ## 사용자 개입 지점
 
-- 패키징·notarization 관련 Apple Developer 계정 설정은 사용자 직접 단계.
+- 외부 CLI 인증 (Claude/Codex/Gemini OAuth) — 사용자 직접 단계.
+- statusLine 교체 시 기존 statusline 백업/복원 확인.

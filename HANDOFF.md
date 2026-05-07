@@ -102,10 +102,10 @@
 
 ### Tauri 앱 처리 결정
 
-- 신규 개발 중단 상태. Phase 5 이후 사용자 피드백을 보고 결정:
-  - 별도 repo로 분리해 PTY 전용 도구로 유지
-  - 폐기
-- 결정 보류 중. 본 repo에는 Tauri 코드(`src/`, `src-tauri/`)가 그대로 남아 있음.
+- **폐기 완료.** Tauri/React/Vite 관련 파일과 빌드 산출물을 본 repo에서 모두 삭제했고, plugin 단일 책임으로 재정의함.
+- 제거 대상: `src/`, `src-tauri/`, `dist/`, `node_modules/`, `index.html`, `vite.config.ts`, `tsconfig*.json`, `package.json`, `pnpm-lock.yaml`, `scripts/generate-provider-types.mjs`.
+- 문서 갱신: `README.md`, `CLAUDE.md`, `LoadMap.md`를 plugin 기준으로 재작성하고 `.gitignore`에서 Tauri/Node 관련 라인 제거.
+- Dev PTY 모드가 필요한 사용자는 SwiftUI 버전 `MultiAgentCLI`를 사용하도록 안내.
 
 ## 알려진 제약
 
@@ -149,6 +149,8 @@ HANDOFF.md                 이 문서
 ## 커밋 히스토리 (claude-plugin 브랜치)
 
 ```
+f75f39b HANDOFF에 HUD 개선과 최신 커밋 히스토리 반영
+b50cfa0 HUD에 잔여 시간 표시와 활성 플러그인 카운트 반영
 8f15837 HANDOFF에 HUD 스킬 완료 내역 반영
 d9fc100 multiagent HUD 스킬과 statusline 스크립트 추가
 89d7297 다음 세션 픽업용 HANDOFF 문서 추가

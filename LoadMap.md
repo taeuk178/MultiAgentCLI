@@ -327,18 +327,9 @@ GitHub repo (multiagent-skills)
 
 ## Tauri 앱 처리
 
-기존 Tauri 코드는 보존하지만 신규 개발은 중단합니다. 이미 동작하는 기능 중 plugin으로 재현하기 어려운 것은 다음과 같습니다.
+**폐기 완료.** 본 repo에서 Tauri/React/Vite 코드(`src/`, `src-tauri/`, `index.html`, `vite.config.ts`, `package.json`, `pnpm-lock.yaml`, `scripts/generate-provider-types.mjs` 등)와 빌드 산출물(`dist/`, `node_modules/`)을 모두 제거했습니다. 본 repo는 Claude Code plugin 단일 책임을 가집니다.
 
-- Dev PTY 모드 (xterm.js + portable-pty)
-
-이 기능이 본인 워크플로에 필수인 사용자에게는 Tauri 앱이 그대로 유효합니다. 신규 LoadMap 기능은 Tauri에 다시 포팅하지 않습니다.
-
-장기적으로 Tauri 앱은 다음 중 한 방향으로 갑니다.
-
-- 별도 repo로 분리해 PTY 전용 도구로 유지
-- 폐기
-
-이 결정은 Phase 5 이후 사용자 피드백을 보고 정합니다.
+Dev PTY 모드(xterm.js + portable-pty)가 본인 워크플로에 필수인 사용자는 이전 SwiftUI 버전 [`MultiAgentCLI`](../MultiAgentCLI)를 그대로 사용하면 됩니다. 신규 LoadMap 기능은 Tauri/SwiftUI 어느 쪽에도 포팅하지 않습니다.
 
 ## 위험 요소
 

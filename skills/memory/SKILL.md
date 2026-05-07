@@ -34,7 +34,7 @@ Project override:
 FTS5 search across memory chunks for the current project.
 
 ```bash
-multiagent memory search "Tauri PTY 한글 IME"
+multiagent memory search "advisor 합성 흐름"
 ```
 
 ### `/memory remember <text>`
