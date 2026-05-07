@@ -29,6 +29,13 @@
 - `scripts/multiagent/advisor.sh` — codex/gemini/ccg dispatcher 작성, provider_runs 저장 로직 포함
 - 미검증: 실제 `codex exec`, `gemini -p`, `claude -p` 호출이 OAuth 구독으로 정상 동작하는지 end-to-end 확인 필요
 
+### HUD (statusline)
+
+- `skills/hud/SKILL.md`
+- `scripts/multiagent/hud.sh` — Claude Code stdin의 `rate_limits.{five_hour,seven_day}.used_percentage`, `context_window.used_percentage`를 직접 읽어 5h/wk/ctx 표시. skill/agent 수는 `~/.claude/plugins/cache` 트리에서 카운트.
+- `scripts/multiagent/hud-setup.sh` — `~/.claude/settings.json`의 `statusLine`을 multiagent HUD로 교체하고 이전 값을 `~/.claude/multiagent/previous-statusline.json`에 백업. minimal/focused/full layout 전환 지원.
+- 검증된 동작: 3개 layout 모두 정상 출력. 단, install/uninstall은 현재 OMC HUD가 활성 상태라 사용자 동의 후 진행.
+
 ### 플러그인 설치
 
 - `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json` 작성
@@ -122,6 +129,7 @@ hooks/hooks.json           hook 등록
 skills/
   memory/SKILL.md
   advisor/SKILL.md
+  hud/SKILL.md
 scripts/multiagent/
   lib/common.sh            DB·project·로그 헬퍼
   lib/schema.sql           SQLite 스키마 (idempotent)
@@ -130,6 +138,8 @@ scripts/multiagent/
   stop.sh                  Stop hook
   memory.sh                /memory dispatcher
   advisor.sh               /advisor dispatcher
+  hud.sh                   statusline body
+  hud-setup.sh             statusLine install/status/uninstall/layout
 INSTALL.md                 설치 가이드
 LoadMap.md                 방향성·로드맵
 HANDOFF.md                 이 문서
