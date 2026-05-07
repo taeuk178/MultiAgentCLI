@@ -1,37 +1,96 @@
 #!/bin/bash
-# SessionStart hook: ensure DB exists and schema is current.
-# Output: nothing (hook runs silently unless errors).
+# SessionStart hook:
+#   1) ensure DB exists and schema is current
+#   2) seed <project>/.multiagent/ with editable defaults (soul.md, UserPromptSubmit.md)
+#      from plugin defaults — never overwriting user edits
+#   3) emit soul.md content to stdout so it gets prepended to the session context
+#
+# Output: stdout is appended to the session context. stderr is silent.
 
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib/common.sh"
 
+PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+DEFAULTS_DIR="$PLUGIN_ROOT/prompts/defaults"
+
 ensure_home
 
-if ! command -v sqlite3 >/dev/null 2>&1; then
-  log_error "sqlite3 not found in PATH"
-  exit 0
+# --- 1. SQLite schema -------------------------------------------------------
+
+if command -v sqlite3 >/dev/null 2>&1; then
+  # Suppress stdout (PRAGMA results etc) — SessionStart's stdout becomes
+  # session context, so any stray output would pollute the model input.
+  sqlite3 "$MULTIAGENT_DB" < "$SCRIPT_DIR/lib/schema.sql" >/dev/null 2>>"$MULTIAGENT_LOG" \
+    || log_error "schema apply failed"
+
+  ROOT=$(project_root)
+  PID=$(project_id)
+  NAME=$(basename "$ROOT")
+  NOW=$(now_iso)
+  ESC_ROOT=$(sql_escape "$ROOT")
+  ESC_NAME=$(sql_escape "$NAME")
+  db_exec "
+    INSERT INTO projects (id, root_path, name, created_at, updated_at)
+    VALUES ('$PID', '$ESC_ROOT', '$ESC_NAME', '$NOW', '$NOW')
+    ON CONFLICT(root_path) DO UPDATE SET updated_at = excluded.updated_at;
+  " >/dev/null 2>>"$MULTIAGENT_LOG" || log_error "project upsert failed"
+else
+  log_error "sqlite3 not found in PATH; skipping DB setup"
+  ROOT=$(project_root)
 fi
 
-sqlite3 "$MULTIAGENT_DB" < "$SCRIPT_DIR/lib/schema.sql" 2>>"$MULTIAGENT_LOG" || {
-  log_error "schema apply failed"
-  exit 0
-}
+# --- 2. Seed <project>/.multiagent/ -----------------------------------------
+# Skipped when MULTIAGENT_NO_SEED=1 so users can opt out per-shell or per-project.
 
-# Upsert the current project row.
-ROOT=$(project_root)
-PID=$(project_id)
-NAME=$(basename "$ROOT")
-NOW=$(now_iso)
+if [[ "${MULTIAGENT_NO_SEED:-0}" != "1" && -d "$DEFAULTS_DIR" ]]; then
+  MA_DIR="$ROOT/.multiagent"
+  mkdir -p "$MA_DIR" 2>/dev/null || true
 
-ESC_ROOT=$(sql_escape "$ROOT")
-ESC_NAME=$(sql_escape "$NAME")
+  # Top-level configs: soul.md, UserPromptSubmit.md
+  for fname in soul.md UserPromptSubmit.md; do
+    src="$DEFAULTS_DIR/$fname"
+    dst="$MA_DIR/$fname"
+    if [[ -f "$src" && ! -e "$dst" ]]; then
+      cp "$src" "$dst" 2>>"$MULTIAGENT_LOG" \
+        && log_info "seeded $dst from defaults" \
+        || log_error "failed to seed $dst"
+    fi
+  done
 
-db_exec "
-  INSERT INTO projects (id, root_path, name, created_at, updated_at)
-  VALUES ('$PID', '$ESC_ROOT', '$ESC_NAME', '$NOW', '$NOW')
-  ON CONFLICT(root_path) DO UPDATE SET updated_at = excluded.updated_at;
-" || log_error "project upsert failed"
+  # Hook reference docs: prompts/defaults/hooks/*.md
+  if [[ -d "$DEFAULTS_DIR/hooks" ]]; then
+    mkdir -p "$MA_DIR/hooks" 2>/dev/null || true
+    for src in "$DEFAULTS_DIR"/hooks/*.md; do
+      [[ -f "$src" ]] || continue
+      fname=$(basename "$src")
+      dst="$MA_DIR/hooks/$fname"
+      if [[ ! -e "$dst" ]]; then
+        cp "$src" "$dst" 2>>"$MULTIAGENT_LOG" \
+          && log_info "seeded $dst from defaults" \
+          || log_error "failed to seed $dst"
+      fi
+    done
+  fi
+fi
 
-log_info "session-start ok project=$PID root=$ROOT"
+# --- 3. Emit soul.md as session-context prepend -----------------------------
+# Order of preference:
+#   <project>/.multiagent/soul.md   (user-editable, project-local)
+#   $DEFAULTS_DIR/soul.md           (plugin default fallback)
+
+SOUL=""
+if [[ -f "$ROOT/.multiagent/soul.md" ]]; then
+  SOUL="$ROOT/.multiagent/soul.md"
+elif [[ -f "$DEFAULTS_DIR/soul.md" ]]; then
+  SOUL="$DEFAULTS_DIR/soul.md"
+fi
+
+if [[ -n "$SOUL" ]]; then
+  printf '\n[multiagent soul — %s]\n' "$(basename "$SOUL")"
+  cat "$SOUL"
+  printf '\n'
+fi
+
+log_info "session-start ok project=${PID:-unknown} root=$ROOT soul=${SOUL:-none}"
 exit 0
