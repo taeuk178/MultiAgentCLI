@@ -1,373 +1,415 @@
 # MultiAgentCLI Load Map
 
-이 문서는 MultiAgentCLI를 단순한 멀티 CLI 실행기가 아니라, 로컬 개발 작업 기억 시스템으로 확장하기 위한 방향성을 정리합니다.
+이 문서는 MultiAgentCLI의 방향을 **Claude Code plugin**으로 재정의합니다. 기존 Tauri 데스크톱 앱 청사진을 폐기하고, Claude Code의 hook·skill·subagent 시스템 위에 로컬 개발 작업 기억 시스템을 구축합니다.
 
-## 핵심 방향
+## 방향 전환 요약
 
-MultiAgentCLI는 사용자의 입력과 provider의 출력을 모두 관찰할 수 있는 위치에 있습니다.
+| 항목 | 이전 (Tauri 앱) | 현재 (Claude Code plugin) |
+| --- | --- | --- |
+| 실행 환경 | macOS 데스크톱 앱 | Claude Code 세션 안 |
+| LLM 호출 | provider CLI 비대화형 실행 | Claude Code 본체 + hook이 보강 |
+| 인증 | provider별 CLI 인증 | OAuth 구독 그대로 사용 |
+| Advisor | 앱 내 prompt orchestration | `claude -p`, `codex exec`, `gemini -p` hook 호출 |
+| Memory | 앱 SQLite | `~/.claude/multiagent/` SQLite + 마크다운 |
+| UI | React + Tailwind 데스크톱 창 | Claude Code 세션 (skill 출력, hook 컨텍스트) |
+| Dev PTY 모드 | xterm.js 기반 인터랙티브 터미널 | 폐기 (Claude Code가 대신함) |
+| 스킬 공유 | 앱 내장 | GitHub 기반 레지스트리 (OMC 패턴) |
+
+## 핵심 가치
+
+Claude Code 세션은 LLM 호출의 **prefill 단계**와 **응답 종료 단계**에 hook을 걸 수 있습니다. 이 위치는 MultiAgentCLI가 원래 노리던 "I/O 경계"와 정확히 같습니다.
 
 ```text
-User input
-  -> MultiAgentCLI
-  -> Claude / Codex / Gemini
-  -> MultiAgentCLI
-  -> User output
+유저 입력
+  -> UserPromptSubmit hook
+       memory 조회, 질문 보강, 컨텍스트 주입
+  -> Claude Code (OAuth 구독으로 LLM 호출)
+  -> 응답
+  -> Stop hook
+       응답에서 decision/error/fix 추출, memory 저장
+  -> 유저 표시
 ```
 
-이 I/O 경계에 있기 때문에 앱은 대화, PTY 입력, PTY 출력, provider 응답, 프로젝트 경로, 실행 시점, 작업 결과를 로컬에 저장할 수 있습니다. 이 저장 데이터는 이후 검색, 요약, 재개, provider 간 맥락 공유, prompt context injection에 사용할 수 있습니다.
+API key 없이 구독 인증만으로 동작합니다. Hook 안에서 추가 LLM 호출이 필요하면 `claude -p`, `codex exec`, `gemini -p`를 그대로 씁니다.
 
 ## 해결하려는 문제
 
 ### 1. 작업 재개 비용
 
-개발 작업은 보통 하루 안에 끝나지 않습니다. 며칠 뒤 다시 열었을 때 다음 정보가 필요합니다.
-
-- 어디까지 진행했는지
-- 어떤 접근이 실패했는지
-- 어떤 테스트가 통과했는지
-- 어떤 파일을 수정했는지
-- 남은 TODO가 무엇인지
-
-I/O를 저장하면 앱이 프로젝트별 작업 요약을 만들고, 다음 세션 시작 시 이어서 작업할 수 있는 상태를 제공할 수 있습니다.
+며칠 만에 다시 연 프로젝트의 진행 상황·실패한 접근·통과한 테스트·남은 TODO를 Claude Code 세션 시작 시점에 자동 주입합니다. UserPromptSubmit hook이 첫 입력 직전에 프로젝트별 최근 memory를 컨텍스트로 넣습니다.
 
 ### 2. Provider 간 맥락 단절
 
-Claude, Codex, Gemini는 서로의 대화를 모릅니다. 사용자는 provider를 바꿀 때마다 같은 설명을 반복해야 합니다.
-
-로컬 memory가 있으면 앱이 provider와 무관한 project memory를 유지할 수 있습니다.
-
-```text
-Claude에서 논의한 설계 결정
-Codex가 수정한 코드 요약
-Gemini가 지적한 리뷰 포인트
-  -> 같은 project memory로 통합
-```
-
-이렇게 하면 provider를 전환해도 필요한 맥락을 다시 설명하는 비용을 줄일 수 있습니다.
+Claude/Codex/Gemini를 같은 SQLite memory에 누적합니다. Claude Code 세션 안에서 `codex exec` 또는 `gemini -p`를 hook이 호출하면, 결과를 같은 memory에 저장합니다. 다음 provider 전환 시점에 그 memory가 컨텍스트로 주입됩니다.
 
 ### 3. 반복 설명
 
-프로젝트에는 매번 설명해야 하는 배경이 있습니다.
-
-- 기술 스택
-- 폴더 구조
-- 검증 명령
-- 코딩 규칙
-- 설계상 주의점
-- 현재 미해결 이슈
-
-이런 정보는 conversation마다 새로 입력하기보다 project memory에서 가져와 prompt에 자동 또는 수동으로 넣는 편이 효율적입니다.
+기술 스택·폴더 구조·검증 명령·코딩 규칙·미해결 이슈를 project memory에서 끌어옵니다. UserPromptSubmit hook이 프로젝트 경로 기준으로 자동 주입.
 
 ### 4. 과거 해결책 검색
 
-개발 중 같은 에러를 반복해서 만나는 경우가 많습니다.
+저장된 I/O를 SQLite FTS5로 검색합니다. Skill로 노출:
 
-저장된 I/O를 검색할 수 있으면 다음 질문에 답할 수 있습니다.
-
-- 이 에러 전에 어떻게 해결했는가?
-- 어떤 명령이 실패했는가?
-- 어떤 patch가 통과했는가?
-- 비슷한 문제를 어떤 provider가 더 잘 해결했는가?
-
-초기에는 vector DB 없이 SQLite FTS만으로도 충분히 유용할 수 있습니다.
+```text
+/memory search <query>
+/memory inject <chunk-id>
+/memory recent --error
+```
 
 ### 5. 의사결정 로그
 
-코드만 보면 왜 그렇게 구현했는지 알기 어렵습니다.
-
-예를 들어 이 프로젝트에는 다음 같은 결정이 있습니다.
-
-- 한글 IME 문제 때문에 xterm 직접 입력 대신 Composer 입력을 사용한다.
-- Quick 모드는 one-shot 실행으로 둔다.
-- Dev 모드는 PTY 세션을 유지한다.
-- Dev 모드의 실제 context 기준은 HUD가 아니라 PTY 화면이다.
-- conversation mode는 생성 후 고정한다.
-
-I/O와 요약을 저장하면 이런 결정 근거를 나중에 다시 확인할 수 있습니다.
+설계 결정을 `decision` chunk type으로 저장합니다. Stop hook이 응답에서 `결정:`, `선택:` 같은 패턴을 감지하거나, 사용자가 명시적으로 `/memory remember decision <text>`로 등록.
 
 ### 6. 자동 산출물 생성
 
-저장 데이터는 개발 산출물 생성에도 사용할 수 있습니다.
-
 - 커밋 메시지 후보
-- PR 설명 초안
-- 오늘 작업 요약
-- 변경 파일별 요약
-- 회귀 위험 목록
+- PR description 초안
+- 작업 회고
 - 다음 작업 리스트
 
-이 기능은 실제 개발 workflow에 바로 연결됩니다.
+각각 별도 skill로 구현. Claude Code 세션에서 `/commit-message`, `/pr-draft` 등으로 호출. Skill 안에서 memory 기반 컨텍스트 + `claude -p`로 합성.
 
 ### 7. 감사와 추적성
 
-회사 개발 환경에서는 AI가 어떤 입력을 받았고 어떤 출력을 냈는지 추적하는 것도 중요합니다.
+모든 user input, hook 주입 컨텍스트, LLM 응답을 SQLite event log에 누적. 어떤 memory가 어떤 prompt에 들어갔는지 추적 가능.
 
-로컬 저장은 다음 질문에 답할 수 있게 합니다.
+## 시스템 구성
 
-- 어떤 요청을 모델에게 보냈는가?
-- 어떤 provider가 어떤 제안을 했는가?
-- 어떤 제안이 실제 코드 변경으로 이어졌는가?
-- 민감정보가 input/output에 포함됐는가?
-
-## 저장 대상
-
-초기에는 모든 것을 벡터화하기보다 원본 event log를 먼저 안정적으로 저장합니다.
-
-저장 후보:
-
-- conversation metadata
-- user message
-- provider response
-- Dev mode PTY input
-- Dev mode PTY output
-- provider id
-- mode: Quick / Dev
-- project path
-- timestamp
-- command result
-- git diff summary
-- test result summary
-- 사용자가 명시적으로 기억하라고 한 내용
-
-PTY output은 raw와 clean text를 분리하는 것이 좋습니다.
+### 디렉터리 구조
 
 ```text
-raw output
-  -> 원본 ANSI/TUI 출력 보존
+~/.claude/multiagent/                    # 글로벌 (모든 프로젝트 공유)
+  app.sqlite                              # 이벤트 로그 + memory chunks
+  hooks/
+    user-prompt-submit.sh                 # prefill 단계 컨텍스트 주입
+    stop.sh                               # 응답에서 memory 추출
+  skills/                                 # 글로벌 skill
+    memory/SKILL.md
+    advisor/SKILL.md
+    commit-message/SKILL.md
+  config.json                             # 사용자 설정
 
-clean text
-  -> 검색, 요약, chunking용 정제 텍스트
+<project>/.claude/multiagent/             # 프로젝트 로컬 (override)
+  config.json
+  skills/                                 # 프로젝트 전용 skill
 ```
 
-## 저장 구조 제안
+### Memory 스키마
 
-초기 구현은 SQLite를 권장합니다.
+```sql
+projects(
+  id text primary key,
+  root_path text not null unique,
+  name text,
+  created_at text not null,
+  updated_at text not null
+);
+
+conversations(
+  id text primary key,
+  project_id text references projects(id),
+  source text not null,            -- claude_code, codex, gemini
+  title text,
+  created_at text not null,
+  updated_at text not null
+);
+
+events(
+  id text primary key,
+  project_id text references projects(id),
+  conversation_id text references conversations(id),
+  source text not null,            -- claude_code, hook, skill, codex, gemini
+  kind text not null,              -- user_message, llm_response, hook_inject, tool_result
+  text_clean text not null,
+  metadata_json text not null default '{}',
+  created_at text not null
+);
+
+memory_chunks(
+  id text primary key,
+  project_id text references projects(id),
+  source_event_id text references events(id),
+  chunk_type text not null,        -- decision, error, fix, command, test_result, summary, todo, code_context, note
+  text text not null,
+  metadata_json text not null default '{}',
+  created_at text not null,
+  pinned integer not null default 0
+);
+
+provider_runs(
+  id text primary key,
+  conversation_id text references conversations(id),
+  project_id text references projects(id),
+  provider text not null,          -- claude, codex, gemini
+  phase text not null,             -- single, advisor_draft, advisor_review, advisor_synthesize
+  prompt_event_id text references events(id),
+  output_event_id text references events(id),
+  status text not null,
+  started_at text not null,
+  finished_at text
+);
+
+-- FTS
+create virtual table events_fts using fts5(text_clean, content='events', content_rowid='rowid');
+create virtual table memory_chunks_fts using fts5(text, content='memory_chunks', content_rowid='rowid');
+```
+
+### Hook 통합
+
+#### UserPromptSubmit hook (prefill)
+
+목적: 유저 입력 직전에 관련 memory를 컨텍스트로 주입.
+
+```bash
+#!/bin/bash
+# ~/.claude/multiagent/hooks/user-prompt-submit.sh
+# stdin으로 유저 입력을 받고, stdout으로 추가 컨텍스트를 출력하면
+# Claude Code가 [원본 + 컨텍스트]를 LLM에 보냄.
+
+USER_INPUT=$(cat)
+PROJECT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+
+# 1. 이벤트 로그에 입력 저장
+sqlite3 ~/.claude/multiagent/app.sqlite "
+  insert into events (id, project_id, source, kind, text_clean, created_at)
+  values (...)
+"
+
+# 2. 프로젝트별 최근 memory_chunks 조회 (FTS + 최근성)
+RELEVANT=$(sqlite3 ~/.claude/multiagent/app.sqlite "
+  select text from memory_chunks
+  where project_id = ? and chunk_type in ('decision','fix','todo')
+  order by pinned desc, created_at desc
+  limit 5
+")
+
+# 3. 모호도 판단: 단어 수, 키워드, 코드 참조 여부 등
+# 모호하면 [Memory context] 블록을 stdout으로 출력
+if [[ -n "$RELEVANT" ]]; then
+  echo "[Project memory context]"
+  echo "$RELEVANT"
+fi
+```
+
+#### Stop hook (응답 추출)
+
+목적: LLM 응답에서 chunk type별로 memory 추출 후 저장.
+
+```bash
+#!/bin/bash
+# ~/.claude/multiagent/hooks/stop.sh
+# stdin으로 LLM 응답을 받고, 추출 결과를 SQLite에 저장.
+
+RESPONSE=$(cat)
+PROJECT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+
+# 1. 이벤트 로그에 응답 저장
+# 2. 패턴 감지로 chunk 추출 (단순 grep + 사용자 정의 룰)
+# 3. 더 정교한 추출이 필요하면 claude -p로 OAuth 구독 호출
+EXTRACTED=$(echo "$RESPONSE" | claude -p "다음 응답에서 결정/오류/수정/TODO를 chunk_type과 함께 JSON 라인으로 추출해줘.")
+
+# 4. SQLite에 chunk 저장
+echo "$EXTRACTED" | while read line; do
+  sqlite3 ~/.claude/multiagent/app.sqlite "insert into memory_chunks ..."
+done
+```
+
+### Skill 시스템
+
+skill은 Claude Code의 `Skill` 도구로 호출되는 명령. 각 skill은 SKILL.md + 선택적 보조 스크립트로 구성.
+
+#### memory skill
 
 ```text
-~/Library/Application Support/MultiAgentCLI/
-  app.sqlite
-  attachments/
-  indexes/
+/memory search <query>     project FTS 검색
+/memory inject <chunk-id>  특정 chunk를 현재 컨텍스트로 주입
+/memory remember <text>    명시적 memory 등록 (chunk_type 포함)
+/memory pin <chunk-id>     항상 prefill에 포함되도록 고정
+/memory list --recent      최근 chunk 표시
+/memory forget <chunk-id>  삭제
 ```
 
-예상 테이블:
+#### advisor skill (CCG 패턴)
 
 ```text
-projects
-conversations
-messages
-pty_events
-memory_chunks
-summaries
-provider_runs
+/advisor codex <prompt>    codex exec로 의견
+/advisor gemini <prompt>   gemini -p로 의견
+/advisor ccg <prompt>      codex + gemini 병렬, 결과를 Claude가 합성
 ```
 
-embedding은 처음부터 필수는 아닙니다. 원본 저장과 FTS 검색이 먼저입니다.
+advisor 결과는 `provider_runs` 테이블과 `events` 테이블에 함께 저장. 다음 prefill에 컨텍스트로 사용 가능.
 
-## 검색과 활용
-
-### 1. Keyword Search
-
-SQLite FTS5로 시작합니다.
-
-지원할 수 있는 필터:
-
-- project
-- provider
-- mode
-- date range
-- conversation
-- message type
-
-### 2. Memory Chunk
-
-긴 대화와 PTY output은 검색과 prompt injection에 적합한 단위로 나눕니다.
-
-chunk type 예시:
-
-- decision
-- error
-- fix
-- command
-- test_result
-- summary
-- todo
-- code_context
-
-### 3. Retrieval Injection
-
-Quick 모드에서는 prompt 생성 전에 관련 memory를 검색해 context로 삽입할 수 있습니다.
+#### workflow skill
 
 ```text
-사용자 질문
-  -> project memory 검색
-  -> 관련 chunk 선택
-  -> prompt에 "Relevant local memory"로 삽입
-  -> providerChat 실행
+/commit-message            현재 staged 변경 + 최근 memory로 커밋 메시지 후보
+/pr-draft                  현재 브랜치 커밋들 + memory로 PR 본문
+/recap                     오늘 작업 요약
+/handoff                   다음 세션 시작용 자동 brief
 ```
 
-Dev 모드에서는 자동 삽입보다 수동 제어가 우선입니다.
+### 외부 레지스트리
 
-예:
-
-- `/memory search <query>`
-- `/memory inject <chunk>`
-- `현재 작업 요약 삽입`
-- `최근 실패한 테스트 삽입`
-
-대화형 CLI 세션에 과거 memory를 자동으로 넣으면 context 오염이 생길 수 있기 때문입니다.
-
-## Vector화 전략
-
-vector search는 2단계 이후 도입합니다.
-
-초기에는 다음 순서가 현실적입니다.
+OMC 패턴 그대로 사용.
 
 ```text
-Event Log
-  -> Clean Text
-  -> FTS Search
-  -> Chunking
-  -> Summaries
-  -> Embedding
-  -> Vector Search
+GitHub repo (multiagent-skills)
+  ├─ skills/
+  │   └─ <skill-name>/SKILL.md
+  └─ manifest.json
+
+설치:
+  multiagent skill add <github-url-or-name>
+    -> ~/.claude/multiagent/skills/<skill-name>/
+
+로컬 우선:
+  <project>/.claude/multiagent/skills/  override
+  ~/.claude/multiagent/skills/          글로벌
 ```
 
-후보 기술:
+업로드 흐름:
+- 유저 A: `multiagent skill publish <name>` → GitHub에 PR 또는 push
+- 유저 B: `multiagent skill add <name>` → 같은 skill 사용
 
-- SQLite FTS5
-- sqlite-vec
-- LanceDB
-- Qdrant local
-- 외부 embedding API
-- 로컬 embedding model
+권한·서명 검증은 Phase 후반에 추가.
 
-로컬 우선 앱이므로, 장기적으로는 로컬 embedding 옵션을 열어두는 것이 좋습니다. 다만 초기에는 구현 난이도와 앱 크기를 고려해 FTS부터 시작합니다.
+## 단계별 로드맵
+
+### Phase 1. Memory 저장소 (1주)
+
+- `~/.claude/multiagent/` 디렉터리 생성 로직
+- SQLite 스키마 마이그레이션
+- 이벤트 append API (Bash 또는 Python 헬퍼)
+- 기본 chunk type
+- `multiagent` CLI 진입점 (skill에서 호출하기 위함)
+
+### Phase 2. Hook 통합 (1주)
+
+- UserPromptSubmit hook 스크립트
+- Stop hook 스크립트
+- 프로젝트 식별 (git root 기반)
+- 모호도 판단 단순 룰
+- 컨텍스트 주입 포맷 표준화 (`[Project memory context]` 블록)
+
+### Phase 3. Memory skill (1주)
+
+- `/memory search/inject/remember/pin/list/forget`
+- FTS5 적용
+- chunk_type별 검색 필터
+- 결과 포맷이 Claude Code 컨텍스트에 그대로 들어가도록 설계
+
+### Phase 4. Advisor skill (1주)
+
+- `/advisor codex/gemini/ccg`
+- `claude -p`, `codex exec`, `gemini -p` 통합
+- 결과를 `provider_runs`에 저장
+- 합성 로직: Claude가 두 의견을 받아 `claude -p` 한 번 더로 최종 답변
+
+### Phase 5. Workflow skill (1주)
+
+- `/commit-message`, `/pr-draft`, `/recap`, `/handoff`
+- git porcelain + memory 결합
+- 출력은 사용자가 검토 후 그대로 사용 가능한 형태
+
+### Phase 6. 레지스트리 (2주)
+
+- GitHub 기반 skill 레지스트리
+- `multiagent skill add/remove/list/publish`
+- manifest.json 포맷 정의
+- 로컬 override 우선순위
+
+### Phase 7. Vector / 고급 추출 (선택)
+
+- sqlite-vec 또는 LanceDB
+- chunk embedding pipeline
+- hybrid search (FTS + vector)
+- LLM 기반 chunk 추출 정교화
+
+## Tauri 앱 처리
+
+기존 Tauri 코드는 보존하지만 신규 개발은 중단합니다. 이미 동작하는 기능 중 plugin으로 재현하기 어려운 것은 다음과 같습니다.
+
+- Dev PTY 모드 (xterm.js + portable-pty)
+
+이 기능이 본인 워크플로에 필수인 사용자에게는 Tauri 앱이 그대로 유효합니다. 신규 LoadMap 기능은 Tauri에 다시 포팅하지 않습니다.
+
+장기적으로 Tauri 앱은 다음 중 한 방향으로 갑니다.
+
+- 별도 repo로 분리해 PTY 전용 도구로 유지
+- 폐기
+
+이 결정은 Phase 5 이후 사용자 피드백을 보고 정합니다.
 
 ## 위험 요소
 
 ### 1. 민감정보 저장
 
-터미널 출력에는 API key, token, env, 회사 코드, 파일 경로가 포함될 수 있습니다.
+터미널 출력·prompt에는 API key·token·내부 코드가 포함될 수 있습니다.
 
-필요한 대응:
+대응:
+- secret redaction 룰셋 (정규식 기반)
+- 프로젝트별 memory on/off
+- 저장 제외 패턴 설정
+- `multiagent memory purge --project <path>`
 
-- secret redaction
-- 저장 제외 패턴
-- project별 memory on/off
-- raw PTY output 저장 여부 설정
-- 데이터 삭제 UI
+### 2. 컨텍스트 오염
 
-### 2. Context 오염
+관련 없는 memory가 prefill에 들어가면 모델 품질이 떨어집니다.
 
-관련 없는 과거 memory가 prompt에 들어가면 모델 품질이 떨어집니다.
-
-필요한 기준:
-
+대응:
 - 같은 project 우선
-- 최근성 반영
-- 명시적 user intent 반영
-- 자동 삽입 개수 제한
-- Dev 모드는 수동 삽입 우선
+- 최근성 + pin 가중치
+- 자동 주입 chunk 수 상한 (기본 5)
+- 사용자가 hook 동작을 끌 수 있는 토글
 
-### 3. PTY 노이즈
+### 3. Hook 실행 실패
 
-PTY output에는 status line, progress bar, TUI redraw, ANSI escape가 많습니다.
+hook 스크립트 오류는 Claude Code 세션을 차단할 수 있습니다.
 
-필요한 처리:
+대응:
+- hook 스크립트는 항상 exit 0으로 종료
+- 오류는 stderr와 별도 로그에만 기록
+- timeout (기본 3초)
 
-- raw와 clean 분리
-- ANSI strip
-- 반복 line 압축
-- status line 필터링
-- command boundary 추정
+### 4. SQLite 동시성
 
-### 4. Provider별 출력 포맷 변경
+여러 Claude Code 세션이 동시에 같은 DB에 쓸 수 있습니다.
 
-Claude/Codex/Gemini CLI의 출력 포맷은 바뀔 수 있습니다.
+대응:
+- WAL 모드
+- busy_timeout
+- append-only 패턴
+- 단일 writer는 필요 시 도입
 
-따라서 PTY output 파서는 느슨하게 유지하고, provider별 강한 파싱에 지나치게 의존하지 않는 것이 좋습니다.
+### 5. provider CLI 출력 포맷 변경
 
-## 단계별 로드맵
+`claude -p`, `codex exec`, `gemini -p` 출력 포맷은 바뀔 수 있습니다.
 
-### Phase 1. Local Persistence
-
-목표: 원본 데이터를 잃지 않고 로컬에 저장합니다.
-
-- SQLite 저장소 추가
-- conversation 저장
-- Quick messages 저장
-- Dev PTY input 저장
-- PTY output raw/clean 저장 구조 설계
-- project별 저장 on/off 설정
-- 데이터 삭제 기능
-
-### Phase 2. Search Panel
-
-목표: 저장된 데이터를 사람이 다시 찾을 수 있게 합니다.
-
-- SQLite FTS5 적용
-- 우측 패널에 local memory search 추가
-- project/provider/date 필터
-- 검색 결과에서 원본 conversation으로 이동
-- error/fix/test result 중심 검색 UX
-
-### Phase 3. Summaries
-
-목표: 저장된 I/O를 작업 단위로 요약합니다.
-
-- conversation summary 생성
-- project daily summary 생성
-- 마지막 작업 상태 요약
-- 남은 TODO 추출
-- 실패한 접근과 성공한 접근 분리
-
-### Phase 4. Prompt Context
-
-목표: memory를 provider 호출에 활용합니다.
-
-- Quick 모드 prompt에 관련 memory 삽입
-- 삽입된 memory를 UI에 표시
-- 사용자가 memory 삽입 여부를 승인할 수 있게 처리
-- Dev 모드에서는 수동 inject 명령 또는 버튼 제공
-
-### Phase 5. Vector Memory
-
-목표: 의미 기반 검색과 유사 작업 추천을 지원합니다.
-
-- chunking pipeline 추가
-- embedding provider 추상화
-- local/API embedding 선택
-- vector index 저장
-- hybrid search: FTS + vector
-
-### Phase 6. Workflow Automation
-
-목표: 저장된 작업 흐름을 산출물로 전환합니다.
-
-- 커밋 메시지 생성
-- PR description 생성
-- 작업 회고 생성
-- 회귀 위험 보고서 생성
-- provider별 성능/성공률 분석
+대응:
+- 강한 파싱 회피
+- chunk 추출은 패턴 + LLM 보조의 이중 구조
+- skill 단위로 provider 호출 캡슐화
 
 ## 우선순위
 
-가장 먼저 만들 가치가 큰 것은 다음 세 가지입니다.
+가장 먼저 만들 가치가 큰 것은 다음입니다.
 
-1. Project별 local event log
-2. Search panel
-3. 작업 재개용 summary
+1. Phase 1 + 2 (memory 저장소 + hook)
+2. Phase 3 (memory skill)
+3. Phase 4 (advisor skill)
 
-embedding과 vector search는 그 다음입니다. 원본 데이터가 안정적으로 쌓이지 않으면 vector search도 신뢰하기 어렵기 때문입니다.
+이 세 단계만 갖춰도 "유저 input이 memory에 등록되고, 모호한 질문이 보강되며, 응답에서 자동으로 chunk가 누적되고, codex/gemini 의견을 OAuth 구독으로 받는" Hermes-agent 스타일이 동작합니다.
+
+레지스트리(Phase 6)는 사용자 수가 늘어 공유 수요가 생길 때 시작합니다.
 
 ## 최종 목표
 
-MultiAgentCLI의 장기 목표는 provider CLI를 한 화면에 모으는 것을 넘어서, 로컬 개발 작업의 기억과 흐름을 관리하는 앱이 되는 것입니다.
-
 ```text
-CLI 실행기
-  -> 멀티 provider 작업 공간
-  -> 로컬 개발 memory
-  -> 작업 재개/검색/요약/자동 산출물 시스템
+Claude Code 세션
+  + UserPromptSubmit hook (memory 주입)
+  + Stop hook (memory 추출)
+  + memory/advisor/workflow skill
+  + 글로벌 + 프로젝트 SQLite memory
+  + GitHub 기반 skill 레지스트리
+  -> 구독 OAuth만으로 동작하는 로컬 개발 작업 기억 시스템
 ```
