@@ -1,8 +1,64 @@
 # Handoff — claude-plugin 브랜치
 
-다음 세션에서 이어서 작업할 때 참고하는 문서입니다. 작성 시점: 2026-05-07.
+다음 세션에서 이어서 작업할 때 참고하는 문서입니다. 최종 업데이트: 2026-05-08.
 
 > 완료된 Phase 1·2·3(부분)·4(부분)·HUD·플러그인 설치 항목은 README.md에 반영되어 본 문서에서는 제거함. 구현된 내용은 README의 사용/구조/데이터 위치 섹션 참조.
+
+## Context Ingestion 확장 — 인터뷰 마무리 (2026-05-08)
+
+Ouroboros Socratic 인터뷰로 사내 프로젝트 컨텍스트(Slack 대화, Notion 기획 정의서)를 lazy fetch로 흡수하고 prefill에서 LLM에 자동 보강하는 파이프라인을 spec 단계까지 동결.
+
+**산출물:**
+- Seed YAML — [`.ouroboros/seeds/context-ingestion.yaml`](.ouroboros/seeds/context-ingestion.yaml) v0.6.0-draft (24개 decisions, 17개 acceptance_criteria, 7 risks, ambiguity_score 0.08)
+- README — `## 계획된 확장: 사내 컨텍스트 ingestion` 섹션에 narrative + 결정 표 + sources.json/metadata 예시 모두 반영
+- 인터뷰 세션: `interview_20260508_054044`
+
+**핵심 결정 한 줄 요약:**
+- 메모리: 기존 SQLite + FTS5 그대로(DDL 변경 없음), tokenizer만 trigram으로 (D16)
+- 외부 소스: events skip + memory_chunks에 직접 insert, 9개 chunk_type 자유 선택, metadata로 출처 보존 (D10–D13)
+- Prefill: claude -p haiku로 모호도+키워드 분석, 모호 시 [Refined prompt suggestion] 블록 prepend (D7, D19)
+- Slack: URL 명시 + 키워드 검색 hybrid, thread는 selection+summary로 압축 (D20)
+- Notion: 사용자 환경 Notion MCP 사용 (D21)
+- 캐시: url 기반 dedup, TTL ∞, `/memory refresh` 명시 명령으로만 갱신 (D22–D24)
+- 공유: SQLite는 BYO 로컬 격리, sources.json만 git-share, migration은 Phase 2 (D14–D15)
+- Vector: Phase 2 후순위, PageIndex 스타일은 비채택 (D18)
+
+## TODO — 다음 세션에서 이어서
+
+### TODO 1. Chunk lifecycle 인터뷰 라운드 (deferred)
+
+다뤄야 할 미해결:
+- **dedup 정책**: 같은 의미 chunk가 여러 turn에서 누적될 때 — 자동 dedup 룰? 사용자 명령? 무시 후 검색 단계 dedup?
+- **자동 pin 룰**: high-confidence decision은 자동 pin? confidence 임계치? 사용자 명시 pin만?
+- **prefill 검색 ranking 가중치**: `pinned DESC, created_at DESC, BM25` 외에 source별·chunk_type별 가중? D17의 keywords union 점수 합산 방식?
+
+진입 명령: `/ouroboros:interview chunk lifecycle (dedup·자동 pin·검색 ranking 가중치)`
+
+### TODO 2. 보안·운영 인터뷰 라운드 (deferred)
+
+다뤄야 할 미해결:
+- **redaction 정규식**: 어떤 패턴(`sk-`, `xoxb-`, JWT, IP, email...)을 어디 단계에서(chunk insert 전 / FTS 인덱싱 시)? 사용자 정의 추가 가능?
+- **plugin.log 회전**: 크기·날짜 기반 회전 정책. 압축? 며칠 보관?
+- **반복 실패 사용자 알림**: silent fail이 누적될 때 statusline·session-start prepend로 보고할지. 임계치?
+- **conversation_id 관리**: 한 SessionStart마다 새 conversation? idle 시간 기준 분리?
+
+진입 명령: `/ouroboros:interview 보안·운영 (redaction·log 회전·에러 알림·conversation_id)`
+
+### TODO 3. 구현 시작 (Seed v0.6 기준)
+
+PR break는 별도 PR agent로 처리 — 본 인터뷰 scope에서 제외.
+
+가장 작은 첫 PR 후보 (위험도 ↓ 순):
+1. **schema.sql tokenizer migration** (D16) — `tokenize='trigram'`으로 변경 + SessionStart에서 unicode61 감지 시 DROP/REBUILD. 새 기능 0, DDL만
+2. **`.multiagent/sources.json` 시드 + 안내** (D6) — defaults에 빈 sample + SessionStart에서 부재 시 안내 메시지 prepend
+3. **stop.sh chunk 추출 (claude -p haiku)** (D8, D12, D17, D19) — 응답을 haiku에 넘겨 9개 chunk_type 후보로 분류 + keywords 배열, JSON line schema validation, memory_chunks insert
+4. **user-prompt-submit.sh 모호도 분석** (D2, D7, D19) — claude -p haiku로 ambiguity_score + keywords + refined_prompt JSON, 임계치 초과 시 [Refined prompt suggestion] 블록 prepend
+5. **Slack/Notion lazy fetch** (D5, D20–D24) — URL 감지 + dedup + selection+summary 적용
+6. **`/memory refresh` 명령** (D24) — DELETE+INSERT 덮어쓰기
+
+각 PR은 다른 단계가 미구현이어도 graceful degradation으로 동작 (D9).
+
+진입 명령: `git pull` 후 위 1번부터 시작 — schema.sql 변경 + SessionStart migration 단계 추가가 가장 안전.
 
 ## 남은 작업
 
@@ -93,9 +149,10 @@
 
 ## 다음 세션 시작 시 추천 픽업 지점
 
-1. **빠른 검증**: `bash scripts/multiagent/advisor.sh codex "ping"` 실행해서 OAuth advisor 흐름 확인.
-2. **Phase 3 마무리**: `stop.sh`에 청크 추출 단계 추가가 가장 가치 큼. 현재 응답이 events에는 쌓이지만 memory_chunks로 자동 누적되지 않음.
-3. **Phase 5 시작**: `/commit-message` 스킬은 즉시 활용도 높음. 작은 단위로 시작 가능.
+1. **현재 우선순위 — Context Ingestion 확장 (Seed v0.6)**: 위 "TODO 3. 구현 시작" 섹션의 1번(schema.sql trigram migration)부터 점진적으로. Stop hook chunk 추출(Phase 3 마무리)도 이 Seed의 일부로 흡수됨.
+2. **남은 인터뷰 라운드**: TODO 1·2를 다른 노트북·세션에서 `/ouroboros:interview ...`로 재개. Seed v0.6이 immutable spec이므로 새 결정은 D25부터 추가.
+3. **빠른 검증**: `bash scripts/multiagent/advisor.sh codex "ping"`으로 OAuth advisor 흐름 확인 (별도 트랙).
+4. **Phase 5 (workflow skill)**: `/commit-message` 등 — Context Ingestion이 안정된 뒤로 미룸.
 
 ## 파일 인덱스
 
