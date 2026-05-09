@@ -9,6 +9,14 @@
 # stdout: extra context text (Claude Code prepends to the user message)
 
 set -euo pipefail
+
+# 재귀 가드: ingestion.py가 spawn한 claude -p 서브프로세스가 또 이 hook을
+# 타면서 무한히 자기 자신을 호출하는 걸 막는다. ingestion.py가 IMPRINT_BYPASS_HOOKS=1
+# 을 넘기면 stdout만 빈값으로 비우고 즉시 종료한다.
+if [[ "${IMPRINT_BYPASS_HOOKS:-0}" == "1" ]]; then
+  exit 0
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib/common.sh"
 
@@ -169,12 +177,19 @@ if [[ -n "${ROUTING// }" ]]; then
 fi
 
 # --- 3. Prefill pipeline ----------------------------------------------------
-# ingestion.py prefill handles:
-#   - claude -p haiku ambiguity analysis (AC2)
-#   - Slack/Notion lazy fetch with url-based dedup (AC1, AC12, AC15)
-#   - Memory search via FTS5 + keywords union ranking (AC11)
-#   - Emits [Refined prompt suggestion] + [Project memory context] blocks
-# Failures are silent (log-only) so the hook never blocks the user (AC4).
+# 백그라운드: 무거운 작업(analyze_prompt + Slack/Notion fetch + chunk insert)을
+#   nohup으로 분리한다. 새 chunk는 다음 turn의 prefill에서 노출된다.
+# 포어그라운드: SQLite에 이미 저장된 chunk만 검색해서 즉시 emit (sub-second).
+# 어느 쪽도 사용자 turn을 막지 않는다.
+
+if [[ -n "$PID" && -x "$(command -v python3)" ]]; then
+  TMP_BG=$(mktemp 2>/dev/null || echo "/tmp/imprint-ups-$$.tmp")
+  printf '%s' "$PROMPT" > "$TMP_BG"
+  ( python3 "$SCRIPT_DIR/lib/ingestion.py" lazy-fetch "$PID" < "$TMP_BG" 2>>"$IMPRINT_LOG"
+    rm -f "$TMP_BG"
+  ) </dev/null >/dev/null 2>&1 &
+  disown 2>/dev/null || true
+fi
 
 PREFILL_OUT=""
 if [[ -n "$PID" && -x "$(command -v python3)" ]]; then

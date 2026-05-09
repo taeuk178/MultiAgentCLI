@@ -35,9 +35,11 @@ IMPRINT_DB = IMPRINT_HOME / "app.sqlite"
 IMPRINT_LOG = IMPRINT_HOME / "plugin.log"
 
 AMBIGUITY_THRESHOLD = float(os.environ.get("IMPRINT_AMBIGUITY_THRESHOLD") or "0.5")
-CLAUDE_TIMEOUT_PREFILL = int(os.environ.get("IMPRINT_CLAUDE_TIMEOUT_PREFILL") or "8")
-CLAUDE_TIMEOUT_FETCH = int(os.environ.get("IMPRINT_CLAUDE_TIMEOUT_FETCH") or "20")
-CLAUDE_TIMEOUT_EXTRACT = int(os.environ.get("IMPRINT_CLAUDE_TIMEOUT_EXTRACT") or "15")
+# 실측: spawn된 claude -p haiku는 사용자 repo의 CLAUDE.md까지 로드하므로
+# 단순 prompt도 10~20초 걸린다. fetch는 MCP RTT까지 더해져 더 오래 걸림.
+CLAUDE_TIMEOUT_PREFILL = int(os.environ.get("IMPRINT_CLAUDE_TIMEOUT_PREFILL") or "25")
+CLAUDE_TIMEOUT_FETCH = int(os.environ.get("IMPRINT_CLAUDE_TIMEOUT_FETCH") or "45")
+CLAUDE_TIMEOUT_EXTRACT = int(os.environ.get("IMPRINT_CLAUDE_TIMEOUT_EXTRACT") or "30")
 CLAUDE_BIN = os.environ.get("IMPRINT_CLAUDE_BIN") or "claude"
 
 CHUNK_TYPES = (
@@ -109,15 +111,13 @@ def load_sources(root: Path) -> dict:
 
 DEFAULT_ALLOWED_TOOLS_FETCH = os.environ.get(
     "IMPRINT_ALLOWED_TOOLS_FETCH",
-    # Read-only MCP tools commonly registered for Slack/Notion in user envs.
-    # Users with different MCP server names override via env var. We do NOT
-    # use --dangerously-skip-permissions: hooks run every prompt and must not
-    # auto-approve arbitrary tools.
-    "mcp__claude_ai_Notion__notion-fetch,"
-    "mcp__claude_ai_Notion__notion-search,"
-    "mcp__claude_ai_Notion__notion-get-comments,"
-    "mcp__slack__*,"
-    "mcp__claude_ai_Slack__*",
+    # 사용자가 어떤 이름으로 Notion/Slack MCP를 등록했는지는 환경마다 다르다.
+    # 인증/거부는 claude가 자체 처리하므로 plugin은 read-only MCP 이름 패턴만
+    # 와일드카드로 열어두면 충분하다. --dangerously-skip-permissions는 쓰지 않음.
+    "mcp__claude_ai_Notion__*,"
+    "mcp__notion__*,"
+    "mcp__claude_ai_Slack__*,"
+    "mcp__slack__*",
 )
 
 
@@ -135,11 +135,19 @@ def call_claude(prompt: str, *, timeout: int, needs_tools: bool = False) -> str 
         cmd.extend(["--allowed-tools", ""])
     cmd.append("--")
     cmd.append(prompt)
+    # 서브프로세스가 다시 imprint hook을 타면서 자기 자신을 무한히 spawn하는 걸
+    # 막는다. session-start / user-prompt-submit / stop 모두 이 변수를 보고 즉시 종료한다.
+    sub_env = os.environ.copy()
+    sub_env["IMPRINT_BYPASS_HOOKS"] = "1"
     try:
+        # stdin=DEVNULL: claude -p가 stdin을 3초 기다리는 "no stdin data received"
+        # 경고를 회피한다. 우리는 prompt를 argv로만 전달하므로 stdin이 필요 없다.
         result = subprocess.run(
             cmd,
             capture_output=True, text=True,
             timeout=timeout,
+            env=sub_env,
+            stdin=subprocess.DEVNULL,
         )
     except FileNotFoundError:
         log("WARN", f"claude CLI not found at {CLAUDE_BIN}")
@@ -432,13 +440,25 @@ Return STRICT JSON:
   "url": "<canonical URL>",
   "last_edited_at": "<ISO8601>",
   "sections": [
-    {"section_title": "<heading or null>", "text": "<<=1500 chars>"},
+    {"section_title": "<heading verbatim>", "text": "<<=3000 chars>"},
     ...
   ]
 }
 
-Split the page into AT MOST 5 logical sections by H1/H2/H3 headings.
-Skip empty sections. If unavailable: {"error": "<reason>"}.
+REQUIREMENTS — read carefully. The user wants HISTORY preserved, not a summary.
+- Save EVERY non-QA H1/H2/H3 heading as its OWN section entry. Do NOT merge sections,
+  do NOT compress to a fixed count, do NOT cap or take "the first N headings".
+- SKIP only QA / testing-checklist sections. Examples of sections to skip:
+  "QA 확인 항목", "QA 체크리스트", "테스트 케이스", "Test plan", "Test cases",
+  "QA Checklist". When in doubt, KEEP it.
+- KEEP all planning and development content: 문서 목적, 배경, 목표, 적용 범위,
+  사용자 시나리오, 화면 요구사항, 기능 요구사항, 예외 케이스, 정책/UX 기준,
+  Firebase·이벤트 정의, 완료 기준, 데이터 스키마, API 명세 등.
+- section_title은 원문 heading 텍스트 그대로 사용한다(병합 금지).
+- Each section text <= 3000 chars; preserve all decision-relevant detail.
+- Skip only truly empty sections (or QA-only sections per above).
+
+If unavailable: {"error": "<reason>"}.
 Output ONLY the JSON object. No markdown fence.
 """
 
@@ -480,7 +500,7 @@ def fetch_notion_url(url_or_id: str) -> list[dict] | None:
     if not isinstance(sections, list):
         return None
     chunks = []
-    for s in sections[:5]:
+    for s in sections:
         if not isinstance(s, dict):
             continue
         text = (s.get("text") or "").strip()
@@ -553,10 +573,16 @@ def fetch_notion_keywords(pages: list[str], keywords: list[str]) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 def chunk_url_exists(conn: sqlite3.Connection, project_id: str, url: str) -> bool:
+    """페이지 URL 기준 dedup. Notion 섹션은 metadata.url에 `#section`이 붙어
+    저장되므로 page-URL로 들어온 query는 정확 일치만으로는 못 잡는다.
+    `url` 또는 `url#...` 형태가 하나라도 있으면 hit으로 간주한다."""
     cur = conn.execute(
         "SELECT 1 FROM memory_chunks "
-        "WHERE project_id = ? AND json_extract(metadata_json, '$.url') = ? LIMIT 1;",
-        (project_id, url),
+        "WHERE project_id = ? AND ("
+        "  json_extract(metadata_json, '$.url') = ? "
+        "  OR json_extract(metadata_json, '$.url') LIKE ? "
+        ") LIMIT 1;",
+        (project_id, url, url + "#%"),
     )
     return cur.fetchone() is not None
 
@@ -862,6 +888,9 @@ def cmd_analyze_prompt(_argv: list[str]) -> int:
 
 
 def cmd_prefill(argv: list[str]) -> int:
+    """Foreground prefill — DB에 이미 저장된 chunk만 검색해서 context block을
+    찍는다. analyze_prompt(haiku)·lazy_fetch(MCP)는 LLM/네트워크 왕복으로 수십 초가
+    드므로 cmd_lazy_fetch가 백그라운드에서 처리한다 (다음 turn부터 chunk 노출)."""
     if not argv:
         return 1
     project_id = argv[0]
@@ -869,50 +898,60 @@ def cmd_prefill(argv: list[str]) -> int:
     if not prompt.strip():
         return 0
 
-    # 1. analyze prompt (haiku) — silent skip on failure
-    analysis = analyze_prompt(prompt) or {}
-    score = float(analysis.get("ambiguity_score") or 0.0)
-    keywords = list(analysis.get("keywords") or [])
-    refined = analysis.get("refined_prompt")
+    try:
+        with db() as conn:
+            # keywords는 비워서 search_memory의 recency-fallback 경로를 탄다.
+            chunks = search_memory(conn, project_id, [], prompt, limit=8)
+    except sqlite3.Error as exc:
+        log("WARN", f"db prefill: {exc}")
+        chunks = []
 
-    # 2. lazy fetch external context
+    if not chunks:
+        return 0
+
+    out_lines = ["[Project memory context]"]
+    for c in chunks:
+        md = {}
+        try:
+            md = json.loads(c.get("metadata_json") or "{}")
+        except (json.JSONDecodeError, TypeError):
+            pass
+        src = md.get("source")
+        tag = c["chunk_type"]
+        if src in ("slack", "notion"):
+            tag = src
+        text = (c["text"] or "").replace("\n", " ").strip()
+        out_lines.append(f"- [{tag}] {text[:300]}")
+
+    sys.stdout.write("\n" + "\n".join(out_lines) + "\n")
+    return 0
+
+
+def cmd_lazy_fetch(argv: list[str]) -> int:
+    """Background ingestion — analyze_prompt + lazy_fetch + insert.
+    user-prompt-submit hook이 nohup으로 띄워 사용자 turn을 막지 않게 한다.
+    stdout 출력 없음. 모든 실패는 plugin.log에만 기록."""
+    if not argv:
+        return 1
+    project_id = argv[0]
+    prompt = sys.stdin.read()
+    if not prompt.strip():
+        return 0
+
+    analysis = analyze_prompt(prompt) or {}
+    keywords = list(analysis.get("keywords") or [])
+
     root = project_root()
     sources = load_sources(root)
     try:
         with db() as conn:
             try:
-                lazy_fetch(conn, project_id, prompt, keywords, sources)
+                inserted = lazy_fetch(conn, project_id, prompt, keywords, sources)
+                log("INFO", f"bg lazy-fetch inserted={inserted} project={project_id}")
             except Exception as exc:  # noqa: BLE001
-                log("WARN", f"lazy_fetch wrapper: {exc}")
-            chunks = search_memory(conn, project_id, keywords, prompt, limit=8)
+                log("WARN", f"bg lazy_fetch wrapper: {exc}")
     except sqlite3.Error as exc:
-        log("WARN", f"db prefill: {exc}")
-        chunks = []
-
-    # 3. emit prepend block
-    out_lines = []
-    if refined and score >= AMBIGUITY_THRESHOLD:
-        out_lines.append("[Refined prompt suggestion]")
-        out_lines.append(refined)
-        out_lines.append("")
-
-    if chunks:
-        out_lines.append("[Project memory context]")
-        for c in chunks:
-            md = {}
-            try:
-                md = json.loads(c.get("metadata_json") or "{}")
-            except (json.JSONDecodeError, TypeError):
-                pass
-            src = md.get("source")
-            tag = c["chunk_type"]
-            if src in ("slack", "notion"):
-                tag = src
-            text = (c["text"] or "").replace("\n", " ").strip()
-            out_lines.append(f"- [{tag}] {text[:300]}")
-
-    if out_lines:
-        sys.stdout.write("\n" + "\n".join(out_lines) + "\n")
+        log("WARN", f"bg lazy_fetch db: {exc}")
     return 0
 
 
@@ -1013,6 +1052,7 @@ def cmd_refresh(argv: list[str]) -> int:
 COMMANDS = {
     "analyze-prompt": cmd_analyze_prompt,
     "prefill": cmd_prefill,
+    "lazy-fetch": cmd_lazy_fetch,
     "extract": cmd_extract,
     "refresh": cmd_refresh,
 }

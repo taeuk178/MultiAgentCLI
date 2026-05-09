@@ -8,6 +8,13 @@
 # Output: stdout is appended to the session context. stderr is silent.
 
 set -euo pipefail
+
+# 재귀 가드: ingestion.py가 spawn한 claude -p 서브프로세스에서 SessionStart가
+# 다시 발동해 schema 재적용·soul.md emit이 일어나는 걸 막는다.
+if [[ "${IMPRINT_BYPASS_HOOKS:-0}" == "1" ]]; then
+  exit 0
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib/common.sh"
 source "$SCRIPT_DIR/lib/migrations.sh"
