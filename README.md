@@ -101,10 +101,14 @@ claude plugin install imprint@imprint
 statusline 활성화는 별도 단계입니다.
 
 ```bash
-bash scripts/imprint/hud-setup.sh install         # 기존 statusLine 백업 후 교체
-bash scripts/imprint/hud-setup.sh layout focused  # minimal | focused | full
-bash scripts/imprint/hud-setup.sh uninstall       # 백업 복원
+bash scripts/imprint/hud-setup.sh install                       # 기존 statusLine 백업 후 교체
+bash scripts/imprint/hud-setup.sh fields list                   # 가용 필드 12개 + 현재 활성 보기
+bash scripts/imprint/hud-setup.sh fields set 5h ctx cost time   # 사용자가 원하는 순서로 명시
+bash scripts/imprint/hud-setup.sh fields set 5h ctx --project   # 이 프로젝트만 다르게(.imprint/hud-config.json)
+bash scripts/imprint/hud-setup.sh uninstall                     # 백업 복원
 ```
+
+가용 필드 12개: `5h`/`wk`(rate limit), `ctx`/`tokens`(컨텍스트), `model`/`effort`/`style`, `cost`/`dur`, `skills`/`agents`, `time`. 자세한 의미와 출처는 [`skills/hud/SKILL.md`](skills/hud/SKILL.md) 참조.
 
 ## 사용
 
