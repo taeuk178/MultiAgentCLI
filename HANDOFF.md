@@ -1,16 +1,47 @@
 # Handoff — claude-plugin 브랜치
 
-다음 세션에서 이어서 작업할 때 참고하는 문서입니다. 최종 업데이트: 2026-05-08.
+다음 세션에서 이어서 작업할 때 참고하는 문서입니다. 최종 업데이트: 2026-05-09.
 
 > 완료된 Phase 1·2·3(부분)·4(부분)·HUD·플러그인 설치 항목은 README.md에 반영되어 본 문서에서는 제거함. 구현된 내용은 README의 사용/구조/데이터 위치 섹션 참조.
 
-## Context Ingestion 확장 — 인터뷰 마무리 (2026-05-08)
+## Context Ingestion 구현 — feat/context-ingestion 브랜치 (2026-05-09)
+
+Seed v0.6의 17개 acceptance criteria + 24개 decisions를 구현. `feat/context-ingestion` 브랜치에서 wiring 완료. spec YAML은 구현 동결 후 제거 — 결정 내역은 README의 `## 사내 컨텍스트 ingestion` 섹션과 본 브랜치 커밋 히스토리에 보존됨.
+
+**구현 산출물:**
+
+| 책임 | 파일 |
+|------|------|
+| FTS5 trigram 마이그레이션 | `scripts/imprint/lib/migrations.sh` (D16, AC10) |
+| Schema (trigram tokenizer) | `scripts/imprint/lib/schema.sql` |
+| Lazy fetch · 모호도 분석 · 검색 · refresh | `scripts/imprint/lib/ingestion.py` (단일 Python 모듈, 모든 LLM 호출은 `claude -p --model haiku`) |
+| `.imprint/sources.json` 시드 | `prompts/defaults/sources.json` |
+| Prefill (UserPromptSubmit) | `scripts/imprint/user-prompt-submit.sh` |
+| Stop chunk 추출 | `scripts/imprint/stop.sh` |
+| `/memory refresh` | `scripts/imprint/memory.sh` |
+| skill 문서 | `skills/memory/SKILL.md` |
+| README narrative | `README.md` `## 사내 컨텍스트 ingestion` 섹션 |
+
+**검증 통과:**
+- AC1·AC4·AC7·AC10·AC11·AC15·AC16: smoke test로 graceful degradation 경로 확인 (broken claude CLI / sources.json 부재 / 외부 chunk only DELETE 등)
+- 한국어 부분문자열 검색 — `더스트` 가 `더스트가/더스트의`에 hit (AC10) — 단, trigram tokenizer 특성상 검색어는 ≥3자여야 매칭됨
+- unicode61 → trigram DROP+REBUILD migration 정상 동작
+- `/memory refresh <url>|source slack|source notion|project` 정확히 외부 chunk만 삭제 (내부 decision/todo/note 보존)
+
+**미검증 (사용자 환경 의존):**
+- AC5: iOS 팀 정성 검증 1주
+- claude -p haiku 호출 (실제 OAuth 환경에서만 검증 가능)
+- Slack/Notion MCP 비-대화형 fetch (`--allowed-tools` 가 사용자 등록 MCP 이름과 일치하는지)
+
+**hook timeout** — `hooks/hooks.json`의 UserPromptSubmit·Stop을 5/10초 → 30/30초로 상향. 실제 latency는 claude -p 내부 timeout (`IMPRINT_CLAUDE_TIMEOUT_*`)이 결정.
+
+## (이력) Context Ingestion 인터뷰 마무리 (2026-05-08)
 
 Ouroboros Socratic 인터뷰로 사내 프로젝트 컨텍스트(Slack 대화, Notion 기획 정의서)를 lazy fetch로 흡수하고 prefill에서 LLM에 자동 보강하는 파이프라인을 spec 단계까지 동결.
 
 **산출물:**
-- Seed YAML — [`.ouroboros/seeds/context-ingestion.yaml`](.ouroboros/seeds/context-ingestion.yaml) v0.6.0-draft (24개 decisions, 17개 acceptance_criteria, 7 risks, ambiguity_score 0.08)
-- README — `## 계획된 확장: 사내 컨텍스트 ingestion` 섹션에 narrative + 결정 표 + sources.json/metadata 예시 모두 반영
+- Seed v0.6.0-draft (24개 decisions, 17개 acceptance_criteria, 7 risks, ambiguity_score 0.08) — 구현 동결 후 spec YAML은 제거, narrative만 README/HANDOFF/LoadMap에 보존
+- README — `## 사내 컨텍스트 ingestion` 섹션에 narrative + 결정 표 + sources.json/metadata 예시 모두 반영
 - 인터뷰 세션: `interview_20260508_054044`
 
 **핵심 결정 한 줄 요약:**
@@ -22,6 +53,44 @@ Ouroboros Socratic 인터뷰로 사내 프로젝트 컨텍스트(Slack 대화, N
 - 캐시: url 기반 dedup, TTL ∞, `/memory refresh` 명시 명령으로만 갱신 (D22–D24)
 - 공유: SQLite는 BYO 로컬 격리, sources.json만 git-share, migration은 Phase 2 (D14–D15)
 - Vector: Phase 2 후순위, PageIndex 스타일은 비채택 (D18)
+
+## Chunk 분류 세분화 검토 (2026-05-09)
+
+청크 데이터가 한 테이블·9개 chunk_type enum + `metadata_json` 한 봉지에 모두 들어가는데, 실제 DB를 보면 **28건이 모두 `note` × `source=notion` 한 칸에 통밥**된 상태(외부 source chunk를 일괄 `note`로 INSERT). 9개 enum이 의미를 못 살리고 있고, 자주 쓰는 metadata 키(`source`, `page_id`, `url`)는 인덱스 없이 row마다 `json_extract`로 파싱됨.
+
+**현 schema 핵심 (`scripts/imprint/lib/schema.sql:39-54`)**
+
+- 분류 축 3개: `chunk_type` enum(9), `metadata.source` JSON, `pinned`
+- 인덱스: `(project_id, pinned DESC, created_at DESC)`, `(project_id, chunk_type)` — metadata 인덱스 없음
+- 검색: FTS5 trigram(text) ∪ `metadata.keywords` 배열 hit ranking
+
+**제안 — 두 단계로 끊어서 진행**
+
+1. 외부 source `chunk_type` 분리 (작은 의미 변경)
+   - `note(notion)` → `spec`, `note(slack 단발)` → `message`, `note(slack thread)` → `thread`
+   - `fetch_notion_url` / `fetch_slack_*`의 INSERT 자리에서 chunk_type만 변경
+   - 기존 28건 backfill 1줄: `UPDATE memory_chunks SET chunk_type='spec' WHERE json_extract(metadata_json,'$.source')='notion';`
+
+2. metadata 키 generated column + 인덱스 승격 (검색 성능)
+   ```sql
+   ALTER TABLE memory_chunks ADD COLUMN
+     meta_source TEXT GENERATED ALWAYS AS (json_extract(metadata_json,'$.source')) VIRTUAL;
+   ALTER TABLE memory_chunks ADD COLUMN
+     meta_page_id TEXT GENERATED ALWAYS AS (json_extract(metadata_json,'$.page_id')) VIRTUAL;
+   CREATE INDEX idx_chunks_source ON memory_chunks(project_id, meta_source);
+   CREATE INDEX idx_chunks_page ON memory_chunks(project_id, meta_page_id);
+   ```
+   - `chunk_url_exists`, `cmd_refresh`, prefill 검색이 즉시 빨라짐
+   - 같은 Notion 페이지 N개 섹션의 page-level 그룹화 쿼리 정상화
+
+**가지 말아야 할 길**
+
+- 외부 source 별도 테이블 (`external_chunks` 등) — 현재 28건 규모에 union/trigger/FTS 두 벌 운영비가 분류 이득보다 큼
+- `chunk_type` enum 자유 텍스트화 — 일관성 상실
+
+**트레이드오프 한 줄**
+
+schema migration이 사용자 머신마다 한 번씩 돌아야 한다(`scripts/imprint/lib/migrations.sh`에 추가). 다만 데이터 양이 28건일 때가 마이그레이션 부담이 가장 작은 시점이라 분류 도입은 지금이 적기. 1번만 먼저 가고, 2번은 검색 체감이 느려졌을 때 추가하는 점진 전략 권장.
 
 ## TODO — 다음 세션에서 이어서
 
@@ -44,21 +113,14 @@ Ouroboros Socratic 인터뷰로 사내 프로젝트 컨텍스트(Slack 대화, N
 
 진입 명령: `/ouroboros:interview 보안·운영 (redaction·log 회전·에러 알림·conversation_id)`
 
-### TODO 3. 구현 시작 (Seed v0.6 기준)
+### TODO 3. ~~구현 시작~~ → 사용자 환경 검증 (Seed v0.6 → 구현 완료)
 
-PR break는 별도 PR agent로 처리 — 본 인터뷰 scope에서 제외.
+`feat/context-ingestion` 브랜치에서 6개 후보 단계가 모두 구현됨. 위 "Context Ingestion 구현" 섹션 참조.
 
-가장 작은 첫 PR 후보 (위험도 ↓ 순):
-1. **schema.sql tokenizer migration** (D16) — `tokenize='trigram'`으로 변경 + SessionStart에서 unicode61 감지 시 DROP/REBUILD. 새 기능 0, DDL만
-2. **`.imprint/sources.json` 시드 + 안내** (D6) — defaults에 빈 sample + SessionStart에서 부재 시 안내 메시지 prepend
-3. **stop.sh chunk 추출 (claude -p haiku)** (D8, D12, D17, D19) — 응답을 haiku에 넘겨 9개 chunk_type 후보로 분류 + keywords 배열, JSON line schema validation, memory_chunks insert
-4. **user-prompt-submit.sh 모호도 분석** (D2, D7, D19) — claude -p haiku로 ambiguity_score + keywords + refined_prompt JSON, 임계치 초과 시 [Refined prompt suggestion] 블록 prepend
-5. **Slack/Notion lazy fetch** (D5, D20–D24) — URL 감지 + dedup + selection+summary 적용
-6. **`/memory refresh` 명령** (D24) — DELETE+INSERT 덮어쓰기
-
-각 PR은 다른 단계가 미구현이어도 graceful degradation으로 동작 (D9).
-
-진입 명령: `git pull` 후 위 1번부터 시작 — schema.sql 변경 + SessionStart migration 단계 추가가 가장 안전.
+다음 액션:
+1. iOS 팀 멤버 1명이 brunch checkout 후 자기 사내 프로젝트에서 1주 정성 검증 (AC5)
+2. `IMPRINT_ALLOWED_TOOLS_FETCH` 가 사용자 등록 Slack/Notion MCP 이름과 일치하는지 확인 (각자 다를 수 있음)
+3. plugin.log에서 `WARN: claude -p` 빈도 모니터링 — 일정 임계 초과 시 timeout 조정
 
 ## 남은 작업
 

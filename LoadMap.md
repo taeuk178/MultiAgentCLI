@@ -318,6 +318,20 @@ GitHub repo (imprint-skills)
 - manifest.json 포맷 정의
 - 로컬 override 우선순위
 
+### Phase 4.5. 사내 컨텍스트 ingestion (구현 완료, `feat/context-ingestion`)
+
+iOS 팀의 사내 프로젝트 컨텍스트(Slack 대화, Notion 기획 정의서)를 prefill 단계에서 lazy fetch로 흡수해 LLM에 자동 보강. Seed v0.6 (Ouroboros 인터뷰 산출, 17개 AC + 24개 D) 구현.
+
+- FTS5 tokenizer를 `trigram`으로 변경 + unicode61 → trigram migration (한국어 부분문자열 검색)
+- `<project>/.imprint/sources.json`에 정의된 채널·페이지를 prompt 키워드로 lazy fetch
+- prompt 내 Slack permalink는 즉시 fetch (thread는 reply selection + 요약)
+- 모든 추가 LLM 호출(`prefill 분석`·`stop chunk 추출`·`Slack thread reply selection`)은 `claude -p --model haiku`
+- 외부 소스 chunk는 `events`를 거치지 않고 `memory_chunks`에 직접 insert (`source_event_id IS NULL`)
+- `metadata_json.url` 기반 dedup, TTL 무한, `/memory refresh` 명시 명령으로만 갱신
+- 모든 단계가 graceful degradation — sources.json 부재·MCP 다운·claude -p 실패에서 silent skip + 기존 prepend로 fallback
+
+구현 위치: `scripts/imprint/lib/ingestion.py` (Python 단일 모듈) + `scripts/imprint/lib/migrations.sh` + 기존 hook 스크립트 확장.
+
 ### Phase 7. Vector / 고급 추출 (선택)
 
 - sqlite-vec 또는 LanceDB

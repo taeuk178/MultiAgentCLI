@@ -8,7 +8,7 @@
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PLUGIN_ROOT\"/scripts/imprint/user-prompt-submit.sh",
-            "timeout": 5
+            "timeout": 30
           }
         ]
       }
@@ -20,7 +20,7 @@
           {
             "type": "command",
             "command": "bash \"$CLAUDE_PLUGIN_ROOT\"/scripts/imprint/stop.sh",
-            "timeout": 10
+            "timeout": 30
           }
         ]
       }

@@ -6,6 +6,13 @@
 # stdin: JSON with session info; transcript path is in transcript_path field.
 
 set -euo pipefail
+
+# 재귀 가드: ingestion.py가 spawn한 claude -p 서브프로세스가 종료될 때
+# 이 Stop hook이 또 발동해 다시 ingestion.py extract를 부르는 무한 루프를 막는다.
+if [[ "${IMPRINT_BYPASS_HOOKS:-0}" == "1" ]]; then
+  exit 0
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib/common.sh"
 
@@ -79,6 +86,17 @@ db_exec "
   INSERT INTO events (id, project_id, source, kind, text_clean, created_at)
   VALUES ('$EVENT_ID', '$PID', 'claude_code', 'llm_response', '$ESC_TEXT', '$NOW');
 " 2>>"$IMPRINT_LOG" || true
+
+# Chunk extraction을 백그라운드로 분리한다. claude 응답은 이미 사용자에게 표시된
+# 상태이고, chunk 저장은 다음 turn의 prefill에서 활용되면 충분하다.
+if [[ "${IMPRINT_DISABLE_EXTRACT:-0}" != "1" ]] && command -v python3 >/dev/null 2>&1; then
+  TMP_BG=$(mktemp 2>/dev/null || echo "/tmp/imprint-stop-$$.tmp")
+  printf '%s' "$LAST_TEXT" > "$TMP_BG"
+  ( python3 "$SCRIPT_DIR/lib/ingestion.py" extract "$PID" "$EVENT_ID" < "$TMP_BG" 2>>"$IMPRINT_LOG"
+    rm -f "$TMP_BG"
+  ) </dev/null >/dev/null 2>&1 &
+  disown 2>/dev/null || true
+fi
 
 log_info "stop logged event=$EVENT_ID project=$PID bytes=${#LAST_TEXT}"
 exit 0

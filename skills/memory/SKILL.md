@@ -58,14 +58,47 @@ Chunk types:
 ### `/memory inject <chunk-id>`
 Output a specific chunk's text so Claude Code includes it in context.
 
+### `/memory show <chunk-id> [--json]`
+Pretty-print a chunk's full text + `metadata_json` for **debugging**. 외부
+소스(Slack/Notion)가 어떻게 sectioning됐는지, `url`·`section_title`·
+`last_edited_at` 같은 메타데이터가 정확히 어떻게 채워졌는지 확인할 때
+사용합니다. `<chunk-id>`는 정확한 ID 또는 unique prefix를 받습니다.
+
+```bash
+imprint memory show ab12cd            # 사람이 읽기 좋은 형태
+imprint memory show ab12cd --json     # 스크립트 친화적 JSON
+```
+
+`--json` 출력은 `id`/`chunk_type`/`metadata`(파싱된 객체)/`text`를 포함해
+파이프라인에서 `jq`로 필드를 뽑아 쓰기 좋은 구조입니다.
+
 ### `/memory pin <chunk-id>`
 Mark chunk as pinned so the prefill hook always includes it.
 
-### `/memory list [--recent | --pinned | --type <type>]`
-List memory chunks for the current project.
+### `/memory list [--recent | --pinned | --type <type> | --source <slack|notion|internal>]`
+List memory chunks for the current project. 출력에 `source` 컬럼이 포함돼
+외부 소스(Slack/Notion)와 내부(LLM 추출 / `remember`로 저장한) chunk를
+한눈에 구분할 수 있습니다. `--source slack`/`notion`/`internal`로 필터링
+가능합니다.
 
 ### `/memory forget <chunk-id>`
 Delete a chunk.
+
+### `/memory refresh <spec>`
+Drop cached external (Slack/Notion) chunks so the next prefill re-fetches.
+Manual-only — there is no automatic refresh trigger (D24).
+
+```bash
+# 단일 URL 갱신 (즉시 재 fetch)
+imprint memory refresh https://workspace.slack.com/archives/C123/p1234567890
+
+# 채널 단위 일괄 갱신 — DELETE 후 다음 prefill에서 키워드 매칭으로 자연 재 fetch
+imprint memory refresh source slack
+imprint memory refresh source notion
+
+# 외부 소스 chunk 전체 무효화
+imprint memory refresh project
+```
 
 ## Implementation
 
@@ -81,8 +114,24 @@ The script reads/writes `~/.claude/imprint/app.sqlite`, initializing the schema 
 
 Project is identified by git root (`git rev-parse --show-toplevel`) or current working directory if not in a git repo. Each unique root path gets its own `projects` row.
 
+## External Source Ingestion
+
+`UserPromptSubmit` hook은 prefill 시점에 사내 컨텍스트(Slack 메시지, Notion 페이지)를 lazy fetch로 흡수해 memory에 누적하고, FTS5 + keywords 배열 union ranking으로 관련 chunk를 prepend합니다.
+
+- 정의 위치: `<project>/.imprint/sources.json` (git-share 가능)
+  - `slack.channels`: 키워드 매칭 모드에서 검색할 채널 목록
+  - `notion.pages`: 키워드 매칭 모드에서 fetch할 페이지 URL/ID 목록
+- 자동 트리거:
+  - prompt에 Slack permalink가 들어 있으면 즉시 fetch (thread는 reply selection + 요약, single은 단건)
+  - prompt에 Notion URL이 들어 있으면 페이지 전체를 섹션 단위로 분해해 chunk화
+  - 모호한 prompt에서는 sources.json 채널·페이지를 키워드로 검색
+- 캐시: `metadata_json.url` 기반 dedup, TTL 무한. 갱신은 `/memory refresh` 명시 명령으로만.
+
+`scripts/imprint/lib/ingestion.py`가 Python 단일 모듈로 모든 ingestion 단계를 처리하며, 실패는 plugin.log에만 기록되고 사용자 세션을 차단하지 않습니다.
+
 ## Notes
 
 - Memory is local and never sent to any server.
 - Sensitive information should be redacted before storing — use `--redact` flag (Phase 1.5).
 - The `UserPromptSubmit` hook automatically pulls recent + pinned chunks into prefill (see `hooks/hooks.json`).
+- External source chunks (Slack/Notion) are NOT written to the events table — they live only in `memory_chunks` with `source_event_id IS NULL` (D11, AC7).

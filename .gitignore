@@ -19,3 +19,7 @@
 # Local Claude/OMC state (created at runtime, not part of the plugin source)
 .omc/
 .claude/
+
+# Python bytecode (ingestion.py runs as a script)
+__pycache__/
+*.pyc
