@@ -1,97 +1,120 @@
 ---
 name: hud
-description: Configure the imprint HUD shown in Claude Code's statusline. Pick which segments appear from a 12-field menu (rate limits, context %, model, cost, duration, skills/agents counts, etc).
+description: Customize the imprint statusline HUD via natural language. Use when the user asks to change HUD fields (e.g. "HUD에 cost 추가", "HUD 5h만 보이게", "HUD 켜줘", "HUD 어떤 옵션 있어?"). Translates the request into hud-setup.sh commands; asks for clarification with AskUserQuestion only when truly ambiguous.
 level: 2
 ---
 
 # Imprint HUD
 
-Statusline HUD that lets the user pick which segments to display from a fixed
-12-field menu. All data comes from Claude Code's session JSON (passed via
-stdin) or the local plugin cache. No API keys, no Anthropic API calls.
+`scripts/imprint/hud.sh`가 statusline body를 출력하고, `scripts/imprint/hud-setup.sh`가 그 동작을 설정하는 dispatcher입니다. 이 skill의 역할은 사용자의 자연어 요청을 dispatcher 명령으로 변환하는 것입니다.
 
-## Available fields
+## 작동 방식 한눈에
 
-| ID | 표시 형태 | 출처 |
+```
+유저: "HUD에 cost 추가해줘"
+   ↓
+이 skill 호출
+   ↓
+Claude가 아래 매핑 표를 참조해서 즉시 실행:
+   bash $CLAUDE_PLUGIN_ROOT/scripts/imprint/hud-setup.sh fields enable cost
+   ↓
+사용자에게 적용 결과 + Claude Code 재시작 안내
+```
+
+## 사용자 요청 → 명령 매핑
+
+먼저 묻기 전에 매핑 표에서 직접 의도를 잡으세요. 자연어 요청 대부분은 이 표 안에 있습니다.
+
+| 사용자 요청 | 실행 명령 |
+| --- | --- |
+| "HUD 켜줘" / "statusline 활성화" | `hud-setup.sh install` |
+| "HUD 꺼줘" / "이전 statusline으로 되돌려" | `hud-setup.sh uninstall` |
+| "HUD 지금 어떻게 돼 있어?" / "HUD 상태" | `hud-setup.sh status` 와 `hud-setup.sh fields list` |
+| "HUD 어떤 필드 있어?" / "옵션 알려줘" | `hud-setup.sh fields list` |
+| "HUD에 X 추가" (X가 12개 ID 중 하나) | `hud-setup.sh fields enable X` |
+| "HUD에서 X 빼" / "X 숨겨" | `hud-setup.sh fields disable X` |
+| "HUD를 X·Y만 보이게" / "X·Y만 띄워" | `hud-setup.sh fields set X Y` |
+| "이 프로젝트만 X·Y" / "여기서만" | 위 명령 + `--project` |
+| "HUD 기본값" / "최소 구성" | `hud-setup.sh fields set 5h ctx time` |
+| "HUD 풀스펙" / "다 보여줘" | `hud-setup.sh fields set 5h wk ctx skills agents time` |
+| "프리셋 minimal/focused/full" | `hud-setup.sh layout <name>` (backward-compat) |
+
+## 가용 필드 12개
+
+사용자가 모르는 ID를 말하면 (예: "사용량 보여줘", "토큰 카운트") 아래 표를 참조해서 가장 가까운 ID로 매핑하세요.
+
+| ID | 표시 형태 | 의미 |
 | --- | --- | --- |
-| `5h` | `5h: 25% (1h 49m)` | `rate_limits.five_hour.{used_percentage, resets_at}` |
-| `wk` | `wk: 3% (1d 9h)` | `rate_limits.seven_day.{used_percentage, resets_at}` |
-| `ctx` | `ctx: 12%` | `context_window.used_percentage` |
-| `tokens` | `tok: 24k/200k` | `context_window.total_input_tokens + total_output_tokens / context_window_size` |
-| `model` | `Opus` | `model.display_name` |
-| `effort` | `effort: high+thk` | `effort.level` (+thk if `thinking.enabled`) |
-| `style` | `style: explanatory` | `output_style.name` |
-| `cost` | `$0.42` | `cost.total_cost_usd` (client-side estimate) |
-| `dur` | `dur: 1h 12m` | `cost.total_duration_ms` |
-| `skills` | `skills: 17` | filesystem scan of `~/.claude/plugins/cache/**/SKILL.md` etc. |
-| `agents` | `agents: 1` | filesystem scan of `**/agents/*.md` |
-| `time` | `19:42` | `date +%H:%M` |
+| `5h` | `5h: 25% (1h 49m)` | 5시간 rate limit 사용률 + reset 잔여 |
+| `wk` | `wk: 3% (1d 9h)` | 7일 rate limit 사용률 + reset 잔여 |
+| `ctx` | `ctx: 12%` | 컨텍스트 윈도우 사용 % |
+| `tokens` | `tok: 24k/200k` | 입력+출력 토큰 / 컨텍스트 크기 |
+| `model` | `Opus` | model.display_name |
+| `effort` | `effort: high+thk` | reasoning effort + thinking 플래그 |
+| `style` | `style: explanatory` | output style 이름 |
+| `cost` | `$0.42` | 세션 추정 비용 (client-side) |
+| `dur` | `dur: 1h 12m` | 세션 wall-clock 경과 시간 |
+| `skills` | `skills: 17` | 로드된 skill 파일 수 |
+| `agents` | `agents: 1` | 로드된 agent 파일 수 |
+| `time` | `19:42` | 현재 시각 |
 
-기본 활성 필드: `5h ctx time` (사용자가 처음 설치했을 때 가벼운 출력).
+자주 등장할 자연어 매핑 예:
+- "사용량" / "rate limit" / "남은 시간" → `5h`, `wk`
+- "컨텍스트" / "context" → `ctx`
+- "토큰" / "tokens" → `tokens`
+- "비용" / "돈" / "USD" → `cost`
+- "시간" / "얼마나 걸렸어" / "duration" → `dur`
+- "모델" → `model`
 
-## Quick Commands
+## Scope: user vs project
 
-| Command | Effect |
-| --- | --- |
-| `/imprint:hud install` | Switch the statusline to the imprint HUD (saves any previous config) |
-| `/imprint:hud status` | Show what's currently configured |
-| `/imprint:hud uninstall` | Restore the previous statusline (or remove if none) |
-| `/imprint:hud fields list [--project]` | 가용 필드와 현재 ON 목록 보기 |
-| `/imprint:hud fields set <ids...> [--project]` | 활성 필드 통째 덮어쓰기 — 표시 순서가 인자 순서 |
-| `/imprint:hud fields enable <ids...> [--project]` | 추가 |
-| `/imprint:hud fields disable <ids...> [--project]` | 제거 |
-| `/imprint:hud layout <minimal\|focused\|full>` | (backward-compat) 옛 프리셋 |
+| 어디 | 경로 | 언제 |
+| --- | --- | --- |
+| **project** (우선) | `<git-root>/.imprint/hud-config.json` | 사용자가 "이 프로젝트만", "여기서만", "여기에서는" 같은 표현을 쓸 때 — 명령에 `--project` 추가 |
+| **user** | `~/.claude/imprint/hud-config.json` | 기본. 모든 프로젝트에서 같은 HUD를 원할 때 |
 
-`set`이 가장 자주 쓰입니다 — `hud-setup.sh fields set 5h ctx cost time`처럼
-원하는 순서대로 한 줄에 박아넣는 게 enable/disable 반복보다 깔끔합니다.
+project가 user보다 항상 우선합니다.
 
-## Scope
+## 모호할 때만 AskUserQuestion
 
-설정 파일은 두 군데에서 읽고 **project가 user를 우선**합니다.
+**기본 원칙: 매핑 표로 의도가 잡히면 즉시 실행하고 결과를 보고하세요.** 사용자가 매번 옵션 리스트에서 고르는 건 피로합니다.
 
-| 우선순위 | 경로 |
-| --- | --- |
-| 1 (먼저) | `<git-root>/.imprint/hud-config.json` (project) |
-| 2 | `~/.claude/imprint/hud-config.json` (user) |
-| 3 (둘 다 없으면) | default `["5h", "ctx", "time"]` |
+옵션 질문이 정당화되는 경우:
+- 사용자가 "HUD 커스텀해줘"처럼 정말 모호하게만 요청 — 어떤 필드 ON/OFF인지 단서가 없을 때
+- 사용자가 안 쓸 ID(예: 12개 외)를 말했는데 표에 매칭이 안 될 때
 
-`--project` 플래그가 붙은 명령은 1번 위치를 만지고, 없으면 2번 위치를 만집니다. 같은 git 작업 트리 안에서만 다른 HUD를 쓰고 싶을 때 1번을 사용하고, 모든 작업에서 동일한 HUD가 좋다면 2번만 두면 됩니다.
+질문할 땐 한 번에 multiSelect 한 개로 끝내세요 — 12개 필드를 한 화면에 보여주고 선택받기.
 
-## Examples
+## 실행 후 안내
 
-```bash
-# 사내 프로젝트엔 cost·dur 같은 운영 정보를 띄우고 싶을 때
-cd ~/work/ios-app
-bash scripts/imprint/hud-setup.sh fields set 5h ctx cost dur time --project
+명령을 실행했으면 사용자에게:
+1. 무엇을 바꿨는지 한 줄 (예: "fields = `5h ctx cost time` (user scope)")
+2. **Claude Code를 재시작하거나 `/reload-plugins`해야 새 statusline이 보인다**는 점
 
-# 모든 다른 프로젝트엔 가벼운 기본만
-bash scripts/imprint/hud-setup.sh fields set 5h ctx time
+uninstall이 아닌 한, 새 statusline은 다음 turn부터가 아니라 Claude Code 자체가 statusLine을 재실행해야 적용됩니다.
 
-# Opus 사용량 추적이 필요할 때 한시적으로 model+tokens 추가
-bash scripts/imprint/hud-setup.sh fields enable model tokens
-```
-
-## Implementation
+## Implementation 참고
 
 ```bash
-"$CLAUDE_PLUGIN_ROOT/scripts/imprint/hud.sh"          # statusline body
-"$CLAUDE_PLUGIN_ROOT/scripts/imprint/hud-setup.sh"    # install/status/uninstall/layout/fields
+DISPATCHER="$CLAUDE_PLUGIN_ROOT/scripts/imprint/hud-setup.sh"
+
+# 가장 자주 쓰는 호출들
+bash "$DISPATCHER" fields list                       # 가용 + 활성
+bash "$DISPATCHER" fields set 5h ctx time            # 통째 덮어쓰기
+bash "$DISPATCHER" fields enable cost dur            # 추가
+bash "$DISPATCHER" fields disable wk                 # 제거
+bash "$DISPATCHER" fields set 5h ctx --project       # 프로젝트만
+
+# 설치/상태/제거
+bash "$DISPATCHER" install
+bash "$DISPATCHER" status
+bash "$DISPATCHER" uninstall
 ```
 
-The setup script writes:
-- `~/.claude/settings.json` — `statusLine.command` set to invoke `hud.sh`
-- `~/.claude/imprint/previous-statusline.json` — backup of any prior statusLine value
-- `~/.claude/imprint/backups/settings-<timestamp>.json` — full settings.json snapshot before edit
-- `~/.claude/imprint/hud-config.json` — user-scope `fields` array (or `layout` for backward-compat)
-- `<git-root>/.imprint/hud-config.json` — project-scope override (when `--project` is used)
+dispatcher가 직접 ID 검증, scope 분기, JSON 파일 읽기/쓰기를 처리합니다 — 이 skill에서 수동 JSON 편집은 하지 마세요.
 
-## Coexistence with Other HUDs
+## 트러블슈팅
 
-Only one statusline can be active. If OMC's HUD or another tool was configured, `install` saves its `statusLine` block to `previous-statusline.json` and `uninstall` restores it. Switching back and forth is non-destructive.
-
-## Notes
-
-- Restart Claude Code or run `/reload-plugins` after `install` so the new statusLine is picked up.
-- If `5h` / `wk` / `ctx` / `cost` / `dur` show `-`, Claude Code didn't include the relevant field in the session JSON for the current model/session. The HUD doesn't try to invent values.
-- Skill/agent counts include every installed plugin (OMC, codex, imprint, etc.), not just imprint's.
-- Backward-compat: `hud-config.json`에 `layout: minimal/focused/full`만 있고 `fields`가 없으면 layout이 동등한 fields 배열로 매핑됩니다. 하지만 `fields`를 명시하면 layout 키는 무시되고 자동 제거됩니다.
+- **statusline에 raw `\033[2m...`이 보임**: hud.sh의 ANSI escape 인코딩 버그. 최신 버전에서는 `printf '\033[..]'`를 command substitution으로 감싸 진짜 ESC byte를 박았으니, 이 증상이 보이면 plugin 캐시를 새 버전으로 동기화 + Claude Code 재시작.
+- **`5h` / `wk` / `ctx` / `cost` / `dur`이 `-`로 표시**: Claude Code가 그 필드를 session JSON에 안 실어준 상태. 모델/세션 종류에 따라 일부 필드는 비어 있을 수 있음. HUD는 값을 만들어내지 않습니다.
+- **새 fields가 안 보임**: `hud-config.json`은 즉시 갱신되지만 statusline 자체는 Claude Code 재시작 또는 `/reload-plugins` 후에 재실행됩니다.
