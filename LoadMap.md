@@ -1,5 +1,10 @@
 # imprint Load Map
 
+**문서 책임**
+- 본 문서는 **큰 그림**: 비전·아키텍처·Phase 정의·미시작 단계·위험 요소·최종 목표만 담는다.
+- 단기적인 다음 세션 픽업 안건(즉시 검토, deferred TODO, 직전 Phase 마무리)은 `HANDOFF.md` 참조.
+- 구현된 동작·설치·사용은 `README.md` 참조.
+
 이 문서는 imprint(이전 코드명: `multi-agent-cli-v2` / 더 이전 세대: SwiftUI `MultiAgentCLI`)의 방향을 **Claude Code plugin**으로 정의합니다. 기존 Tauri 데스크톱 앱 청사진을 폐기하고, Claude Code의 hook·skill·subagent 시스템 위에 로컬 개발 작업 기억 시스템을 구축합니다.
 
 ## 방향 전환 요약
@@ -341,9 +346,7 @@ iOS 팀의 사내 프로젝트 컨텍스트(Slack 대화, Notion 기획 정의�
 
 ## Tauri 앱 처리
 
-**폐기 완료.** 본 repo에서 Tauri/React/Vite 코드(`src/`, `src-tauri/`, `index.html`, `vite.config.ts`, `package.json`, `pnpm-lock.yaml`, `scripts/generate-provider-types.mjs` 등)와 빌드 산출물(`dist/`, `node_modules/`)을 모두 제거했습니다. 본 repo는 Claude Code plugin 단일 책임을 가집니다.
-
-Dev PTY 모드(xterm.js + portable-pty)가 본인 워크플로에 필수인 사용자는 이전 SwiftUI 버전 [`MultiAgentCLI`](../MultiAgentCLI)를 그대로 사용하면 됩니다. 신규 LoadMap 기능은 Tauri/SwiftUI 어느 쪽에도 포팅하지 않습니다.
+**폐기 완료.** 본 repo는 Claude Code plugin 단일 책임. Dev PTY 모드가 필요한 사용자는 SwiftUI 버전 [`MultiAgentCLI`](../MultiAgentCLI)를 사용하고, 신규 LoadMap 기능은 어느 쪽에도 포팅하지 않습니다.
 
 ## 위험 요소
 
@@ -394,6 +397,17 @@ hook 스크립트 오류는 Claude Code 세션을 차단할 수 있습니다.
 - 강한 파싱 회피
 - chunk 추출은 패턴 + LLM 보조의 이중 구조
 - skill 단위로 provider 호출 캡슐화
+
+### 6. 환경 가정과 시스템 의존
+
+- macOS 기본 환경 가정 — Linux/Windows 호환은 확인 안 함.
+- `python3`, `sqlite3`, `uuidgen` 시스템 의존 — 누락 시 hook이 silent skip 처리하지만 기능은 비활성화됨.
+- 동일 프로젝트에서 여러 Claude Code 세션이 동시에 돌면 SQLite WAL이 처리하지만 완전한 동시성 검증은 없음.
+
+대응:
+- WAL + busy_timeout으로 일반 동시성 흡수
+- 의존 누락 시 `IMPRINT_DISABLE_*` 환경 변수로 부분 비활성화 가능
+- Linux/Windows 호환은 사용자 요청 시 별도 Phase로 다룸
 
 ## 우선순위
 

@@ -1,8 +1,11 @@
-# Handoff — claude-plugin 브랜치
+# Handoff — 다음 세션 픽업
 
-다음 세션에서 이어서 작업할 때 참고하는 문서입니다. 최종 업데이트: 2026-05-09.
+**문서 책임**
+- 본 문서는 **단기**: 즉시 다음에 손댈 검토 안건, deferred TODO, 직전 작업의 미완 Phase, 다음 세션 시작 시 픽업 지점만 담는다.
+- **큰 그림**(비전·Phase 정의·아키텍처·위험 요소·미시작 Phase 5/6/7)은 `LoadMap.md` 참조.
+- 구현 완료된 Phase 1·2·3(부분)·4(부분)·HUD·플러그인 설치는 `README.md`의 사용/구조/데이터 위치 섹션 참조.
 
-> 완료된 Phase 1·2·3(부분)·4(부분)·HUD·플러그인 설치 항목은 README.md에 반영되어 본 문서에서는 제거함. 구현된 내용은 README의 사용/구조/데이터 위치 섹션 참조.
+최종 업데이트: 2026-05-09.
 
 ## Chunk 분류 세분화 검토 (2026-05-09)
 
@@ -69,17 +72,9 @@ schema migration이 사용자 머신마다 한 번씩 돌아야 한다(`scripts/
 2. `IMPRINT_ALLOWED_TOOLS_FETCH` 가 사용자 등록 Slack/Notion MCP 이름과 일치하는지 확인 (각자 다를 수 있음)
 3. plugin.log에서 `WARN: claude -p` 빈도 모니터링 — 일정 임계 초과 시 timeout 조정
 
-## 남은 작업
+## 직전 작업의 미완 — Phase 3·4 마무리
 
 ### Phase 3 마무리 (Memory skill 정교화)
-
-**Stop hook 청크 추출**
-- 현재 `stop.sh`는 응답 전체를 `llm_response` 이벤트로만 저장.
-- 응답에서 `chunk_type`별로 추출 필요.
-- 두 가지 방식 비교 후 채택:
-  1. 정규식/키워드 기반 추출 (빠름, 단순)
-  2. `claude -p`로 LLM 추출 (정확, 비용은 구독)
-- 시작점: `scripts/imprint/stop.sh` 마지막 부분에 추출 단계 추가.
 
 **Redaction**
 - `memory.sh remember --redact` 플래그 미구현.
@@ -87,7 +82,7 @@ schema migration이 사용자 머신마다 한 번씩 돌아야 한다(`scripts/
 - 시작점: `scripts/imprint/lib/common.sh`에 `redact_text()` 함수 추가.
 
 **memory list 필터 보강**
-- 현재 `--recent`, `--pinned`, `--type` 만 지원.
+- 현재 `--recent`, `--pinned`, `--type`, `--source`만 지원.
 - 추가 필요: `--since <date>`, `--limit <n>`, `--project <path>` (다른 프로젝트 검색).
 
 ### Phase 4 마무리 (Advisor skill 검증)
@@ -105,39 +100,14 @@ schema migration이 사용자 머신마다 한 번씩 돌아야 한다(`scripts/
 - 한쪽 advisor 실패해도 다른 쪽 결과는 `provider_runs`에 status='succeeded'로 남김.
 - 합성 단계에서 빈 입력 처리 필요 (현재는 둘 다 비어 있을 때만 에러).
 
-### Phase 5. Workflow skill (미시작)
+## 단기 Watch List
 
-- `/commit-message` — `git diff --cached` + 최근 memory로 커밋 메시지 후보 생성.
-- `/pr-draft` — `git log <base>..HEAD` + memory로 PR 본문.
-- `/recap` — 오늘의 작업 요약.
-- `/handoff` — 다음 세션용 자동 brief (이 문서 재생성).
-- 위치 제안: `skills/workflow/SKILL.md` + `scripts/imprint/workflow.sh`.
-
-### Phase 6. 외부 레지스트리 (미시작)
-
-- `imprint skill add <github-url>` — GitHub repo에서 SKILL.md 다운로드 후 `~/.claude/imprint/skills/`에 배치.
-- `imprint skill publish <name>` — 본인 GitHub repo에 PR 또는 push.
-- manifest.json 포맷 정의 필요.
-- 권한·서명 검증은 Phase 6.5 이후.
-
-### Phase 7. Vector / 고급 추출 (미시작)
-
-- sqlite-vec 또는 LanceDB 도입.
-- chunk embedding pipeline.
-- hybrid search (FTS + vector).
-
-## 알려진 제약
-
-- macOS 기본 환경 가정. Linux/Windows 호환은 확인 안 함.
-- `python3`, `sqlite3`, `uuidgen` 시스템 의존.
-- Stop hook의 `transcript_path` 포맷은 Claude Code 내부 구조에 의존 — 버전 변경 시 깨질 수 있음.
-- 동일 프로젝트에서 여러 Claude Code 세션이 동시에 돌면 SQLite WAL이 처리하지만, 완전한 동시성 검증은 안 함.
+- Stop hook의 `transcript_path` 포맷은 Claude Code 내부 구조에 의존 — Claude Code 버전 업그레이드 시 깨질 수 있어 plugin.log에서 `stop logged` 로그 누락 여부를 정기 확인.
+- `IMPRINT_BYPASS_HOOKS` 가드가 빠진 새 hook 추가 시 ingestion 무한 재귀 재발 위험 — hook 추가 시 가드 한 줄 누락 점검.
 
 ## 다음 세션 시작 시 추천 픽업 지점
 
-1. **현재 우선순위 — Context Ingestion 확장 (Seed v0.6)**: 위 "TODO 3. 구현 시작" 섹션의 1번(schema.sql trigram migration)부터 점진적으로. Stop hook chunk 추출(Phase 3 마무리)도 이 Seed의 일부로 흡수됨.
-2. **남은 인터뷰 라운드**: TODO 1·2를 다른 노트북·세션에서 `/ouroboros:interview ...`로 재개. Seed v0.6이 immutable spec이므로 새 결정은 D25부터 추가.
-3. **빠른 검증**: `bash scripts/imprint/advisor.sh codex "ping"`으로 OAuth advisor 흐름 확인 (별도 트랙).
-4. **Phase 5 (workflow skill)**: `/commit-message` 등 — Context Ingestion이 안정된 뒤로 미룸.
-
-파일 인덱스는 `README.md` `## 구조` 섹션을 참조한다.
+1. **현재 우선순위** — 이 문서 상단의 "Chunk 분류 세분화 검토" 1번(외부 source `chunk_type` 분리 + backfill). schema migration이 작은 데이터(28건)일 때가 적기.
+2. **남은 인터뷰 라운드** — TODO 1·2를 별도 세션에서 `/ouroboros:interview ...`로 재개. Seed v0.6이 immutable spec이므로 새 결정은 D25부터.
+3. **사용자 환경 검증** — TODO 3을 iOS 팀에 위임하고 plugin.log에서 `WARN: claude -p` 빈도 모니터링.
+4. **빠른 검증** — `bash scripts/imprint/advisor.sh codex "ping"`으로 OAuth advisor 흐름 확인 (별도 트랙).
