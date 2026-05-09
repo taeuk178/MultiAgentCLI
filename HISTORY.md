@@ -9,7 +9,20 @@
 
 기록 순서는 **최신이 위**. 항목당 한 단락 안에 변경/사유/대안 폐기 근거를 묶는다.
 
-## 2026-05-09 — Phase 3·4 마무리(부분): redaction · list 필터 · advisor timeout
+## 2026-05-09 — Advisor skill 완전 제거
+
+**무엇:** `scripts/imprint/advisor.sh`, `skills/advisor/SKILL.md`, `provider_runs` 테이블 정의(`schema.sql`), `IMPRINT_ADVISOR_TIMEOUT` 환경 변수, plugin manifest의 advisor/ccg keyword·tag·description 흔적을 모두 삭제. 같은 날 직전 커밋(`e2c75f1`)에서 추가했던 advisor timeout wrapping도 함께 제거됨.
+
+**왜:** advisor(`/advisor codex/gemini/ccg`)는 본인 워크플로에서 거의 호출되지 않는다. 코드(dispatcher 211줄, SKILL 77줄)와 schema(`provider_runs` 테이블)·plugin manifest 키워드·운영 환경 변수를 유지하는 비용이 거의-안-쓰이는 기능의 가치를 넘어선다. 이번 세션 내에 timeout wrapping까지 박은 직후라 상태가 깨끗할 때 통째로 제거하는 게 나중에 부분 제거하는 것보다 훨씬 작업이 단순.
+
+**폐기한 대안:**
+- 코드는 두고 plugin manifest의 keyword에서만 빼기 — dead code가 남으면 다음 세션에서 또 결정해야 함. 한 번에 정리.
+- `provider_runs` 테이블에 `DROP TABLE` 추가 — 기존 사용자 DB의 row를 지우는 건 부작용이 큼. `CREATE TABLE IF NOT EXISTS`만 빼서 새 사용자에게는 안 깔리고, 기존 row는 그대로 둠.
+- workflow skill(Phase 5)이 `claude -p` 합성을 쓸 때 advisor를 다시 살리는 옵션 — Phase 5는 단일 LLM 호출만으로 충분(memory + git porcelain 합성). multi-provider 합성을 다시 만들 때가 오면 그때 처음부터 다시.
+
+**Superseded:** 직전 항목(2026-05-09 — Phase 3·4 마무리(부분))의 (3) advisor timeout 변경은 모두 무효. `IMPRINT_ADVISOR_TIMEOUT`·`with_timeout`·`gtimeout` 폴백 로직은 advisor 자체가 사라져 더 이상 쓰이지 않는다.
+
+## 2026-05-09 — Phase 3·4 마무리(부분): redaction · list 필터 · advisor timeout (advisor 부분은 superseded)
 
 **무엇:** (1) `common.sh`에 `redact_text()` + `lib/redact-rules.default.json`(7개 룰: API key/PAT/JWT/AWS/private key block) 추가, `memory.sh remember --redact` 플래그로 INSERT 직전 마스킹. (2) `memory list`에 `--since <YYYY-MM-DD>`, `--limit <n>`, `--project <path|id-prefix>` 추가. (3) `advisor.sh`의 codex/gemini/합성 호출을 `IMPRINT_ADVISOR_TIMEOUT`(기본 60초)으로 wrap, macOS는 `gtimeout` 폴백·둘 다 없으면 unbounded + plugin.log 한 줄.
 

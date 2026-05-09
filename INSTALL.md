@@ -1,13 +1,13 @@
 # Imprint — Claude Code Plugin 설치
 
-이 저장소는 Claude Code 플러그인입니다. 설치 후 Claude Code 세션에서 `memory` / `advisor` 스킬과 자동 hook이 동작합니다.
+이 저장소는 Claude Code 플러그인입니다. 설치 후 Claude Code 세션에서 `memory` 스킬과 자동 hook이 동작합니다.
 
 ## 사전 조건
 
 - Claude Code (구독 OAuth로 인증됨)
 - `sqlite3` (macOS 기본 포함)
 - `python3` (macOS 기본 포함)
-- 선택: `codex` CLI, `gemini` CLI (advisor 스킬에서 사용)
+- 선택: Slack / Notion MCP (외부 source lazy fetch에서 사용)
 
 ## 설치 방법
 
@@ -45,23 +45,17 @@ Hook이 동작하면 `~/.claude/imprint/app.sqlite`가 생성되고, `~/.claude/
 ### Memory
 
 ```
-/memory remember <text> [--type decision|fix|todo|...] [--pin]
+/memory remember <text> [--type decision|fix|todo|...] [--pin] [--redact]
 /memory search <query>
-/memory list [--recent | --pinned | --type <type>]
+/memory list [--recent|--pinned|--type <t>|--source <slack|notion|internal>]
+             [--since <date>] [--limit <n>] [--project <path|id-prefix>]
+/memory show <chunk-id> [--json]
+/memory stats [--all] [--json]
 /memory inject <chunk-id>
 /memory pin <chunk-id>
 /memory forget <chunk-id>
+/memory refresh <url|source slack|source notion|project>
 ```
-
-### Advisor (CCG)
-
-```
-/advisor codex <prompt>
-/advisor gemini <prompt>
-/advisor ccg <prompt>
-```
-
-`codex`, `gemini` CLI가 각자 OAuth/구독 인증된 상태여야 합니다.
 
 ## 데이터 위치
 
@@ -84,4 +78,4 @@ rm -rf ~/.claude/imprint  # memory 까지 같이 지우려면
 - **UserPromptSubmit hook**: 유저 입력을 events에 저장하고, pinned + recent 청크를 `[Project memory context]` 블록으로 stdout 출력 → Claude Code가 prompt에 자동 추가
 - **Stop hook**: turn 종료 시 마지막 assistant 응답을 `transcript_path`에서 읽어 events에 저장
 
-모든 LLM 호출은 Claude Code 본체 또는 advisor가 호출하는 `claude -p` / `codex exec` / `gemini -p`를 통해 **OAuth 구독으로** 처리됩니다. API key는 사용하지 않습니다.
+모든 LLM 호출은 Claude Code 본체 또는 hook이 백그라운드에서 호출하는 `claude -p`(prefill 분석·Slack/Notion lazy fetch·Stop chunk 추출)를 통해 **OAuth 구독으로** 처리됩니다. API key는 사용하지 않습니다.

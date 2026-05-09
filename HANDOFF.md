@@ -52,18 +52,17 @@ CREATE INDEX idx_chunks_page ON memory_chunks(project_id, meta_page_id);
 2. `IMPRINT_ALLOWED_TOOLS_FETCH` 가 사용자 등록 Slack/Notion MCP 이름과 일치하는지 확인 (각자 다를 수 있음)
 3. plugin.log에서 `WARN: claude -p` 빈도 모니터링 — 일정 임계 초과 시 timeout 조정
 
-## Phase 3·4 마무리 — 부분 완료 (2026-05-09)
+## Phase 3 마무리 + Phase 4 제거 (2026-05-09)
 
-**완료**
+**Phase 3 완료**
 
-- Phase 3 Redaction: `redact_text()` (`common.sh`), `lib/redact-rules.default.json` 기본 룰셋(API key·JWT·private key block 등 7개), `memory.sh remember --redact` 플래그. 사용자 override는 `~/.claude/imprint/redact-rules.json` 또는 `IMPRINT_REDACT_RULES`.
-- Phase 3 `memory list` 필터: `--since <YYYY-MM-DD>`, `--limit <n>`, `--project <path|id-prefix>` 추가. `--limit`은 정수 검증으로 SQL injection 차단, `--project`는 절대경로면 sha256 변환, 그 외엔 project_id LIKE prefix.
-- Phase 4 timeout: `advisor.sh`의 `run_codex`/`run_gemini`/합성 `claude -p` 호출이 `IMPRINT_ADVISOR_TIMEOUT`(기본 60초)으로 wrap됨. macOS 기본에는 `timeout`이 없어 `gtimeout` 폴백, 둘 다 없으면 wrapping skip + plugin.log 한 줄(unbounded 경로). 합성 단계는 timeout/실패 시 `failed` status로 `provider_runs` 기록 + raw advisor 출력으로 fallback.
+- Redaction: `redact_text()` (`common.sh`), `lib/redact-rules.default.json` 기본 룰셋(API key·JWT·private key block 등 7개), `memory.sh remember --redact` 플래그. 사용자 override는 `~/.claude/imprint/redact-rules.json` 또는 `IMPRINT_REDACT_RULES`.
+- `memory list` 필터: `--since <YYYY-MM-DD>`, `--limit <n>`, `--project <path|id-prefix>`. `--limit`은 정수 검증으로 SQL injection 차단, `--project`는 절대경로면 sha256 변환, 그 외엔 project_id LIKE prefix.
 
-**Deferred**
+**Phase 4 (Advisor) 제거**
 
-- Phase 4 e2e 검증(`bash advisor.sh codex "test"` 직접 실행, Gemini 환경변수 정책 확인): 본인이 advisor를 자주 쓰지 않으면 가치 낮음 — 실제 사용 시점에 픽업.
-- Phase 4 partial failure 저장: 현재는 한쪽이 실패해도 다른 쪽 결과는 그대로 합성 단계에 들어가지만, `provider_runs`의 phase=advisor_draft/review row의 status는 `[[ -s tmp ]] && succeeded || failed`로 결정됨. Empty-output을 모두 failure 처리하므로 timeout-empty와 인증실패-empty가 구분 안 됨. 본인이 advisor를 자주 쓸 때 정교화.
+- `advisor.sh`, `skills/advisor/`, `provider_runs` 테이블 정의를 통째로 삭제. plugin manifest의 keyword·description에서도 advisor 흔적 정리.
+- 사유는 `HISTORY.md` 2026-05-09 항목 참조. 직전에 추가됐던 `IMPRINT_ADVISOR_TIMEOUT` 환경 변수도 함께 제거.
 
 ## 단기 Watch List
 
@@ -74,6 +73,5 @@ CREATE INDEX idx_chunks_page ON memory_chunks(project_id, meta_page_id);
 
 1. **남은 인터뷰 라운드** — TODO 1·2를 별도 세션에서 `/ouroboros:interview ...`로 재개. Seed v0.6이 immutable spec이므로 새 결정은 D25부터. 보안·운영 인터뷰(TODO 2)는 redaction이 도입된 지금 더 자연스러운 시점.
 2. **사용자 환경 검증** — TODO 3을 iOS 팀에 위임하고 plugin.log에서 `WARN: claude -p` 빈도 모니터링.
-3. **Phase 5 진입 (Workflow skill)** — `/commit-message`, `/pr-draft`, `/recap`, `/handoff`. Phase 3·4 마무리의 가시적 부분이 끝났으니 다음은 사용자가 매일 트리거할 새 명령군.
+3. **Phase 5 진입 (Workflow skill)** — `/commit-message`, `/pr-draft`, `/recap`, `/handoff`. Phase 3 마무리·advisor 제거가 끝났으니 다음은 사용자가 매일 트리거할 새 명령군.
 4. **Chunk 분류 2단계** — 검색 체감 저하 시 진입(metadata generated column + 인덱스).
-5. **Phase 4 e2e/partial failure 정교화** — 본인이 advisor를 자주 쓰기 시작했을 때.

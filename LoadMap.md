@@ -16,7 +16,6 @@
 | 실행 환경 | macOS 데스크톱 앱 | Claude Code 세션 안 |
 | LLM 호출 | provider CLI 비대화형 실행 | Claude Code 본체 + hook이 보강 |
 | 인증 | provider별 CLI 인증 | OAuth 구독 그대로 사용 |
-| Advisor | 앱 내 prompt orchestration | `claude -p`, `codex exec`, `gemini -p` hook 호출 |
 | Memory | 앱 SQLite | `~/.claude/imprint/` SQLite + 마크다운 |
 | UI | React + Tailwind 데스크톱 창 | Claude Code 세션 (skill 출력, hook 컨텍스트) |
 | Dev PTY 모드 | xterm.js 기반 인터랙티브 터미널 | 폐기 (Claude Code가 대신함) |
@@ -92,7 +91,6 @@ Claude/Codex/Gemini를 같은 SQLite memory에 누적합니다. Claude Code 세�
     stop.sh                               # 응답에서 memory 추출
   skills/                                 # 글로벌 skill
     memory/SKILL.md
-    advisor/SKILL.md
     commit-message/SKILL.md
   config.json                             # 사용자 설정
 
@@ -143,19 +141,6 @@ memory_chunks(
   metadata_json text not null default '{}',
   created_at text not null,
   pinned integer not null default 0
-);
-
-provider_runs(
-  id text primary key,
-  conversation_id text references conversations(id),
-  project_id text references projects(id),
-  provider text not null,          -- claude, codex, gemini
-  phase text not null,             -- single, advisor_draft, advisor_review, advisor_synthesize
-  prompt_event_id text references events(id),
-  output_event_id text references events(id),
-  status text not null,
-  started_at text not null,
-  finished_at text
 );
 
 -- FTS
@@ -238,16 +223,6 @@ skill은 Claude Code의 `Skill` 도구로 호출되는 명령. 각 skill은 SKIL
 /memory forget <chunk-id>  삭제
 ```
 
-#### advisor skill (CCG 패턴)
-
-```text
-/advisor codex <prompt>    codex exec로 의견
-/advisor gemini <prompt>   gemini -p로 의견
-/advisor ccg <prompt>      codex + gemini 병렬, 결과를 Claude가 합성
-```
-
-advisor 결과는 `provider_runs` 테이블과 `events` 테이블에 함께 저장. 다음 prefill에 컨텍스트로 사용 가능.
-
 #### workflow skill
 
 ```text
@@ -307,12 +282,9 @@ GitHub repo (imprint-skills)
 - chunk_type별 검색 필터
 - 결과 포맷이 Claude Code 컨텍스트에 그대로 들어가도록 설계
 
-### Phase 4. Advisor skill (1주)
+### Phase 4. Advisor skill — 제거됨 (2026-05-09)
 
-- `/advisor codex/gemini/ccg`
-- `claude -p`, `codex exec`, `gemini -p` 통합
-- 결과를 `provider_runs`에 저장
-- 합성 로직: Claude가 두 의견을 받아 `claude -p` 한 번 더로 최종 답변
+`/advisor codex/gemini/ccg`(`codex exec` + `gemini -p` + `claude -p` 합성)는 본인 워크플로에서 거의 쓰이지 않아 dispatcher · SKILL.md · `provider_runs` 테이블을 통째로 삭제했다. 사유는 `HISTORY.md` 2026-05-09 항목 참조.
 
 ### Phase 5. Workflow skill (1주)
 
@@ -393,14 +365,13 @@ hook 스크립트 오류는 Claude Code 세션을 차단할 수 있습니다.
 - append-only 패턴
 - 단일 writer는 필요 시 도입
 
-### 5. provider CLI 출력 포맷 변경
+### 5. claude CLI 출력 포맷 변경
 
-`claude -p`, `codex exec`, `gemini -p` 출력 포맷은 바뀔 수 있습니다.
+`claude -p haiku` 출력 포맷이 바뀌면 prefill 분석·외부 source fetch·Stop chunk 추출 결과 파싱이 깨집니다.
 
 대응:
-- 강한 파싱 회피
-- chunk 추출은 패턴 + LLM 보조의 이중 구조
-- skill 단위로 provider 호출 캡슐화
+- JSON-only 강제 프롬프트 + `parse_json_relaxed`(코드펜스/주변 텍스트 제거 후 첫 JSON 객체 추출)
+- 모든 호출이 graceful degradation — 파싱 실패 시 silent skip + 기존 chunk만 prepend
 
 ### 6. 환경 가정과 시스템 의존
 
@@ -419,9 +390,9 @@ hook 스크립트 오류는 Claude Code 세션을 차단할 수 있습니다.
 
 1. Phase 1 + 2 (memory 저장소 + hook)
 2. Phase 3 (memory skill)
-3. Phase 4 (advisor skill)
+3. Phase 4.5 (Slack/Notion lazy fetch)
 
-이 세 단계만 갖춰도 "유저 input이 memory에 등록되고, 모호한 질문이 보강되며, 응답에서 자동으로 chunk가 누적되고, codex/gemini 의견을 OAuth 구독으로 받는" Hermes-agent 스타일이 동작합니다.
+이 세 단계만 갖춰도 "유저 input이 memory에 등록되고, 모호한 질문이 보강되며, 응답에서 자동으로 chunk가 누적되고, prompt에 들어 있는 사내 Slack/Notion URL을 백그라운드에서 흡수해 다음 turn에 컨텍스트로 prepend하는" 흐름이 동작합니다.
 
 레지스트리(Phase 6)는 사용자 수가 늘어 공유 수요가 생길 때 시작합니다.
 
@@ -431,7 +402,7 @@ hook 스크립트 오류는 Claude Code 세션을 차단할 수 있습니다.
 Claude Code 세션
   + UserPromptSubmit hook (memory 주입)
   + Stop hook (memory 추출)
-  + memory/advisor/workflow skill
+  + memory/workflow skill
   + 글로벌 + 프로젝트 SQLite memory
   + GitHub 기반 skill 레지스트리
   -> 구독 OAuth만으로 동작하는 로컬 개발 작업 기억 시스템

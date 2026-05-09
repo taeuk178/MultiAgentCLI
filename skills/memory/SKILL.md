@@ -34,7 +34,7 @@ Project override:
 FTS5 search across memory chunks for the current project.
 
 ```bash
-imprint memory search "advisor 합성 흐름"
+imprint memory search "Notion 페이지 섹션 분해 규칙"
 ```
 
 ### `/memory remember <text> [--type <t>] [--pin] [--redact]`
@@ -42,7 +42,7 @@ Store an explicit memory chunk. Optionally specify chunk_type, pin it, or
 redact secrets before storing.
 
 ```bash
-imprint memory remember "Quick 모드는 one-shot 실행, advisor 활성" --type decision
+imprint memory remember "Quick 모드는 one-shot 실행, lazy fetch 즉시 트리거" --type decision
 imprint memory remember "key sk-ant-XXX 작동 확인" --redact     # secrets masked before INSERT
 ```
 

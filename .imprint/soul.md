@@ -25,8 +25,7 @@
 
 ## 활용 가능한 plugin 자원
 
-- **/memory** — 로컬 SQLite + FTS5 메모리 검색·저장·핀
-- **/advisor** — codex / gemini를 advisor로 호출 후 합성
+- **/memory** — 로컬 SQLite + FTS5 메모리 검색·저장·핀, Slack/Notion lazy fetch
 - **HUD** — statusline에 5h/wk/ctx 잔여, skills/agents 카운트 표시
 
 ## Plugin은 다음을 강제하지 않습니다

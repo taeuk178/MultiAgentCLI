@@ -75,7 +75,6 @@ flowchart TB
 | `IMPRINT_ALLOWED_TOOLS_FETCH` | (Notion·Slack 와일드카드) | fetch `claude -p`에 전달할 `--allowed-tools` 값 |
 | `IMPRINT_NO_SEED` | `0` | `1`이면 SessionStart의 `.imprint/` 시드 비활성 |
 | `IMPRINT_HOME` | `~/.claude/imprint` | DB · log 저장 위치 |
-| `IMPRINT_ADVISOR_TIMEOUT` | `60` | `advisor.sh`의 codex/gemini/합성 호출 타임아웃(초). `timeout`/`gtimeout` 미설치 시 wrapping skip |
 | `IMPRINT_REDACT_RULES` | (사용자 파일 ↔ plugin default) | `memory remember --redact` 룰셋 경로. 미지정 시 `~/.claude/imprint/redact-rules.json` → plugin default 순 |
 
 ## 데이터 위치 요약
@@ -85,7 +84,7 @@ flowchart TB
 | `<project>/.imprint/soul.md` | 세션 시작·압축 후 자동 prepend되는 persona·동작 규칙 |
 | `<project>/.imprint/UserPromptSubmit.md` | 키워드 → agent 라우팅 룰 |
 | `<project>/.imprint/sources.json` | lazy-fetch 대상 Slack 채널·Notion 페이지 |
-| `~/.claude/imprint/app.sqlite` | events · memory_chunks · provider_runs · FTS5 인덱스 |
+| `~/.claude/imprint/app.sqlite` | events · memory_chunks · FTS5 인덱스 (기존 사용자 DB에는 과거 advisor가 쓰던 `provider_runs` row가 남아 있을 수 있다) |
 | `~/.claude/imprint/plugin.log` | hook · dispatcher · ingestion 로그 |
 | `~/.claude/imprint/previous-statusline.json` | hud-setup install 시 백업된 이전 statusLine 설정 |
 

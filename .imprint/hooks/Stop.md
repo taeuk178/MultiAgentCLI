@@ -18,7 +18,7 @@ Claude Code가 직접 읽지 않습니다 — 사람이 보는 참고 문서입�
 기본 동작에 사용자 편집 지점은 없습니다. 응답은 자동 archive되고, `/memory search`로 이전 응답을 조회할 수 있습니다.
 
 ```bash
-imprint memory search "이전 답변에서 언급한 advisor 결과"
+imprint memory search "이전 답변에서 언급한 결정"
 ```
 
 ## 간단한 예시
