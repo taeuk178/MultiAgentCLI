@@ -8,6 +8,10 @@ IMPRINT_HOME="${IMPRINT_HOME:-$HOME/.claude/imprint}"
 IMPRINT_DB="$IMPRINT_HOME/app.sqlite"
 IMPRINT_LOG="$IMPRINT_HOME/plugin.log"
 
+# common.sh가 위치한 lib/ 기준으로 plugin root 도출 (lib → imprint/ → scripts/ → root).
+IMPRINT_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+IMPRINT_PLUGIN_ROOT="$(cd "$IMPRINT_LIB_DIR/../../.." && pwd)"
+
 ensure_home() {
   mkdir -p "$IMPRINT_HOME"
 }
@@ -65,4 +69,38 @@ safe_run() {
     log_error "command failed: $*"
     return 0
   fi
+}
+
+# 정규식 룰셋으로 secret을 마스킹한다. argv[1]을 입력으로 받고 결과를 stdout.
+# 룰셋 우선순위: $IMPRINT_REDACT_RULES > ~/.claude/imprint/redact-rules.json > plugin default.
+# python3·룰 파일·re.sub 중 하나라도 실패하면 원문 그대로 통과(무 redaction)한다.
+redact_text() {
+  local text="$1"
+  local rules="${IMPRINT_REDACT_RULES:-$IMPRINT_HOME/redact-rules.json}"
+  if [[ ! -f "$rules" ]]; then
+    rules="$IMPRINT_LIB_DIR/redact-rules.default.json"
+  fi
+  if [[ ! -f "$rules" ]] || ! command -v python3 >/dev/null 2>&1; then
+    printf '%s' "$text"
+    return 0
+  fi
+  REDACT_RULES="$rules" python3 -c '
+import json, os, re, sys
+text = sys.stdin.read()
+try:
+    with open(os.environ["REDACT_RULES"]) as f:
+        cfg = json.load(f)
+except Exception:
+    sys.stdout.write(text); sys.exit(0)
+for rule in cfg.get("rules", []):
+    pat = rule.get("pattern")
+    repl = rule.get("replacement", "[REDACTED]")
+    if not pat:
+        continue
+    try:
+        text = re.sub(pat, repl, text)
+    except re.error:
+        continue
+sys.stdout.write(text)
+' <<< "$text"
 }

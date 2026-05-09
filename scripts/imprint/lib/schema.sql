@@ -53,18 +53,8 @@ CREATE INDEX IF NOT EXISTS idx_chunks_project_pinned_created
 CREATE INDEX IF NOT EXISTS idx_chunks_type
   ON memory_chunks (project_id, chunk_type);
 
-CREATE TABLE IF NOT EXISTS provider_runs (
-  id                TEXT PRIMARY KEY,
-  conversation_id   TEXT REFERENCES conversations(id),
-  project_id        TEXT NOT NULL REFERENCES projects(id),
-  provider          TEXT NOT NULL,
-  phase             TEXT NOT NULL,
-  prompt_event_id   TEXT REFERENCES events(id),
-  output_event_id   TEXT REFERENCES events(id),
-  status            TEXT NOT NULL,
-  started_at        TEXT NOT NULL,
-  finished_at       TEXT
-);
+-- 과거 advisor skill이 사용했던 provider_runs 테이블은 제거됐다.
+-- 기존 사용자 DB에 남아 있는 row는 그대로 두되 새 사용자는 만들지 않는다.
 
 -- FTS5 인덱스: 한국어 부분문자열 매칭(예: '더스트' → '더스트가/더스트의')을
 -- 위해 trigram tokenizer 사용. unicode61 기반 기존 인덱스가 남아 있으면

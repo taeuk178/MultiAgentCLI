@@ -31,7 +31,7 @@
 
 ## 프로젝트 요지
 
-이 repo는 Claude Code plugin입니다. 로컬 작업 기억(SQLite + FTS5)과 advisor orchestration, statusline HUD를 hook·skill·subagent 형태로 제공합니다.
+이 repo는 Claude Code plugin입니다. 로컬 작업 기억(SQLite + FTS5), 외부 소스(Slack·Notion) lazy fetch, statusline HUD를 hook·skill·subagent 형태로 제공합니다.
 
 이전에는 [`MultiAgentCLI`](../MultiAgentCLI)(SwiftUI)의 후속으로 Tauri 데스크톱 앱(이전 코드명 `multi-agent-cli-v2`)을 청사진으로 잡았으나, **Tauri 방향은 폐기**하고 Claude Code plugin(`imprint`)으로 전환했습니다. 본 repo에는 더 이상 Rust/React 코드가 없습니다.
 
@@ -41,11 +41,11 @@
 
 - **Plugin manifest**: `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`
 - **Hooks (Bash)**: `hooks/hooks.json`이 `SessionStart`, `UserPromptSubmit`, `Stop`을 `scripts/imprint/*.sh`에 연결
-- **Skills**: `skills/{memory,advisor,hud}/SKILL.md` — Claude가 필요할 때 dispatcher 스크립트를 호출
+- **Skills**: `skills/{memory,hud}/SKILL.md` — Claude가 필요할 때 dispatcher 스크립트를 호출
 - **데이터**: `~/.claude/imprint/app.sqlite` (FTS5 포함), `~/.claude/imprint/plugin.log`
 - **Statusline**: `scripts/imprint/hud.sh`가 Claude Code stdin의 세션 JSON을 읽어 5h/wk/ctx + 잔여 시간과 활성 plugin의 skills/agents 수를 출력
 
-런타임 의존: `bash`, `python3`, `sqlite3`, `uuidgen`. provider 호출은 별도로 설치된 `claude`, `codex`, `gemini` CLI를 사용합니다.
+런타임 의존: `bash`, `python3`, `sqlite3`, `uuidgen`. 백그라운드 LLM 호출(prefill 분석, Slack/Notion lazy fetch, Stop chunk 추출)은 OAuth 구독으로 인증된 `claude` CLI를 사용합니다.
 
 ## 디렉토리 구조
 
@@ -58,17 +58,18 @@ imprint/
 │   └── hooks.json
 ├── skills/
 │   ├── memory/SKILL.md
-│   ├── advisor/SKILL.md
 │   └── hud/SKILL.md
 ├── scripts/imprint/
 │   ├── lib/
-│   │   ├── common.sh        DB·project·로그 헬퍼
+│   │   ├── common.sh        DB·project·redact·로그 헬퍼
+│   │   ├── ingestion.py     prefill 분석·Slack/Notion lazy fetch·Stop 추출·refresh
+│   │   ├── migrations.sh    schema migration · backfill
+│   │   ├── redact-rules.default.json  플러그인 default redact 룰셋
 │   │   └── schema.sql       SQLite 스키마 (idempotent)
 │   ├── session-start.sh     SessionStart hook
 │   ├── user-prompt-submit.sh UserPromptSubmit hook
 │   ├── stop.sh              Stop hook
 │   ├── memory.sh            /memory dispatcher
-│   ├── advisor.sh           /advisor dispatcher
 │   ├── hud.sh               statusline body
 │   └── hud-setup.sh         statusLine install/status/uninstall/layout
 ├── INSTALL.md
@@ -104,7 +105,7 @@ imprint/
 
 ## 사용자 개입 지점
 
-- 외부 CLI 인증 (Claude/Codex/Gemini OAuth) — 사용자 직접 단계.
+- 외부 CLI 인증 (`claude` OAuth, Slack/Notion MCP) — 사용자 직접 단계.
 - statusLine 교체 시 기존 statusline 백업/복원 확인.
 
 <!-- ooo:START -->

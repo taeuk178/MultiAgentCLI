@@ -18,12 +18,14 @@ usage() {
 imprint memory <subcommand> [args]
 
   search <query>             FTS search across this project's memory
-  remember <text>            Store an explicit chunk (--type <t>, --pin)
+  remember <text>            Store an explicit chunk (--type <t>, --pin, --redact)
   inject <id>                Print a chunk's text for context injection
   show <id> [--json]         Pretty-print a chunk's text + metadata (debug)
+  stats [--all] [--json]     Memory 분포·통계 요약(현 프로젝트 또는 전 프로젝트)
   pin <id>                   Mark chunk as pinned (always prefilled)
   unpin <id>                 Remove pinned status
   list [--recent|--pinned|--type <t>|--source <slack|notion|internal>]
+       [--since <YYYY-MM-DD>] [--limit <n>] [--project <path|id-prefix>]
   forget <id>                Delete a chunk
   refresh <spec>             Drop cached external chunks matching spec
                              and re-fetch on next prefill (D24, AC16):
@@ -66,27 +68,35 @@ cmd_remember() {
   local text=""
   local chunk_type="note"
   local pinned=0
+  local redact=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --type) chunk_type="${2:-note}"; shift 2 ;;
-      --pin)  pinned=1; shift ;;
-      *)      text+="${text:+ }$1"; shift ;;
+      --type)   chunk_type="${2:-note}"; shift 2 ;;
+      --pin)    pinned=1; shift ;;
+      --redact) redact=1; shift ;;
+      *)        text+="${text:+ }$1"; shift ;;
     esac
   done
   if [[ -z "${text// }" ]]; then
     echo "remember requires <text>" >&2
     exit 1
   fi
+  local metadata="{}"
+  if (( redact )); then
+    text=$(redact_text "$text")
+    metadata='{"redacted":true}'
+  fi
   local pid; pid=$(project_id)
   local id; id=$(new_id)
   local now; now=$(now_iso)
   local esc_text; esc_text=$(sql_escape "$text")
   local esc_type; esc_type=$(sql_escape "$chunk_type")
+  local esc_md; esc_md=$(sql_escape "$metadata")
   db_exec "
-    INSERT INTO memory_chunks (id, project_id, chunk_type, text, created_at, pinned)
-    VALUES ('$id', '$pid', '$esc_type', '$esc_text', '$now', $pinned);
+    INSERT INTO memory_chunks (id, project_id, chunk_type, text, metadata_json, created_at, pinned)
+    VALUES ('$id', '$pid', '$esc_type', '$esc_text', '$esc_md', '$now', $pinned);
   "
-  echo "remembered $id ($chunk_type, pinned=$pinned)"
+  echo "remembered $id ($chunk_type, pinned=$pinned, redacted=$redact)"
 }
 
 cmd_inject() {
@@ -115,17 +125,44 @@ cmd_list() {
   local mode="recent"
   local type_filter=""
   local source_filter=""
+  local since_filter=""
+  local limit="50"
+  local project_filter=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --recent) mode="recent"; shift ;;
-      --pinned) mode="pinned"; shift ;;
-      --type)   type_filter="${2:-}"; shift 2 ;;
-      --source) source_filter="${2:-}"; shift 2 ;;
-      *)        shift ;;
+      --recent)  mode="recent"; shift ;;
+      --pinned)  mode="pinned"; shift ;;
+      --type)    type_filter="${2:-}"; shift 2 ;;
+      --source)  source_filter="${2:-}"; shift 2 ;;
+      --since)   since_filter="${2:-}"; shift 2 ;;
+      --limit)   limit="${2:-50}"; shift 2 ;;
+      --project) project_filter="${2:-}"; shift 2 ;;
+      *)         shift ;;
     esac
   done
-  local pid; pid=$(project_id)
-  local where="project_id = '$pid'"
+
+  # --limit 안전: 정수가 아니면 50으로 폴백
+  if ! [[ "$limit" =~ ^[0-9]+$ ]]; then
+    limit=50
+  fi
+
+  # project 결정: --project 없으면 현 프로젝트, 있으면 path(절대경로 시작)는
+  # sha256으로 변환, 그 외엔 project_id prefix 매칭(LIKE).
+  local where=""
+  if [[ -n "$project_filter" ]]; then
+    if [[ "$project_filter" == /* ]]; then
+      local pid_for_path
+      pid_for_path=$(printf '%s' "$project_filter" | shasum -a 256 | awk '{print $1}' | cut -c1-16)
+      where="project_id = '$pid_for_path'"
+    else
+      local esc_pf; esc_pf=$(sql_escape "$project_filter")
+      where="project_id LIKE '$esc_pf%'"
+    fi
+  else
+    local pid; pid=$(project_id)
+    where="project_id = '$pid'"
+  fi
+
   if [[ "$mode" == "pinned" ]]; then
     where+=" AND pinned = 1"
   fi
@@ -136,11 +173,14 @@ cmd_list() {
   if [[ -n "$source_filter" ]]; then
     local esc_s; esc_s=$(sql_escape "$source_filter")
     if [[ "$source_filter" == "internal" ]]; then
-      # internal = chunks without an explicit external source tag
       where+=" AND coalesce(json_extract(metadata_json, '\$.source'), '') NOT IN ('slack','notion')"
     else
       where+=" AND json_extract(metadata_json, '\$.source') = '$esc_s'"
     fi
+  fi
+  if [[ -n "$since_filter" ]]; then
+    local esc_since; esc_since=$(sql_escape "$since_filter")
+    where+=" AND created_at >= '$esc_since'"
   fi
   db_exec "
     SELECT id, chunk_type, pinned,
@@ -149,7 +189,7 @@ cmd_list() {
     FROM memory_chunks
     WHERE $where
     ORDER BY pinned DESC, created_at DESC
-    LIMIT 50;
+    LIMIT $limit;
   "
 }
 
@@ -252,6 +292,149 @@ print(wrapped)
 PY
 }
 
+cmd_stats() {
+  local scope="project"
+  local fmt="pretty"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --all)  scope="all"; shift ;;
+      --json) fmt="json"; shift ;;
+      *)      shift ;;
+    esac
+  done
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "python3 not found in PATH" >&2
+    exit 1
+  fi
+  local pid; pid=$(project_id)
+  local root; root=$(project_root)
+  IMPRINT_DB="$IMPRINT_DB" \
+  STATS_PROJECT_ID="$pid" \
+  STATS_PROJECT_ROOT="$root" \
+  STATS_SCOPE="$scope" \
+  STATS_FMT="$fmt" \
+  python3 - <<'PY'
+import json, os, sqlite3, sys
+
+db_path = os.environ["IMPRINT_DB"]
+project_id = os.environ["STATS_PROJECT_ID"]
+project_root = os.environ["STATS_PROJECT_ROOT"]
+scope = os.environ.get("STATS_SCOPE", "project")
+fmt = os.environ.get("STATS_FMT", "pretty")
+
+try:
+    conn = sqlite3.connect(db_path, timeout=5.0)
+except sqlite3.Error as exc:
+    sys.stderr.write(f"db open failed: {exc}\n")
+    sys.exit(1)
+
+def project_summary(pid):
+    cur = conn.execute(
+        "SELECT COUNT(*), SUM(pinned), MIN(created_at), MAX(created_at) "
+        "FROM memory_chunks WHERE project_id = ?;",
+        (pid,),
+    )
+    total, pinned, oldest, newest = cur.fetchone()
+    total = total or 0
+    pinned = pinned or 0
+
+    type_dist = conn.execute(
+        "SELECT chunk_type, COUNT(*) FROM memory_chunks "
+        "WHERE project_id = ? GROUP BY chunk_type ORDER BY 2 DESC;",
+        (pid,),
+    ).fetchall()
+
+    source_dist = conn.execute(
+        "SELECT COALESCE(json_extract(metadata_json,'$.source'),'internal'), COUNT(*) "
+        "FROM memory_chunks WHERE project_id = ? "
+        "GROUP BY 1 ORDER BY 2 DESC;",
+        (pid,),
+    ).fetchall()
+
+    notion_urls = conn.execute(
+        "SELECT COUNT(DISTINCT json_extract(metadata_json,'$.page_id')) "
+        "FROM memory_chunks WHERE project_id = ? "
+        "  AND json_extract(metadata_json,'$.source') = 'notion';",
+        (pid,),
+    ).fetchone()[0] or 0
+
+    slack_urls = conn.execute(
+        "SELECT COUNT(DISTINCT json_extract(metadata_json,'$.url')) "
+        "FROM memory_chunks WHERE project_id = ? "
+        "  AND json_extract(metadata_json,'$.source') = 'slack';",
+        (pid,),
+    ).fetchone()[0] or 0
+
+    return {
+        "project_id": pid,
+        "total": total, "pinned": pinned,
+        "oldest": oldest, "newest": newest,
+        "chunk_type": dict(type_dist),
+        "source": dict(source_dist),
+        "external_urls": {"notion_pages": notion_urls, "slack_messages": slack_urls},
+    }
+
+def all_projects():
+    rows = conn.execute(
+        "SELECT p.id, p.root_path, COUNT(m.id), SUM(m.pinned), MAX(m.created_at) "
+        "FROM projects p LEFT JOIN memory_chunks m ON m.project_id = p.id "
+        "GROUP BY p.id, p.root_path "
+        "ORDER BY 3 DESC;"
+    ).fetchall()
+    return [
+        {"project_id": r[0], "path": r[1], "total": r[2] or 0,
+         "pinned": r[3] or 0, "newest": r[4]}
+        for r in rows
+    ]
+
+if scope == "all":
+    summary = all_projects()
+    if fmt == "json":
+        sys.stdout.write(json.dumps(summary, ensure_ascii=False, indent=2) + "\n")
+        sys.exit(0)
+    if not summary:
+        print("(no projects)")
+        sys.exit(0)
+    print(f"{'project_id':<18} {'chunks':>7} {'pinned':>7}  newest                path")
+    for r in summary:
+        newest = r["newest"] or "-"
+        print(f"{r['project_id']:<18} {r['total']:>7} {r['pinned']:>7}  {newest:<20}  {r['path']}")
+    sys.exit(0)
+
+# project scope
+s = project_summary(project_id)
+if fmt == "json":
+    s["path"] = project_root
+    sys.stdout.write(json.dumps(s, ensure_ascii=False, indent=2) + "\n")
+    sys.exit(0)
+
+print(f"project:       {s['project_id']}")
+print(f"path:          {project_root}")
+print(f"chunks total:  {s['total']}")
+print(f"pinned:        {s['pinned']}")
+print(f"oldest:        {s['oldest'] or '-'}")
+print(f"newest:        {s['newest'] or '-'}")
+print()
+print("chunk_type:")
+if s["chunk_type"]:
+    for k, v in sorted(s["chunk_type"].items(), key=lambda x: (-x[1], x[0])):
+        print(f"  {k:<14} {v}")
+else:
+    print("  <empty>")
+print()
+print("source:")
+if s["source"]:
+    for k, v in sorted(s["source"].items(), key=lambda x: (-x[1], x[0])):
+        print(f"  {k:<14} {v}")
+else:
+    print("  <empty>")
+print()
+print("external URLs (unique):")
+print(f"  notion_pages   {s['external_urls']['notion_pages']}")
+print(f"  slack_messages {s['external_urls']['slack_messages']}")
+PY
+}
+
 cmd_forget() {
   local id="${1:-}"
   if [[ -z "$id" ]]; then
@@ -284,6 +467,7 @@ main() {
     remember) cmd_remember "$@" ;;
     inject)   cmd_inject "$@" ;;
     show)     cmd_show "$@" ;;
+    stats)    cmd_stats "$@" ;;
     pin)      cmd_pin "$@" 1 ;;
     unpin)    cmd_pin "$@" 0 ;;
     list)     cmd_list "$@" ;;

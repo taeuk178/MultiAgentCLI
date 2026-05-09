@@ -3,47 +3,25 @@
 **문서 책임**
 - 본 문서는 **단기**: 즉시 다음에 손댈 검토 안건, deferred TODO, 직전 작업의 미완 Phase, 다음 세션 시작 시 픽업 지점만 담는다.
 - **큰 그림**(비전·Phase 정의·아키텍처·위험 요소·미시작 Phase 5/6/7)은 `LoadMap.md` 참조.
-- 구현 완료된 Phase 1·2·3(부분)·4(부분)·HUD·플러그인 설치는 `README.md`의 사용/구조/데이터 위치 섹션 참조.
+- **결정 사유 로그**(왜 그렇게 바꿨는지)는 `HISTORY.md` 참조.
+- 구현 완료된 Phase 1·2·3·4.5·HUD·플러그인 설치의 사용·구조·데이터 위치는 `README.md` 참조.
 
 최종 업데이트: 2026-05-09.
 
-## Chunk 분류 세분화 검토 (2026-05-09)
+## Chunk 분류 2단계 (대기)
 
-청크 데이터가 한 테이블·9개 chunk_type enum + `metadata_json` 한 봉지에 모두 들어가는데, 실제 DB를 보면 **28건이 모두 `note` × `source=notion` 한 칸에 통밥**된 상태(외부 source chunk를 일괄 `note`로 INSERT). 9개 enum이 의미를 못 살리고 있고, 자주 쓰는 metadata 키(`source`, `page_id`, `url`)는 인덱스 없이 row마다 `json_extract`로 파싱됨.
+`metadata.source` / `page_id`를 generated column으로 승격하고 인덱스를 추가한다. 검색 체감이 느려진 시점에 점진 도입.
 
-**현 schema 핵심 (`scripts/imprint/lib/schema.sql:39-54`)**
+```sql
+ALTER TABLE memory_chunks ADD COLUMN
+  meta_source TEXT GENERATED ALWAYS AS (json_extract(metadata_json,'$.source')) VIRTUAL;
+ALTER TABLE memory_chunks ADD COLUMN
+  meta_page_id TEXT GENERATED ALWAYS AS (json_extract(metadata_json,'$.page_id')) VIRTUAL;
+CREATE INDEX idx_chunks_source ON memory_chunks(project_id, meta_source);
+CREATE INDEX idx_chunks_page ON memory_chunks(project_id, meta_page_id);
+```
 
-- 분류 축 3개: `chunk_type` enum(9), `metadata.source` JSON, `pinned`
-- 인덱스: `(project_id, pinned DESC, created_at DESC)`, `(project_id, chunk_type)` — metadata 인덱스 없음
-- 검색: FTS5 trigram(text) ∪ `metadata.keywords` 배열 hit ranking
-
-**제안 — 두 단계로 끊어서 진행**
-
-1. 외부 source `chunk_type` 분리 (작은 의미 변경)
-   - `note(notion)` → `spec`, `note(slack 단발)` → `message`, `note(slack thread)` → `thread`
-   - `fetch_notion_url` / `fetch_slack_*`의 INSERT 자리에서 chunk_type만 변경
-   - 기존 28건 backfill 1줄: `UPDATE memory_chunks SET chunk_type='spec' WHERE json_extract(metadata_json,'$.source')='notion';`
-
-2. metadata 키 generated column + 인덱스 승격 (검색 성능)
-   ```sql
-   ALTER TABLE memory_chunks ADD COLUMN
-     meta_source TEXT GENERATED ALWAYS AS (json_extract(metadata_json,'$.source')) VIRTUAL;
-   ALTER TABLE memory_chunks ADD COLUMN
-     meta_page_id TEXT GENERATED ALWAYS AS (json_extract(metadata_json,'$.page_id')) VIRTUAL;
-   CREATE INDEX idx_chunks_source ON memory_chunks(project_id, meta_source);
-   CREATE INDEX idx_chunks_page ON memory_chunks(project_id, meta_page_id);
-   ```
-   - `chunk_url_exists`, `cmd_refresh`, prefill 검색이 즉시 빨라짐
-   - 같은 Notion 페이지 N개 섹션의 page-level 그룹화 쿼리 정상화
-
-**가지 말아야 할 길**
-
-- 외부 source 별도 테이블 (`external_chunks` 등) — 현재 28건 규모에 union/trigger/FTS 두 벌 운영비가 분류 이득보다 큼
-- `chunk_type` enum 자유 텍스트화 — 일관성 상실
-
-**트레이드오프 한 줄**
-
-schema migration이 사용자 머신마다 한 번씩 돌아야 한다(`scripts/imprint/lib/migrations.sh`에 추가). 다만 데이터 양이 28건일 때가 마이그레이션 부담이 가장 작은 시점이라 분류 도입은 지금이 적기. 1번만 먼저 가고, 2번은 검색 체감이 느려졌을 때 추가하는 점진 전략 권장.
+진입 조건: `chunk_url_exists` / `cmd_refresh` / prefill 검색에서 row-level `json_extract` 비용이 체감될 때. 현재 28건 규모에서는 측정 가능한 차이가 없어 보류. 1단계(외부 source `chunk_type` 분리)의 사유와 두 단계로 끊은 이유는 `HISTORY.md` 2026-05-09 참조.
 
 ## TODO — 다음 세션에서 이어서
 
@@ -72,34 +50,6 @@ schema migration이 사용자 머신마다 한 번씩 돌아야 한다(`scripts/
 2. `IMPRINT_ALLOWED_TOOLS_FETCH` 가 사용자 등록 Slack/Notion MCP 이름과 일치하는지 확인 (각자 다를 수 있음)
 3. plugin.log에서 `WARN: claude -p` 빈도 모니터링 — 일정 임계 초과 시 timeout 조정
 
-## 직전 작업의 미완 — Phase 3·4 마무리
-
-### Phase 3 마무리 (Memory skill 정교화)
-
-**Redaction**
-- `memory.sh remember --redact` 플래그 미구현.
-- `~/.claude/imprint/redact-rules.json` 형식으로 정규식 룰셋 정의.
-- 시작점: `scripts/imprint/lib/common.sh`에 `redact_text()` 함수 추가.
-
-**memory list 필터 보강**
-- 현재 `--recent`, `--pinned`, `--type`, `--source`만 지원.
-- 추가 필요: `--since <date>`, `--limit <n>`, `--project <path>` (다른 프로젝트 검색).
-
-### Phase 4 마무리 (Advisor skill 검증)
-
-**End-to-end 테스트**
-- `bash scripts/imprint/advisor.sh codex "test"` 직접 실행 → codex CLI 인증 흐름과 출력 캡처 확인.
-- Gemini는 `GEMINI_CLI_TRUST_WORKSPACE=true` 환경변수 의존 — 사용자 머신 정책에 따라 실패 가능.
-- CCG 합성 단계에서 `claude -p`가 비대화형 OAuth로 동작하는지 확인.
-
-**Timeout / cancellation**
-- 현재 `advisor.sh`는 백그라운드 wait만 사용 — 무한 대기 위험.
-- `timeout 60s` 명령 또는 trap 기반 취소 추가.
-
-**Partial failure 저장**
-- 한쪽 advisor 실패해도 다른 쪽 결과는 `provider_runs`에 status='succeeded'로 남김.
-- 합성 단계에서 빈 입력 처리 필요 (현재는 둘 다 비어 있을 때만 에러).
-
 ## 단기 Watch List
 
 - Stop hook의 `transcript_path` 포맷은 Claude Code 내부 구조에 의존 — Claude Code 버전 업그레이드 시 깨질 수 있어 plugin.log에서 `stop logged` 로그 누락 여부를 정기 확인.
@@ -107,7 +57,7 @@ schema migration이 사용자 머신마다 한 번씩 돌아야 한다(`scripts/
 
 ## 다음 세션 시작 시 추천 픽업 지점
 
-1. **현재 우선순위** — 이 문서 상단의 "Chunk 분류 세분화 검토" 1번(외부 source `chunk_type` 분리 + backfill). schema migration이 작은 데이터(28건)일 때가 적기.
-2. **남은 인터뷰 라운드** — TODO 1·2를 별도 세션에서 `/ouroboros:interview ...`로 재개. Seed v0.6이 immutable spec이므로 새 결정은 D25부터.
-3. **사용자 환경 검증** — TODO 3을 iOS 팀에 위임하고 plugin.log에서 `WARN: claude -p` 빈도 모니터링.
-4. **빠른 검증** — `bash scripts/imprint/advisor.sh codex "ping"`으로 OAuth advisor 흐름 확인 (별도 트랙).
+1. **남은 인터뷰 라운드** — TODO 1·2를 별도 세션에서 `/ouroboros:interview ...`로 재개. Seed v0.6이 immutable spec이므로 새 결정은 D25부터. 보안·운영 인터뷰(TODO 2)는 redaction이 도입된 지금 더 자연스러운 시점.
+2. **사용자 환경 검증** — TODO 3을 iOS 팀에 위임하고 plugin.log에서 `WARN: claude -p` 빈도 모니터링.
+3. **Phase 5 진입 (Workflow skill)** — `/commit-message`, `/pr-draft`, `/recap`, `/handoff`. Phase 3 마무리·advisor 제거가 끝났으니 다음은 사용자가 매일 트리거할 새 명령군.
+4. **Chunk 분류 2단계** — 검색 체감 저하 시 진입(metadata generated column + 인덱스).

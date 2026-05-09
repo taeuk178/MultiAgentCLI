@@ -62,7 +62,7 @@ flowchart TB
 | 경로 | 동작 |
 |---|---|
 | 동기 | `events.llm_response`로 응답 텍스트 archive |
-| 비동기 | `claude -p haiku`가 응답을 파싱해 9가지 chunk_type(`decision`·`error`·`fix`·`command`·`test_result`·`summary`·`todo`·`code_context`·`note`)으로 분류, `memory_chunks`에 누적 |
+| 비동기 | `claude -p haiku`가 응답을 9가지 chunk_type(`decision`·`error`·`fix`·`command`·`test_result`·`summary`·`todo`·`code_context`·`note`)으로 분류, `memory_chunks`에 누적. 외부 source(Slack·Notion)는 ingestion 경로에서 `spec`·`message`·`thread`로 직접 INSERT |
 
 ### 외부 소스 lazy-fetch (Notion · Slack)
 
@@ -128,10 +128,11 @@ flowchart LR
 
 | 명령 | 동작 | 효과 |
 |---|---|---|
-| `/memory remember <text>` | 사용자가 직접 작성한 텍스트를 chunk로 즉시 INSERT | 다음 prompt부터 검색·prepend 대상 |
+| `/memory remember <text>` (`--type` / `--pin` / `--redact`) | 사용자가 직접 작성한 텍스트를 chunk로 즉시 INSERT | 다음 prompt부터 검색·prepend 대상. `--redact`는 정규식 룰셋으로 secret 마스킹 |
 | `/memory search <query>` | FTS5 trigram 검색 | matching chunk 목록 표시 |
 | `/memory pin <chunk-id>` | 우선 노출 플래그 ON | prefill 정렬에서 항상 위쪽 |
 | `/memory list` (`--recent` / `--pinned` / `--type` / `--source`) | 누적 chunk 나열 | 필터링된 chunk 표 |
+| `/memory stats` (`--all` / `--json`) | 분포·통계 요약 | 총 chunk 수, chunk_type·source 분포, 외부 unique URL 수 |
 | `/memory refresh <url \| source slack \| source notion \| project>` | 외부 chunk 갱신 | DELETE → 재 fetch → INSERT |
 
 `/memory remember`로 사용자가 직접 박은 chunk와 hook이 응답에서 자동 추출한 chunk가 같은 `memory_chunks` 테이블에 누적되어, 다음 turn부터 동등한 자격으로 prefill 후보가 됩니다.
@@ -160,5 +161,6 @@ statusline은 `hud-setup.sh install` 이후 자동 갱신됩니다. 데이터는
 
 - 큰 그림 (비전·Phase 정의·위험 요소·최종 목표): [`LoadMap.md`](LoadMap.md)
 - 단기 픽업 (즉시 다음 검토·deferred TODO·미완 Phase): [`HANDOFF.md`](HANDOFF.md)
+- 결정 사유 로그 (왜 그렇게 바꿨는지·폐기한 대안): [`HISTORY.md`](HISTORY.md)
 - 동작 흐름 디테일·시스템 의존·운영 환경 변수: [`flow.md`](flow.md)
 - LLM 턴 생애주기와 Claude Code hook 활용 카탈로그: [`LifeCycle.md`](LifeCycle.md)

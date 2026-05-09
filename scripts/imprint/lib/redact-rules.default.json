@@ -1,0 +1,40 @@
+{
+  "_doc": "Default redaction rules. 사용자가 ~/.claude/imprint/redact-rules.json을 만들면 그 파일이 우선한다. 정규식은 Python re 모듈 문법.",
+  "rules": [
+    {
+      "name": "anthropic_api_key",
+      "pattern": "sk-ant-[A-Za-z0-9_-]{20,}",
+      "replacement": "sk-ant-[REDACTED]"
+    },
+    {
+      "name": "openai_api_key",
+      "pattern": "sk-(?!ant-)[A-Za-z0-9]{20,}",
+      "replacement": "sk-[REDACTED]"
+    },
+    {
+      "name": "github_pat",
+      "pattern": "gh[pousr]_[A-Za-z0-9]{20,}",
+      "replacement": "gh*_[REDACTED]"
+    },
+    {
+      "name": "slack_token",
+      "pattern": "xox[baprs]-[A-Za-z0-9-]{10,}",
+      "replacement": "xox*-[REDACTED]"
+    },
+    {
+      "name": "aws_access_key",
+      "pattern": "AKIA[0-9A-Z]{16}",
+      "replacement": "AKIA[REDACTED]"
+    },
+    {
+      "name": "jwt",
+      "pattern": "eyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}",
+      "replacement": "[REDACTED_JWT]"
+    },
+    {
+      "name": "private_key_block",
+      "pattern": "-----BEGIN [A-Z ]*PRIVATE KEY-----[\\s\\S]+?-----END [A-Z ]*PRIVATE KEY-----",
+      "replacement": "[REDACTED_PRIVATE_KEY]"
+    }
+  ]
+}
