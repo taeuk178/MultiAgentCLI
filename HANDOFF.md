@@ -54,6 +54,44 @@ Ouroboros Socratic 인터뷰로 사내 프로젝트 컨텍스트(Slack 대화, N
 - 공유: SQLite는 BYO 로컬 격리, sources.json만 git-share, migration은 Phase 2 (D14–D15)
 - Vector: Phase 2 후순위, PageIndex 스타일은 비채택 (D18)
 
+## Chunk 분류 세분화 검토 (2026-05-09)
+
+청크 데이터가 한 테이블·9개 chunk_type enum + `metadata_json` 한 봉지에 모두 들어가는데, 실제 DB를 보면 **28건이 모두 `note` × `source=notion` 한 칸에 통밥**된 상태(외부 source chunk를 일괄 `note`로 INSERT). 9개 enum이 의미를 못 살리고 있고, 자주 쓰는 metadata 키(`source`, `page_id`, `url`)는 인덱스 없이 row마다 `json_extract`로 파싱됨.
+
+**현 schema 핵심 (`scripts/imprint/lib/schema.sql:39-54`)**
+
+- 분류 축 3개: `chunk_type` enum(9), `metadata.source` JSON, `pinned`
+- 인덱스: `(project_id, pinned DESC, created_at DESC)`, `(project_id, chunk_type)` — metadata 인덱스 없음
+- 검색: FTS5 trigram(text) ∪ `metadata.keywords` 배열 hit ranking
+
+**제안 — 두 단계로 끊어서 진행**
+
+1. 외부 source `chunk_type` 분리 (작은 의미 변경)
+   - `note(notion)` → `spec`, `note(slack 단발)` → `message`, `note(slack thread)` → `thread`
+   - `fetch_notion_url` / `fetch_slack_*`의 INSERT 자리에서 chunk_type만 변경
+   - 기존 28건 backfill 1줄: `UPDATE memory_chunks SET chunk_type='spec' WHERE json_extract(metadata_json,'$.source')='notion';`
+
+2. metadata 키 generated column + 인덱스 승격 (검색 성능)
+   ```sql
+   ALTER TABLE memory_chunks ADD COLUMN
+     meta_source TEXT GENERATED ALWAYS AS (json_extract(metadata_json,'$.source')) VIRTUAL;
+   ALTER TABLE memory_chunks ADD COLUMN
+     meta_page_id TEXT GENERATED ALWAYS AS (json_extract(metadata_json,'$.page_id')) VIRTUAL;
+   CREATE INDEX idx_chunks_source ON memory_chunks(project_id, meta_source);
+   CREATE INDEX idx_chunks_page ON memory_chunks(project_id, meta_page_id);
+   ```
+   - `chunk_url_exists`, `cmd_refresh`, prefill 검색이 즉시 빨라짐
+   - 같은 Notion 페이지 N개 섹션의 page-level 그룹화 쿼리 정상화
+
+**가지 말아야 할 길**
+
+- 외부 source 별도 테이블 (`external_chunks` 등) — 현재 28건 규모에 union/trigger/FTS 두 벌 운영비가 분류 이득보다 큼
+- `chunk_type` enum 자유 텍스트화 — 일관성 상실
+
+**트레이드오프 한 줄**
+
+schema migration이 사용자 머신마다 한 번씩 돌아야 한다(`scripts/imprint/lib/migrations.sh`에 추가). 다만 데이터 양이 28건일 때가 마이그레이션 부담이 가장 작은 시점이라 분류 도입은 지금이 적기. 1번만 먼저 가고, 2번은 검색 체감이 느려졌을 때 추가하는 점진 전략 권장.
+
 ## TODO — 다음 세션에서 이어서
 
 ### TODO 1. Chunk lifecycle 인터뷰 라운드 (deferred)
