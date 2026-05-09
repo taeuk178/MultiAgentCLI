@@ -35,10 +35,42 @@ SQL
   fi
 }
 
+# 외부 source chunk_type 분리 backfill.
+# 기존: 모든 외부 source chunk를 chunk_type='note'로 INSERT.
+# 변경: notion → 'spec', slack 단발 → 'message', slack thread → 'thread'.
+# 멱등성: chunk_type='note' 필터로 이미 변환된 row는 다시 건들지 않는다.
+backfill_external_chunk_types() {
+  if ! sqlite3 "$IMPRINT_DB" >/dev/null 2>>"$IMPRINT_LOG" <<'SQL'
+-- 1) Slack thread (kind=thread_summary | thread_reply) → 'thread'
+UPDATE memory_chunks
+SET chunk_type = 'thread'
+WHERE chunk_type = 'note'
+  AND json_extract(metadata_json, '$.source') = 'slack'
+  AND json_extract(metadata_json, '$.kind') IN ('thread_summary','thread_reply');
+
+-- 2) 남은 Slack 'note'는 단발 메시지 → 'message'
+UPDATE memory_chunks
+SET chunk_type = 'message'
+WHERE chunk_type = 'note'
+  AND json_extract(metadata_json, '$.source') = 'slack';
+
+-- 3) Notion → 'spec'
+UPDATE memory_chunks
+SET chunk_type = 'spec'
+WHERE chunk_type = 'note'
+  AND json_extract(metadata_json, '$.source') = 'notion';
+SQL
+  then
+    log_error "external chunk_type backfill failed"
+    return 0
+  fi
+}
+
 run_migrations() {
   if ! command -v sqlite3 >/dev/null 2>&1; then
     return 0
   fi
   fts_migrate_to_trigram events_fts events text_clean
   fts_migrate_to_trigram memory_chunks_fts memory_chunks text
+  backfill_external_chunk_types
 }

@@ -42,10 +42,13 @@ CLAUDE_TIMEOUT_FETCH = int(os.environ.get("IMPRINT_CLAUDE_TIMEOUT_FETCH") or "45
 CLAUDE_TIMEOUT_EXTRACT = int(os.environ.get("IMPRINT_CLAUDE_TIMEOUT_EXTRACT") or "30")
 CLAUDE_BIN = os.environ.get("IMPRINT_CLAUDE_BIN") or "claude"
 
+# LLM이 응답에서 추출하도록 허용된 chunk_type. 외부 source 전용 타입
+# (spec/message/thread)은 ingestion 경로에서만 직접 INSERT한다.
 CHUNK_TYPES = (
     "decision", "error", "fix", "command", "test_result",
     "summary", "todo", "code_context", "note",
 )
+EXTERNAL_CHUNK_TYPES = ("spec", "message", "thread")
 
 SLACK_PERMALINK_RE = re.compile(
     r"https://[a-z0-9\-]+\.slack\.com/archives/[A-Z0-9]+/p\d+(?:\?[^\s]*)?",
@@ -764,13 +767,16 @@ def search_memory(
         except sqlite3.OperationalError as exc:
             log("WARN", f"keywords search failed: {exc}")
 
-    # 3. fallback: most recent decision/fix/todo/note if nothing matched
+    # 3. fallback: 최근 durable chunk (decision/fix/todo/note + 외부 source)
+    # 외부 source chunk를 'note'에서 spec/message/thread로 분리한 뒤
+    # fallback이 빈 결과를 내지 않도록 신규 타입도 포함시킨다.
     if not seen:
         try:
             cur = conn.execute(
                 "SELECT id, chunk_type, text, metadata_json, pinned, created_at "
                 "FROM memory_chunks "
-                "WHERE project_id = ? AND chunk_type IN ('decision','fix','todo','note') "
+                "WHERE project_id = ? AND chunk_type IN "
+                "  ('decision','fix','todo','note','spec','message','thread') "
                 "ORDER BY pinned DESC, created_at DESC LIMIT ?;",
                 (project_id, limit),
             )
@@ -814,8 +820,9 @@ def lazy_fetch(
             chunks = None
         if not chunks:
             continue
+        ct = "thread" if is_slack_thread_url(url) else "message"
         for c in chunks:
-            insert_external_chunk(conn, project_id, "note", c["text"], c["metadata"])
+            insert_external_chunk(conn, project_id, ct, c["text"], c["metadata"])
             inserted += 1
 
     # 2) Notion URLs in prompt
@@ -833,7 +840,7 @@ def lazy_fetch(
             url_dedup = c["metadata"].get("url")
             if url_dedup and chunk_url_exists(conn, project_id, url_dedup):
                 continue
-            insert_external_chunk(conn, project_id, "note", c["text"], c["metadata"])
+            insert_external_chunk(conn, project_id, "spec", c["text"], c["metadata"])
             inserted += 1
 
     # 3) Keyword mode — sources.json channels/pages
@@ -850,7 +857,7 @@ def lazy_fetch(
                 url = c["metadata"].get("url")
                 if url and chunk_url_exists(conn, project_id, url):
                     continue
-                insert_external_chunk(conn, project_id, "note", c["text"], c["metadata"])
+                insert_external_chunk(conn, project_id, "message", c["text"], c["metadata"])
                 inserted += 1
 
         notion_cfg = (sources.get("notion") or {}) if isinstance(sources, dict) else {}
@@ -865,7 +872,7 @@ def lazy_fetch(
                 url = c["metadata"].get("url")
                 if url and chunk_url_exists(conn, project_id, url):
                     continue
-                insert_external_chunk(conn, project_id, "note", c["text"], c["metadata"])
+                insert_external_chunk(conn, project_id, "spec", c["text"], c["metadata"])
                 inserted += 1
 
     if inserted:
@@ -1010,13 +1017,16 @@ def cmd_refresh(argv: list[str]) -> int:
                 conn.commit()
                 if SLACK_PERMALINK_RE.match(spec):
                     chunks = fetch_slack_url(spec, "")
+                    ct = "thread" if is_slack_thread_url(spec) else "message"
                 elif NOTION_URL_RE.match(spec):
                     chunks = fetch_notion_url(spec)
+                    ct = "spec"
                 else:
                     chunks = None
+                    ct = "note"
                 if chunks:
                     for c in chunks:
-                        insert_external_chunk(conn, project_id, "note", c["text"], c["metadata"])
+                        insert_external_chunk(conn, project_id, ct, c["text"], c["metadata"])
                         fetched += 1
                     conn.commit()
             elif spec == "source" and rest and rest[0] in ("slack", "notion"):
