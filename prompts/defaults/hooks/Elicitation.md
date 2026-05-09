@@ -25,7 +25,7 @@ MCP 서버가 도구 실행 중에 사용자 입력을 요청할 때(예: browse
 ## 간단한 예시
 
 ```bash
-# scripts/multiagent/elicitation.sh (미구현 예시)
+# scripts/imprint/elicitation.sh (미구현 예시)
 INPUT=$(cat)
 SERVER=$(printf '%s' "$INPUT" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("mcp_server",""))')
 [[ "$SERVER" == "trusted-server" ]] && printf '%s' '{"input":"yes"}'

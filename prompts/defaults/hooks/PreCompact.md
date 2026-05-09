@@ -25,10 +25,10 @@ Claude Code가 직접 읽지 않습니다 — 사람이 보는 참고 문서입�
 ## 간단한 예시
 
 ```bash
-# scripts/multiagent/pre-compact.sh (미구현 예시)
+# scripts/imprint/pre-compact.sh (미구현 예시)
 INPUT=$(cat)
 TID=$(printf '%s' "$INPUT" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("transcript_path",""))')
-[[ -f "$TID" ]] && cp "$TID" "$HOME/.claude/multiagent/precompact-$(date +%s).jsonl"
+[[ -f "$TID" ]] && cp "$TID" "$HOME/.claude/imprint/precompact-$(date +%s).jsonl"
 ```
 
 ## 주의

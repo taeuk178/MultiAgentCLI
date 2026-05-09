@@ -25,10 +25,10 @@ Claude Code가 직접 읽지 않습니다 — 사람이 보는 참고 문서입�
 ## 간단한 예시
 
 ```bash
-# scripts/multiagent/post-tool-use-failure.sh (미구현 예시)
+# scripts/imprint/post-tool-use-failure.sh (미구현 예시)
 INPUT=$(cat)
 ERR=$(printf '%s' "$INPUT" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("error",""))')
-echo "$(date -u +%FT%TZ) $ERR" >> ~/.claude/multiagent/tool-failures.log
+echo "$(date -u +%FT%TZ) $ERR" >> ~/.claude/imprint/tool-failures.log
 ```
 
 ## 주의

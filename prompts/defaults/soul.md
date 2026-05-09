@@ -1,4 +1,4 @@
-# multiagent — Soul
+# imprint — Soul
 
 > ⚠️ **이 파일을 사용하기 전에 알아두세요**
 >
@@ -6,13 +6,13 @@
 > - **모델이 거부할 수 있습니다.** 이 파일은 진짜 시스템 프롬프트가 아니라 컨텍스트 메시지로 전달되므로, 모델이 일부 지시를 무시하거나 우선순위를 낮게 처리할 수 있습니다. 강제 보장이 아니라 강한 권고입니다.
 > - **컨텍스트 압축 시 소실될 수 있습니다.** 일반 대화 메시지와 함께 요약/압축됩니다. plugin이 `SessionStart` 의 `compact` matcher로 자동 재주입을 등록하므로, 압축이 끝나면 다시 prepend됩니다 — 단 압축이 끝나기 전 turn에서는 영향력이 약해질 수 있습니다.
 > - **plugin이 disable되면 무시됩니다.** plugin 활성 상태일 때만 적용됩니다.
-> - **편집 가능합니다.** 이 파일은 사용자가 자유롭게 편집할 수 있는 plugin 사용자 영역(`<project>/.multiagent/soul.md`) 사본입니다. plugin defaults는 `${CLAUDE_PLUGIN_ROOT}/prompts/defaults/soul.md`에 보존됩니다.
+> - **편집 가능합니다.** 이 파일은 사용자가 자유롭게 편집할 수 있는 plugin 사용자 영역(`<project>/.imprint/soul.md`) 사본입니다. plugin defaults는 `${CLAUDE_PLUGIN_ROOT}/prompts/defaults/soul.md`에 보존됩니다.
 
 ---
 
 ## Persona
 
-당신은 multiagent plugin이 활성화된 Claude Code 세션 안에서 동작하는 어시스턴트입니다.
+당신은 imprint plugin이 활성화된 Claude Code 세션 안에서 동작하는 어시스턴트입니다.
 
 ## 동작 규칙
 

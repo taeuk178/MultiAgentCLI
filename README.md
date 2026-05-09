@@ -1,16 +1,16 @@
-# multiagent — Claude Code plugin
+# imprint — Claude Code plugin
 
 로컬 작업 기억(SQLite + FTS5), advisor orchestration, statusline HUD를 Claude Code의 hook · skill · subagent 시스템으로 제공하는 plugin입니다.
 
-> 이전 세대(`MultiAgentCLI` SwiftUI / `multi-agent-cli-v2` Tauri 데스크톱 앱)는 **폐기되었습니다.** 본 repo는 Claude Code plugin 단일 책임을 가집니다. 이전 데스크톱 앱이 필요하다면 `MultiAgentCLI` 원본 repo를 참고하세요.
+> 이 repo는 `imprint`로 리네임되었습니다. 이전 정체성이었던 Tauri 데스크톱 앱 청사진(코드명 `multi-agent-cli-v2`)과 더 이전 세대 SwiftUI 앱(`MultiAgentCLI`)은 **폐기되었습니다.** 본 repo는 Claude Code plugin 단일 책임을 가집니다. 이전 SwiftUI 앱이 필요하다면 [`MultiAgentCLI`](../MultiAgentCLI) 원본 repo를 참고하세요.
 
 ## 무엇을 하는가
 
 | 영역 | 역할 |
 |---|---|
-| Soul (persona) | `SessionStart` hook이 `<project>/.multiagent/soul.md` 내용을 컨텍스트 시작에 prepend. 압축 후에도 `compact` matcher로 자동 재주입 |
-| Routing | `UserPromptSubmit` hook이 `<project>/.multiagent/UserPromptSubmit.md`의 키워드 → agent 룰을 평가, 매칭 시 권고 메시지 prepend (예: "PR" → `pr-agent` 호출 권고) |
-| Memory | 프롬프트·응답·메타데이터를 `~/.claude/multiagent/app.sqlite`에 누적, FTS5 기반 검색·pin·자동 주입 (`UserPromptSubmit` hook이 `[Project memory context]` 블록 prepend) |
+| Soul (persona) | `SessionStart` hook이 `<project>/.imprint/soul.md` 내용을 컨텍스트 시작에 prepend. 압축 후에도 `compact` matcher로 자동 재주입 |
+| Routing | `UserPromptSubmit` hook이 `<project>/.imprint/UserPromptSubmit.md`의 키워드 → agent 룰을 평가, 매칭 시 권고 메시지 prepend (예: "PR" → `pr-agent` 호출 권고) |
+| Memory | 프롬프트·응답·메타데이터를 `~/.claude/imprint/app.sqlite`에 누적, FTS5 기반 검색·pin·자동 주입 (`UserPromptSubmit` hook이 `[Project memory context]` 블록 prepend) |
 | Advisor | `codex`, `gemini`를 advisor로 호출하고 `claude -p`로 합성. 각 호출은 `provider_runs`에 기록 |
 | HUD | Claude Code statusline에 `5h: 25% (1h 49m) │ wk: 3% (1d 9h) │ ctx: 12% │ skills: 17 │ agents: 1` 형태로 잔여 시간과 활성 plugin의 skills/agents 수 표시 |
 
@@ -21,7 +21,7 @@
 ```bash
 # 이 repo가 marketplace로 등록되어 있다면
 claude plugin marketplace add <this-repo>
-claude plugin install multiagent@multiagent
+claude plugin install imprint@imprint
 ```
 
 설치 후 Claude Code 세션을 새로 열면 `SessionStart` hook이 SQLite 스키마를 idempotent하게 생성하고 프로젝트 row를 upsert합니다.
@@ -29,9 +29,9 @@ claude plugin install multiagent@multiagent
 statusline 활성화는 별도 단계입니다.
 
 ```bash
-bash scripts/multiagent/hud-setup.sh install         # 기존 statusLine 백업 후 교체
-bash scripts/multiagent/hud-setup.sh layout focused  # minimal | focused | full
-bash scripts/multiagent/hud-setup.sh uninstall       # 백업 복원
+bash scripts/imprint/hud-setup.sh install         # 기존 statusLine 백업 후 교체
+bash scripts/imprint/hud-setup.sh layout focused  # minimal | focused | full
+bash scripts/imprint/hud-setup.sh uninstall       # 백업 복원
 ```
 
 ## 사용
@@ -39,17 +39,17 @@ bash scripts/multiagent/hud-setup.sh uninstall       # 백업 복원
 ### Memory
 
 ```bash
-multiagent memory remember "Claude Code plugin 전환 결정"  # 수동 저장
-multiagent memory search "PTY 한글 IME"                   # FTS5 검색
-multiagent memory pin <chunk-id>                          # 우선 노출
-multiagent memory list --recent --limit 20
+imprint memory remember "Claude Code plugin 전환 결정"  # 수동 저장
+imprint memory search "PTY 한글 IME"                   # FTS5 검색
+imprint memory pin <chunk-id>                          # 우선 노출
+imprint memory list --recent --limit 20
 ```
 
 `UserPromptSubmit` hook이 매 prompt마다 pinned + recent 청크를 `[Project memory context]` 블록으로 자동 prepend합니다.
 
 ### Routing (옵션)
 
-`UserPromptSubmit` hook은 `<project>/.multiagent/UserPromptSubmit.md`(없으면 plugin defaults)에서 라우팅 표를 읽어 매칭된 권고를 prepend합니다. 본 plugin은 라우팅 룰 markdown을 ship하지 않으므로, 사용하려면 사용자가 다음 형식으로 직접 작성합니다.
+`UserPromptSubmit` hook은 `<project>/.imprint/UserPromptSubmit.md`(없으면 plugin defaults)에서 라우팅 표를 읽어 매칭된 권고를 prepend합니다. 본 plugin은 라우팅 룰 markdown을 ship하지 않으므로, 사용하려면 사용자가 다음 형식으로 직접 작성합니다.
 
 ```markdown
 | 패턴                       | Agent      | 권고 메시지                  |
@@ -81,13 +81,13 @@ skills/
   memory/SKILL.md
   advisor/SKILL.md
   hud/SKILL.md
-prompts/defaults/          첫 SessionStart에서 <project>/.multiagent/로 시드되는 기본 콘텐츠
+prompts/defaults/          첫 SessionStart에서 <project>/.imprint/로 시드되는 기본 콘텐츠
   soul.md                  persona·동작 규칙
   hooks/                   Claude Code의 22개 hook 카탈로그(사람용 가이드, OpenClaw 스타일)
-scripts/multiagent/
+scripts/imprint/
   lib/common.sh            DB·project·로그 헬퍼
   lib/schema.sql           SQLite 스키마 (FTS5 trigger 포함)
-  session-start.sh         SessionStart hook (DB 보장 + .multiagent/ 시드 + soul.md emit)
+  session-start.sh         SessionStart hook (DB 보장 + .imprint/ 시드 + soul.md emit)
   user-prompt-submit.sh    UserPromptSubmit hook (라우팅 평가 + 메모리 주입)
   stop.sh                  Stop hook (assistant 응답 archive)
   memory.sh                /memory dispatcher
@@ -101,14 +101,14 @@ LifeCycle.md               LLM 턴 생애주기 ↔ Claude Code hook 매핑 + �
 
 | 경로 | 내용 |
 |---|---|
-| `<project>/.multiagent/soul.md` | 세션 시작·압축 후 자동 prepend되는 persona·동작 규칙. 사용자 자유 편집. (plugin defaults에서 자동 시드) |
-| `<project>/.multiagent/UserPromptSubmit.md` | 매 prompt마다 평가되는 키워드 → agent 라우팅 룰. 사용자 자유 편집. |
-| `<project>/.multiagent/hooks/*.md` | Claude Code의 22개 hook 카탈로그 + 본 plugin이 등록한 hook(✅) 표시. OpenClaw 스타일 짧은 가이드(무엇 / 어떻게 활용 / 간단한 예시 / 주의). Claude Code가 직접 읽진 않는 사람용 참고 문서. |
-| `~/.claude/multiagent/app.sqlite` | projects · conversations · events · memory_chunks · provider_runs (FTS5 포함) |
-| `~/.claude/multiagent/plugin.log` | hook · dispatcher 로그 |
-| `~/.claude/multiagent/previous-statusline.json` | hud-setup install 시 백업된 이전 statusLine 설정 |
+| `<project>/.imprint/soul.md` | 세션 시작·압축 후 자동 prepend되는 persona·동작 규칙. 사용자 자유 편집. (plugin defaults에서 자동 시드) |
+| `<project>/.imprint/UserPromptSubmit.md` | 매 prompt마다 평가되는 키워드 → agent 라우팅 룰. 사용자 자유 편집. |
+| `<project>/.imprint/hooks/*.md` | Claude Code의 22개 hook 카탈로그 + 본 plugin이 등록한 hook(✅) 표시. OpenClaw 스타일 짧은 가이드(무엇 / 어떻게 활용 / 간단한 예시 / 주의). Claude Code가 직접 읽진 않는 사람용 참고 문서. |
+| `~/.claude/imprint/app.sqlite` | projects · conversations · events · memory_chunks · provider_runs (FTS5 포함) |
+| `~/.claude/imprint/plugin.log` | hook · dispatcher 로그 |
+| `~/.claude/imprint/previous-statusline.json` | hud-setup install 시 백업된 이전 statusLine 설정 |
 
-`.multiagent/` 폴더는 SessionStart hook이 처음 실행될 때 자동 생성되며 기존 파일은 절대 덮어쓰지 않습니다. 시드를 막고 싶다면 `MULTIAGENT_NO_SEED=1` 환경 변수를 설정하세요.
+`.imprint/` 폴더는 SessionStart hook이 처음 실행될 때 자동 생성되며 기존 파일은 절대 덮어쓰지 않습니다. 시드를 막고 싶다면 `IMPRINT_NO_SEED=1` 환경 변수를 설정하세요.
 
 ## 의존
 
@@ -126,7 +126,7 @@ LifeCycle.md               LLM 턴 생애주기 ↔ Claude Code hook 매핑 + �
   ↓
 UserPromptSubmit hook
   ├─ 1. 매번 claude -p 호출 → 모호도 점수 + 키워드 추출
-  ├─ 2. 키워드로 .multiagent/sources.json의 Slack 채널·Notion 페이지 lazy fetch
+  ├─ 2. 키워드로 .imprint/sources.json의 Slack 채널·Notion 페이지 lazy fetch
   ├─ 3. fetched 청크 + 기존 memory_chunks를 [Project memory context]에 prepend
   └─ 4. 모호도 임계치 초과 시 [Refined prompt suggestion: ...] 블록 추가 prepend
   ↓
@@ -145,14 +145,14 @@ Stop hook
 | 3 | 사용자 가시성 | 자동 움직임(silent), suggestion이 컨텍스트에 표시 |
 | 4 | Rewrite 메커니즘 | hook은 prompt 자체 교체 불가 → suggestion 블록 prepend로 우회 |
 | 5 | Ingestion 트리거 | Lazy fetch (prefill 시점 on-demand, 메모리 누적은 사용자 체감 없게) |
-| 6 | Source 정의 위치 | `<project>/.multiagent/sources.json` (git-share 가능) |
+| 6 | Source 정의 위치 | `<project>/.imprint/sources.json` (git-share 가능) |
 | 7 | 모호도 + 키워드 추출 | 매 prompt마다 claude -p 호출 (정확도 우선) |
 | 8 | Stop hook 처리 | claude -p로 LLM 응답에서 chunk 자동 추출 + events archive |
 | 9 | First milestone scope | 전체 파이프라인 + Slack/Notion/소스 없음 모두 graceful degradation |
 
 ### 메모리 저장 방식 (D10–D13)
 
-기존 SQLite schema (`scripts/multiagent/lib/schema.sql`)를 **DDL 변경 없이** 그대로 사용합니다. 외부 소스 청크는 다음 규칙으로 들어갑니다.
+기존 SQLite schema (`scripts/imprint/lib/schema.sql`)를 **DDL 변경 없이** 그대로 사용합니다. 외부 소스 청크는 다음 규칙으로 들어갑니다.
 
 | # | 결정 | 내용 |
 |---|------|------|
@@ -187,7 +187,7 @@ Notion 섹션:
 }
 ```
 
-### `.multiagent/sources.json` 형식 (예정)
+### `.imprint/sources.json` 형식 (예정)
 
 ```json
 {
@@ -222,7 +222,7 @@ claude -p가 chunk 추출 시 응답 schema에 `keywords: string[]`을 포함시
 
 ### 팀 멤버 간 메모리 공유 (D14–D15)
 
-기본은 **격리** — `~/.claude/multiagent/app.sqlite`는 멤버별 로컬 only이고, `<project>/.multiagent/sources.json`만 git-share합니다. 신규 멤버가 합류해 sources.json만 git pull로 받아도 lazy fetch가 외부 source-of-truth(Slack/Notion)에서 컨텍스트를 자연 재구성하므로 모호 prompt 흐름이 동일하게 동작합니다 (AC9).
+기본은 **격리** — `~/.claude/imprint/app.sqlite`는 멤버별 로컬 only이고, `<project>/.imprint/sources.json`만 git-share합니다. 신규 멤버가 합류해 sources.json만 git pull로 받아도 lazy fetch가 외부 source-of-truth(Slack/Notion)에서 컨텍스트를 자연 재구성하므로 모호 prompt 흐름이 동일하게 동작합니다 (AC9).
 
 LLM 응답에서 Stop hook이 추출한 내부 chunk(decision/todo/fix 등)는 작성자의 작업 기억으로 두고 자동 공유하지 않습니다 — chunk엔 디버그 출력·코드 fragment·외부 API 응답이 섞여 있어 자동 push가 위험합니다.
 
@@ -233,7 +233,7 @@ LLM 응답에서 Stop hook이 추출한 내부 chunk(decision/todo/fix 등)는 �
 - **D19 — claude -p 모델**: 모호도 분석(prefill)·chunk 추출(stop)·Slack thread reply selection 모두 **Haiku** (`claude -p --model haiku`). 메인 응답만 Sonnet
 - **D20 — Slack lazy fetch 두 모드 공존**:
   - **URL 명시**: prompt에 Slack permalink 감지 시 즉시 fetch. **thread permalink** → 전체 reply paginated fetch 후 claude -p가 prompt 관련 reply만 selection + summary → 1~3 chunk. **single message permalink** → 1 chunk
-  - **키워드 검색**: URL 없을 때만 `.multiagent/sources.json` 채널에서 매칭
+  - **키워드 검색**: URL 없을 때만 `.imprint/sources.json` 채널에서 매칭
 - **D21 — Notion fetch**: 사용자 환경의 **Notion MCP** 사용 (마크다운 다운로드 파일 의존 없음). 페이지 URL 또는 `page_id`로 fetch, 섹션 단위 chunk화
 
 ### Lazy fetch 캐시 (D22–D24)

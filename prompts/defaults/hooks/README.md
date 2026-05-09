@@ -1,13 +1,13 @@
 <!--
-이 폴더(.multiagent/hooks/)는 Claude Code의 hook 카탈로그 + multiagent plugin의 활용 가이드입니다.
+이 폴더(.imprint/hooks/)는 Claude Code의 hook 카탈로그 + imprint plugin의 활용 가이드입니다.
 Claude Code가 직접 읽지 않는 사람용 참고 문서입니다.
 
-- ✅ 표시: multiagent plugin이 현재 등록한 hook (실제 동작 중)
+- ✅ 표시: imprint plugin이 현재 등록한 hook (실제 동작 중)
 - 🔵 표시: 등록 가능하지만 본 plugin이 아직 사용하지 않는 hook (참고)
 - 🟡 표시: 공식 문서 등재 여부가 모호하거나 실험 단계 (사용 전 직접 확인 권장)
 -->
 
-# .multiagent/hooks/ — hook 카탈로그
+# .imprint/hooks/ — hook 카탈로그
 
 Claude Code가 노출하는 hook들을 한 줄씩 정리한 인덱스. 클릭해 들어가면 OpenClaw 스타일 짧은 가이드(무엇 / 어떻게 활용 / 간단한 예시 / 주의)가 나온다.
 
@@ -15,8 +15,8 @@ Claude Code가 노출하는 hook들을 한 줄씩 정리한 인덱스. 클릭해
 
 | 파일 | 발화 시점 | 사용자 편집 지점 |
 |---|---|---|
-| ✅ [`SessionStart.md`](./SessionStart.md) | 세션 시작·재개·`/clear`·압축 직후 | `<project>/.multiagent/soul.md` |
-| ✅ [`UserPromptSubmit.md`](./UserPromptSubmit.md) | 매 사용자 prompt 직전 | `<project>/.multiagent/UserPromptSubmit.md` |
+| ✅ [`SessionStart.md`](./SessionStart.md) | 세션 시작·재개·`/clear`·압축 직후 | `<project>/.imprint/soul.md` |
+| ✅ [`UserPromptSubmit.md`](./UserPromptSubmit.md) | 매 사용자 prompt 직전 | `<project>/.imprint/UserPromptSubmit.md` |
 | ✅ [`Stop.md`](./Stop.md) | 모델 응답 직후 | (편집 지점 없음 — archive 전용) |
 
 ## 세션 라이프사이클

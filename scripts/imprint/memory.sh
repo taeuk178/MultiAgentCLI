@@ -15,7 +15,7 @@ source "$SCRIPT_DIR/lib/common.sh"
 
 usage() {
   cat <<'USAGE'
-multiagent memory <subcommand> [args]
+imprint memory <subcommand> [args]
 
   search <query>             FTS search across this project's memory
   remember <text>            Store an explicit chunk (--type <t>, --pin)
@@ -32,7 +32,7 @@ ensure_db() {
     echo "sqlite3 not found in PATH" >&2
     exit 1
   fi
-  if [[ ! -f "$MULTIAGENT_DB" ]]; then
+  if [[ ! -f "$IMPRINT_DB" ]]; then
     bash "$SCRIPT_DIR/session-start.sh" </dev/null
   fi
 }

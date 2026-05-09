@@ -65,7 +65,7 @@
 - **메커니즘**: 세션이 처음 열리거나, `--resume`으로 재개되거나, `/clear`로 초기화되거나, 컨텍스트 압축 직후에 한 번 실행. 페이로드의 `matcher` 값으로 어떤 경로인지 구분(`startup | resume | clear | compact`).
 - **동작 통제**: stdout으로 출력한 텍스트는 시스템 프롬프트 직후 컨텍스트로 들어간다. exit 0이면 silent, exit 2이면 stderr를 사용자에게 보여주되 세션은 진행. `CLAUDE_ENV_FILE` 환경 변수가 주어지므로 거기 export 문을 적으면 이후 모든 Bash 호출에 환경 변수가 전파된다.
 - **한계**: streaming 컨텍스트가 아니므로 stdout이 너무 크면 잘릴 수 있다. 기본 동기 실행이라 무거운 작업은 세션 시작 자체를 지연시킨다 — `"async": true` 옵션으로 백그라운드화 가능.
-- **활용**: SQLite 스키마 idempotent 적용(현재 `scripts/multiagent/session-start.sh`), 프로젝트 row upsert, direnv 환경 로드, 압축 후 핵심 컨텍스트 재주입.
+- **활용**: SQLite 스키마 idempotent 적용(현재 `scripts/imprint/session-start.sh`), 프로젝트 row upsert, direnv 환경 로드, 압축 후 핵심 컨텍스트 재주입.
 
 #### `SessionEnd`
 
@@ -83,7 +83,7 @@
   - exit 0 → 통과
   - exit 2 → 차단 + stderr 표시
   - JSON 출력으로 `{"decision": "block", "reason": "..."}`을 돌려보내면 사용자에게 reason을 보여주며 차단
-  - JSON 출력의 `additionalContext`로 모델 입력에 주입 가능 (현재 multiagent 플러그인은 stdout 직접 출력 방식으로 `[Project memory context]` 블록을 prepend)
+  - JSON 출력의 `additionalContext`로 모델 입력에 주입 가능 (현재 imprint 플러그인은 stdout 직접 출력 방식으로 `[Project memory context]` 블록을 prepend)
 - **한계**: 매 턴 실행되므로 비용/지연이 누적된다. 사용자에게 "주입이 일어났다"는 가시적 표시가 없으므로 디버깅이 까다롭다. matcher가 없어서 모든 prompt에 무조건 걸린다.
 - **활용**: 메모리 컨텍스트 자동 주입, 민감 명령어 검출 후 차단, 현재 git branch · 환경 정보 주입, 플러그인 강제 directive 주입(시스템 프롬프트 대용).
 
@@ -128,7 +128,7 @@
 - **메커니즘**: 모델이 응답을 마치고 다음 사용자 입력을 기다리기 직전에 실행.
 - **동작 통제**: JSON으로 `{"decision": "block", "reason": "..."}`를 돌려보내면 모델이 멈추지 않고 reason을 받아 작업을 이어간다 — auto-continuation 패턴.
 - **한계**: streaming 응답을 보지 못한다. 응답 완료 후 시점이라 본문 검증/수정은 불가.
-- **활용**: 응답에서 chunk_type 추출 후 `memory_chunks` 적재(현재 multiagent 플러그인은 `stop.sh`에서 raw 저장만 함, 추출은 phase 3 잔여 작업), 작업이 미완으로 보이면 자동 재요청, transcript에서 결정사항 추출.
+- **활용**: 응답에서 chunk_type 추출 후 `memory_chunks` 적재(현재 imprint 플러그인은 `stop.sh`에서 raw 저장만 함, 추출은 phase 3 잔여 작업), 작업이 미완으로 보이면 자동 재요청, transcript에서 결정사항 추출.
 
 ### 3.5 Subagent 생애주기
 
@@ -225,7 +225,7 @@
 }
 ```
 
-본 plugin은 더 나아가서 **plugin defaults를 사용자 영역으로 한 번 시드**한다 — 첫 SessionStart에서 `<project>/.multiagent/soul.md`로 복사하고, 이후엔 사용자 편집을 우선 사용한다. 사용자 입장에선 `.multiagent/soul.md`만 편집하면 되고, plugin 업데이트로 defaults가 바뀌어도 사용자 편집이 보존된다.
+본 plugin은 더 나아가서 **plugin defaults를 사용자 영역으로 한 번 시드**한다 — 첫 SessionStart에서 `<project>/.imprint/soul.md`로 복사하고, 이후엔 사용자 편집을 우선 사용한다. 사용자 입장에선 `.imprint/soul.md`만 편집하면 되고, plugin 업데이트로 defaults가 바뀌어도 사용자 편집이 보존된다.
 
 장단점:
 - ✅ 토큰 소모는 세션당 1회 + 압축마다 1회
@@ -246,7 +246,7 @@
 | `\bcommit\b\|커밋`        | commit-agent | 커밋 작업으로 보입니다. commit-agent 호출 권장. |
 ```
 
-본 plugin은 `<project>/.multiagent/UserPromptSubmit.md`에 이 표를 두고, `scripts/multiagent/user-prompt-submit.sh`가 표를 파싱해 매칭된 행만 prepend한다.
+본 plugin은 `<project>/.imprint/UserPromptSubmit.md`에 이 표를 두고, `scripts/imprint/user-prompt-submit.sh`가 표를 파싱해 매칭된 행만 prepend한다.
 
 함정:
 - markdown 표 안에서 정규식 alternation `|`은 `\|`로 escape 필요 (셀 구분자와 충돌)
@@ -290,6 +290,6 @@ SessionStart      →  새 세션이 열리면 위에서 쌓인 메모리가 다
 - 공식 hooks reference: <https://code.claude.com/docs/en/hooks>
 - Plugin reference: <https://code.claude.com/docs/en/plugins-reference>
 - 본 plugin이 실제로 등록한 hook: `hooks/hooks.json`
-- 본 plugin이 실제로 사용하는 hook script: `scripts/multiagent/{session-start,user-prompt-submit,stop}.sh`
-- 사용자 편집 영역(자동 시드): `<project>/.multiagent/{soul.md,UserPromptSubmit.md}`
+- 본 plugin이 실제로 사용하는 hook script: `scripts/imprint/{session-start,user-prompt-submit,stop}.sh`
+- 사용자 편집 영역(자동 시드): `<project>/.imprint/{soul.md,UserPromptSubmit.md}`
 - plugin defaults(소스 진실): `prompts/defaults/{soul.md,UserPromptSubmit.md}`

@@ -25,11 +25,11 @@ subagent가 작업을 마치고 종료될 때 발화. 페이로드에 `exit_code
 ## 간단한 예시
 
 ```bash
-# scripts/multiagent/subagent-stop.sh (미구현 예시)
+# scripts/imprint/subagent-stop.sh (미구현 예시)
 INPUT=$(cat)
 EXIT=$(printf '%s' "$INPUT" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("exit_code",-1))')
 TYPE=$(printf '%s' "$INPUT" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("agent_type",""))')
-echo "$(date -u +%FT%TZ) stop $TYPE exit=$EXIT" >> ~/.claude/multiagent/agents.log
+echo "$(date -u +%FT%TZ) stop $TYPE exit=$EXIT" >> ~/.claude/imprint/agents.log
 ```
 
 ## 주의

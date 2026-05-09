@@ -27,21 +27,21 @@ This skill calls Codex or Gemini CLI from inside a Claude Code session to get ex
 Ask Codex for an opinion. Result is also saved to memory as a `provider_runs` row.
 
 ```bash
-multiagent advisor codex "Review this Rust error handling pattern: ..."
+imprint advisor codex "Review this Rust error handling pattern: ..."
 ```
 
 ### `/advisor gemini <prompt>`
 Ask Gemini for an opinion.
 
 ```bash
-multiagent advisor gemini "Suggest UX alternatives for this CLI flow"
+imprint advisor gemini "Suggest UX alternatives for this CLI flow"
 ```
 
 ### `/advisor ccg <prompt>`
 Run Codex and Gemini in parallel, then have Claude synthesize.
 
 ```bash
-multiagent advisor ccg "Should I use SQLite WAL mode for concurrent writes?"
+imprint advisor ccg "Should I use SQLite WAL mode for concurrent writes?"
 ```
 
 Internal flow:
@@ -54,7 +54,7 @@ Internal flow:
 ## Implementation
 
 ```bash
-"$CLAUDE_PLUGIN_ROOT/scripts/multiagent/advisor.sh" <subcommand> [args...]
+"$CLAUDE_PLUGIN_ROOT/scripts/imprint/advisor.sh" <subcommand> [args...]
 ```
 
 ## Provenance

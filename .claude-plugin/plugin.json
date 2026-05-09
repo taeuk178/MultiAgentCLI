@@ -1,17 +1,17 @@
 {
-  "name": "multiagent",
+  "name": "imprint",
   "version": "0.1.0",
-  "description": "Local development memory system with Claude/Codex/Gemini advisor orchestration. OAuth subscription based, no API key required.",
+  "description": "Per-project context memory for Claude Code. Local SQLite + FTS5, prefill injection, advisor orchestration. OAuth subscription based, no API key required.",
   "author": {
-    "name": "MultiAgentCLI contributors"
+    "name": "Imprint contributors"
   },
   "license": "MIT",
   "keywords": [
     "claude-code",
     "plugin",
     "memory",
+    "context",
     "advisor",
-    "multi-agent",
     "ccg"
   ],
   "skills": "./skills/"

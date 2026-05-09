@@ -1,5 +1,5 @@
 {
-  "description": "MultiAgent memory hooks - prefill memory injection and response extraction",
+  "description": "Imprint memory hooks - prefill memory injection and response extraction",
   "hooks": {
     "UserPromptSubmit": [
       {
@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PLUGIN_ROOT\"/scripts/multiagent/user-prompt-submit.sh",
+            "command": "bash \"$CLAUDE_PLUGIN_ROOT\"/scripts/imprint/user-prompt-submit.sh",
             "timeout": 5
           }
         ]
@@ -19,7 +19,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PLUGIN_ROOT\"/scripts/multiagent/stop.sh",
+            "command": "bash \"$CLAUDE_PLUGIN_ROOT\"/scripts/imprint/stop.sh",
             "timeout": 10
           }
         ]
@@ -31,7 +31,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PLUGIN_ROOT\"/scripts/multiagent/session-start.sh",
+            "command": "bash \"$CLAUDE_PLUGIN_ROOT\"/scripts/imprint/session-start.sh",
             "timeout": 5
           }
         ]

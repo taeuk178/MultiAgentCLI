@@ -25,7 +25,7 @@ Claude Code가 직접 읽지 않습니다 — 사람이 보는 참고 문서입�
 ## 간단한 예시
 
 ```bash
-# scripts/multiagent/pre-tool-use.sh (미구현 예시)
+# scripts/imprint/pre-tool-use.sh (미구현 예시)
 INPUT=$(cat)
 CMD=$(printf '%s' "$INPUT" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("tool_input",{}).get("command",""))')
 if echo "$CMD" | grep -qE 'rm -rf /|chmod -R 777'; then

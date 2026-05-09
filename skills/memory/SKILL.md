@@ -20,12 +20,12 @@ This skill provides persistent project memory backed by SQLite. Memory chunks (d
 
 Global memory:
 ```
-~/.claude/multiagent/app.sqlite
+~/.claude/imprint/app.sqlite
 ```
 
 Project override:
 ```
-<project>/.claude/multiagent/app.sqlite (optional)
+<project>/.claude/imprint/app.sqlite (optional)
 ```
 
 ## Subcommands
@@ -34,14 +34,14 @@ Project override:
 FTS5 search across memory chunks for the current project.
 
 ```bash
-multiagent memory search "advisor 합성 흐름"
+imprint memory search "advisor 합성 흐름"
 ```
 
 ### `/memory remember <text>`
 Store an explicit memory chunk. Optionally specify chunk_type.
 
 ```bash
-multiagent memory remember "Quick 모드는 one-shot 실행, advisor 활성" --type decision
+imprint memory remember "Quick 모드는 one-shot 실행, advisor 활성" --type decision
 ```
 
 Chunk types:
@@ -72,10 +72,10 @@ Delete a chunk.
 All subcommands are dispatched through:
 
 ```bash
-"$CLAUDE_PLUGIN_ROOT/scripts/multiagent/memory.sh" <subcommand> [args...]
+"$CLAUDE_PLUGIN_ROOT/scripts/imprint/memory.sh" <subcommand> [args...]
 ```
 
-The script reads/writes `~/.claude/multiagent/app.sqlite`, initializing the schema on first run.
+The script reads/writes `~/.claude/imprint/app.sqlite`, initializing the schema on first run.
 
 ## Project Identification
 

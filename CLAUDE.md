@@ -1,4 +1,4 @@
-# multiagent — Claude 세션 가이드
+# imprint — Claude 세션 가이드
 
 이 repo에서 동작하는 Claude 세션이 알아야 할 기본 프로토콜.
 
@@ -6,24 +6,24 @@
 
 이 repo는 Claude Code plugin입니다. 로컬 작업 기억(SQLite + FTS5)과 advisor orchestration, statusline HUD를 hook·skill·subagent 형태로 제공합니다.
 
-이전에는 [`MultiAgentCLI`](../MultiAgentCLI)(SwiftUI)의 후속으로 Tauri 데스크톱 앱(v2)을 청사진으로 잡았으나, **Tauri 방향은 폐기**하고 Claude Code plugin으로 전환했습니다. 본 repo에는 더 이상 Rust/React 코드가 없습니다.
+이전에는 [`MultiAgentCLI`](../MultiAgentCLI)(SwiftUI)의 후속으로 Tauri 데스크톱 앱(이전 코드명 `multi-agent-cli-v2`)을 청사진으로 잡았으나, **Tauri 방향은 폐기**하고 Claude Code plugin(`imprint`)으로 전환했습니다. 본 repo에는 더 이상 Rust/React 코드가 없습니다.
 
 현재 동작과 설치 방법은 `README.md`, `INSTALL.md`, 방향성은 `LoadMap.md`를 기준으로 합니다.
 
 ## Stack
 
 - **Plugin manifest**: `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`
-- **Hooks (Bash)**: `hooks/hooks.json`이 `SessionStart`, `UserPromptSubmit`, `Stop`을 `scripts/multiagent/*.sh`에 연결
+- **Hooks (Bash)**: `hooks/hooks.json`이 `SessionStart`, `UserPromptSubmit`, `Stop`을 `scripts/imprint/*.sh`에 연결
 - **Skills**: `skills/{memory,advisor,hud}/SKILL.md` — Claude가 필요할 때 dispatcher 스크립트를 호출
-- **데이터**: `~/.claude/multiagent/app.sqlite` (FTS5 포함), `~/.claude/multiagent/plugin.log`
-- **Statusline**: `scripts/multiagent/hud.sh`가 Claude Code stdin의 세션 JSON을 읽어 5h/wk/ctx + 잔여 시간과 활성 plugin의 skills/agents 수를 출력
+- **데이터**: `~/.claude/imprint/app.sqlite` (FTS5 포함), `~/.claude/imprint/plugin.log`
+- **Statusline**: `scripts/imprint/hud.sh`가 Claude Code stdin의 세션 JSON을 읽어 5h/wk/ctx + 잔여 시간과 활성 plugin의 skills/agents 수를 출력
 
 런타임 의존: `bash`, `python3`, `sqlite3`, `uuidgen`. provider 호출은 별도로 설치된 `claude`, `codex`, `gemini` CLI를 사용합니다.
 
 ## 디렉토리 구조
 
 ```
-multiagent/
+imprint/
 ├── .claude-plugin/
 │   ├── plugin.json
 │   └── marketplace.json
@@ -33,7 +33,7 @@ multiagent/
 │   ├── memory/SKILL.md
 │   ├── advisor/SKILL.md
 │   └── hud/SKILL.md
-├── scripts/multiagent/
+├── scripts/imprint/
 │   ├── lib/
 │   │   ├── common.sh        DB·project·로그 헬퍼
 │   │   └── schema.sql       SQLite 스키마 (idempotent)
@@ -66,7 +66,7 @@ multiagent/
 
 ### 검증
 
-- 단위 검증은 가능한 한 hook을 직접 호출해 확인합니다 (예: `bash scripts/multiagent/hud.sh < sample.json`).
+- 단위 검증은 가능한 한 hook을 직접 호출해 확인합니다 (예: `bash scripts/imprint/hud.sh < sample.json`).
 - 통합 검증은 plugin을 user scope에 설치한 뒤 실제 Claude Code 세션에서 statusline·hook 동작을 확인합니다.
 
 ## 금지 사항
@@ -126,3 +126,7 @@ Loaded on-demand — not preloaded.
 wonder, reflect, advocate, contrarian, judge
 **Support**: hacker, simplifier, researcher, architect
 <!-- ooo:END -->
+
+## git
+
+- commit할 때 Co-Authored-By는 작성하지 말 것.

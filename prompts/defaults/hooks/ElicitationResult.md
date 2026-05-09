@@ -25,7 +25,7 @@ Claude Code가 직접 읽지 않습니다 — 사람이 보는 참고 문서입�
 ## 간단한 예시
 
 ```bash
-# scripts/multiagent/elicitation-result.sh (미구현 예시)
+# scripts/imprint/elicitation-result.sh (미구현 예시)
 INPUT=$(cat)
 ANS=$(printf '%s' "$INPUT" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("user_input",""))')
 if echo "$ANS" | grep -qE 'sk-[A-Za-z0-9]{20,}'; then

@@ -1,6 +1,6 @@
-# MultiAgentCLI Load Map
+# imprint Load Map
 
-이 문서는 MultiAgentCLI의 방향을 **Claude Code plugin**으로 재정의합니다. 기존 Tauri 데스크톱 앱 청사진을 폐기하고, Claude Code의 hook·skill·subagent 시스템 위에 로컬 개발 작업 기억 시스템을 구축합니다.
+이 문서는 imprint(이전 코드명: `multi-agent-cli-v2` / 더 이전 세대: SwiftUI `MultiAgentCLI`)의 방향을 **Claude Code plugin**으로 정의합니다. 기존 Tauri 데스크톱 앱 청사진을 폐기하고, Claude Code의 hook·skill·subagent 시스템 위에 로컬 개발 작업 기억 시스템을 구축합니다.
 
 ## 방향 전환 요약
 
@@ -10,14 +10,14 @@
 | LLM 호출 | provider CLI 비대화형 실행 | Claude Code 본체 + hook이 보강 |
 | 인증 | provider별 CLI 인증 | OAuth 구독 그대로 사용 |
 | Advisor | 앱 내 prompt orchestration | `claude -p`, `codex exec`, `gemini -p` hook 호출 |
-| Memory | 앱 SQLite | `~/.claude/multiagent/` SQLite + 마크다운 |
+| Memory | 앱 SQLite | `~/.claude/imprint/` SQLite + 마크다운 |
 | UI | React + Tailwind 데스크톱 창 | Claude Code 세션 (skill 출력, hook 컨텍스트) |
 | Dev PTY 모드 | xterm.js 기반 인터랙티브 터미널 | 폐기 (Claude Code가 대신함) |
 | 스킬 공유 | 앱 내장 | GitHub 기반 레지스트리 (OMC 패턴) |
 
 ## 핵심 가치
 
-Claude Code 세션은 LLM 호출의 **prefill 단계**와 **응답 종료 단계**에 hook을 걸 수 있습니다. 이 위치는 MultiAgentCLI가 원래 노리던 "I/O 경계"와 정확히 같습니다.
+Claude Code 세션은 LLM 호출의 **prefill 단계**와 **응답 종료 단계**에 hook을 걸 수 있습니다. 이 위치는 이전 세대 SwiftUI 앱(`MultiAgentCLI`)이 원래 노리던 "I/O 경계"와 정확히 같습니다.
 
 ```text
 유저 입력
@@ -78,7 +78,7 @@ Claude/Codex/Gemini를 같은 SQLite memory에 누적합니다. Claude Code 세�
 ### 디렉터리 구조
 
 ```text
-~/.claude/multiagent/                    # 글로벌 (모든 프로젝트 공유)
+~/.claude/imprint/                    # 글로벌 (모든 프로젝트 공유)
   app.sqlite                              # 이벤트 로그 + memory chunks
   hooks/
     user-prompt-submit.sh                 # prefill 단계 컨텍스트 주입
@@ -89,7 +89,7 @@ Claude/Codex/Gemini를 같은 SQLite memory에 누적합니다. Claude Code 세�
     commit-message/SKILL.md
   config.json                             # 사용자 설정
 
-<project>/.claude/multiagent/             # 프로젝트 로컬 (override)
+<project>/.claude/imprint/             # 프로젝트 로컬 (override)
   config.json
   skills/                                 # 프로젝트 전용 skill
 ```
@@ -162,7 +162,7 @@ create virtual table memory_chunks_fts using fts5(text, content='memory_chunks',
 
 ```bash
 #!/bin/bash
-# ~/.claude/multiagent/hooks/user-prompt-submit.sh
+# ~/.claude/imprint/hooks/user-prompt-submit.sh
 # stdin으로 유저 입력을 받고, stdout으로 추가 컨텍스트를 출력하면
 # Claude Code가 [원본 + 컨텍스트]를 LLM에 보냄.
 
@@ -170,13 +170,13 @@ USER_INPUT=$(cat)
 PROJECT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 
 # 1. 이벤트 로그에 입력 저장
-sqlite3 ~/.claude/multiagent/app.sqlite "
+sqlite3 ~/.claude/imprint/app.sqlite "
   insert into events (id, project_id, source, kind, text_clean, created_at)
   values (...)
 "
 
 # 2. 프로젝트별 최근 memory_chunks 조회 (FTS + 최근성)
-RELEVANT=$(sqlite3 ~/.claude/multiagent/app.sqlite "
+RELEVANT=$(sqlite3 ~/.claude/imprint/app.sqlite "
   select text from memory_chunks
   where project_id = ? and chunk_type in ('decision','fix','todo')
   order by pinned desc, created_at desc
@@ -197,7 +197,7 @@ fi
 
 ```bash
 #!/bin/bash
-# ~/.claude/multiagent/hooks/stop.sh
+# ~/.claude/imprint/hooks/stop.sh
 # stdin으로 LLM 응답을 받고, 추출 결과를 SQLite에 저장.
 
 RESPONSE=$(cat)
@@ -210,7 +210,7 @@ EXTRACTED=$(echo "$RESPONSE" | claude -p "다음 응답에서 결정/오류/수�
 
 # 4. SQLite에 chunk 저장
 echo "$EXTRACTED" | while read line; do
-  sqlite3 ~/.claude/multiagent/app.sqlite "insert into memory_chunks ..."
+  sqlite3 ~/.claude/imprint/app.sqlite "insert into memory_chunks ..."
 done
 ```
 
@@ -253,23 +253,23 @@ advisor 결과는 `provider_runs` 테이블과 `events` 테이블에 함께 저�
 OMC 패턴 그대로 사용.
 
 ```text
-GitHub repo (multiagent-skills)
+GitHub repo (imprint-skills)
   ├─ skills/
   │   └─ <skill-name>/SKILL.md
   └─ manifest.json
 
 설치:
-  multiagent skill add <github-url-or-name>
-    -> ~/.claude/multiagent/skills/<skill-name>/
+  imprint skill add <github-url-or-name>
+    -> ~/.claude/imprint/skills/<skill-name>/
 
 로컬 우선:
-  <project>/.claude/multiagent/skills/  override
-  ~/.claude/multiagent/skills/          글로벌
+  <project>/.claude/imprint/skills/  override
+  ~/.claude/imprint/skills/          글로벌
 ```
 
 업로드 흐름:
-- 유저 A: `multiagent skill publish <name>` → GitHub에 PR 또는 push
-- 유저 B: `multiagent skill add <name>` → 같은 skill 사용
+- 유저 A: `imprint skill publish <name>` → GitHub에 PR 또는 push
+- 유저 B: `imprint skill add <name>` → 같은 skill 사용
 
 권한·서명 검증은 Phase 후반에 추가.
 
@@ -277,11 +277,11 @@ GitHub repo (multiagent-skills)
 
 ### Phase 1. Memory 저장소 (1주)
 
-- `~/.claude/multiagent/` 디렉터리 생성 로직
+- `~/.claude/imprint/` 디렉터리 생성 로직
 - SQLite 스키마 마이그레이션
 - 이벤트 append API (Bash 또는 Python 헬퍼)
 - 기본 chunk type
-- `multiagent` CLI 진입점 (skill에서 호출하기 위함)
+- `imprint` CLI 진입점 (skill에서 호출하기 위함)
 
 ### Phase 2. Hook 통합 (1주)
 
@@ -314,7 +314,7 @@ GitHub repo (multiagent-skills)
 ### Phase 6. 레지스트리 (2주)
 
 - GitHub 기반 skill 레지스트리
-- `multiagent skill add/remove/list/publish`
+- `imprint skill add/remove/list/publish`
 - manifest.json 포맷 정의
 - 로컬 override 우선순위
 
@@ -341,7 +341,7 @@ Dev PTY 모드(xterm.js + portable-pty)가 본인 워크플로에 필수인 사�
 - secret redaction 룰셋 (정규식 기반)
 - 프로젝트별 memory on/off
 - 저장 제외 패턴 설정
-- `multiagent memory purge --project <path>`
+- `imprint memory purge --project <path>`
 
 ### 2. 컨텍스트 오염
 

@@ -1,8 +1,8 @@
 #!/bin/bash
-# Statusline HUD for the multiagent plugin.
+# Statusline HUD for the imprint plugin.
 # Reads Claude Code's session JSON from stdin and prints a one-line status.
 #
-# Layout presets (read from ~/.claude/multiagent/hud-config.json):
+# Layout presets (read from ~/.claude/imprint/hud-config.json):
 #   minimal  : 5h
 #   focused  : 5h, wk, ctx
 #   full     : 5h, wk, ctx, skills, agents (default)
@@ -14,7 +14,7 @@ source "$SCRIPT_DIR/lib/common.sh"
 INPUT=$(cat || true)
 
 LAYOUT="full"
-CONFIG_FILE="$MULTIAGENT_HOME/hud-config.json"
+CONFIG_FILE="$IMPRINT_HOME/hud-config.json"
 if [[ -f "$CONFIG_FILE" ]]; then
   LAYOUT=$(CONFIG_FILE="$CONFIG_FILE" python3 -c '
 import json, os
@@ -175,7 +175,7 @@ build_focused() {
 }
 
 build_full() {
-  printf "${BOLD}multiagent${RESET} ${SEP} ${LABEL}5h${RESET}: %s ${SEP} ${LABEL}wk${RESET}: %s ${SEP} ${LABEL}ctx${RESET}: %s ${SEP} ${LABEL}skills${RESET}: %s ${SEP} ${LABEL}agents${RESET}: %s ${SEP} ${DIM}%s${RESET}" \
+  printf "${BOLD}imprint${RESET} ${SEP} ${LABEL}5h${RESET}: %s ${SEP} ${LABEL}wk${RESET}: %s ${SEP} ${LABEL}ctx${RESET}: %s ${SEP} ${LABEL}skills${RESET}: %s ${SEP} ${LABEL}agents${RESET}: %s ${SEP} ${DIM}%s${RESET}" \
     "$(format_pct_rem "$FIVE_PCT" "$FIVE_REM")" \
     "$(format_pct_rem "$WK_PCT" "$WK_REM")" \
     "$(format_pct "$CTX_PCT")" \

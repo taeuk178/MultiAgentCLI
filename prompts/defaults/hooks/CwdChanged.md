@@ -25,7 +25,7 @@ cwd가 바뀔 때마다 발화. 페이로드에 `old_cwd`, `new_cwd`.
 ## 간단한 예시
 
 ```bash
-# scripts/multiagent/cwd-changed.sh (미구현 예시)
+# scripts/imprint/cwd-changed.sh (미구현 예시)
 INPUT=$(cat)
 NEW=$(printf '%s' "$INPUT" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("new_cwd",""))')
 [[ -f "$NEW/.envrc" ]] && cd "$NEW" && direnv export bash >> "$CLAUDE_ENV_FILE" 2>/dev/null

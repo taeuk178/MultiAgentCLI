@@ -1,5 +1,5 @@
 <!--
-이 파일은 multiagent plugin이 활용하는 Stop hook의 사용자 가이드입니다.
+이 파일은 imprint plugin이 활용하는 Stop hook의 사용자 가이드입니다.
 Claude Code가 직접 읽지 않습니다 — 사람이 보는 참고 문서입니다.
 
 언제 발화: 모델 응답이 끝나고 다음 사용자 입력 대기로 들어가기 직전
@@ -18,7 +18,7 @@ Claude Code가 직접 읽지 않습니다 — 사람이 보는 참고 문서입�
 기본 동작에 사용자 편집 지점은 없습니다. 응답은 자동 archive되고, `/memory search`로 이전 응답을 조회할 수 있습니다.
 
 ```bash
-multiagent memory search "이전 답변에서 언급한 advisor 결과"
+imprint memory search "이전 답변에서 언급한 advisor 결과"
 ```
 
 ## 간단한 예시
@@ -35,4 +35,4 @@ multiagent memory search "이전 답변에서 언급한 advisor 결과"
 - 응답은 이 hook이 발화할 시점에 **이미 사용자에게 보여졌습니다**. 본문을 검열·수정할 수 없습니다.
 - 응답에 API key·token 등이 포함되면 그대로 events 테이블에 저장됩니다. **redact 룰셋은 미구현** — Phase 3 잔여 작업.
 - 현재는 raw 텍스트 저장만 합니다. `decision/error/fix` 같은 chunk_type별 분리는 아직 — Phase 3 이후.
-- transcript 포맷은 Claude Code 버전에 의존합니다. 포맷이 바뀌면 silent fail로 빠집니다 (`~/.claude/multiagent/plugin.log`에 기록).
+- transcript 포맷은 Claude Code 버전에 의존합니다. 포맷이 바뀌면 silent fail로 빠집니다 (`~/.claude/imprint/plugin.log`에 기록).

@@ -1,15 +1,15 @@
 #!/bin/bash
-# Common helpers for MultiAgent plugin scripts.
+# Common helpers for Imprint plugin scripts.
 # Sourced by all hook and skill scripts.
 
 set -euo pipefail
 
-MULTIAGENT_HOME="${MULTIAGENT_HOME:-$HOME/.claude/multiagent}"
-MULTIAGENT_DB="$MULTIAGENT_HOME/app.sqlite"
-MULTIAGENT_LOG="$MULTIAGENT_HOME/plugin.log"
+IMPRINT_HOME="${IMPRINT_HOME:-$HOME/.claude/imprint}"
+IMPRINT_DB="$IMPRINT_HOME/app.sqlite"
+IMPRINT_LOG="$IMPRINT_HOME/plugin.log"
 
 ensure_home() {
-  mkdir -p "$MULTIAGENT_HOME"
+  mkdir -p "$IMPRINT_HOME"
 }
 
 # Resolve project root: git toplevel if inside a repo, otherwise PWD.
@@ -46,22 +46,22 @@ sql_escape() {
 
 db_exec() {
   ensure_home
-  sqlite3 "$MULTIAGENT_DB" "$@"
+  sqlite3 "$IMPRINT_DB" "$@"
 }
 
 log_info() {
   ensure_home
-  printf '[%s] %s\n' "$(now_iso)" "$*" >> "$MULTIAGENT_LOG"
+  printf '[%s] %s\n' "$(now_iso)" "$*" >> "$IMPRINT_LOG"
 }
 
 log_error() {
   ensure_home
-  printf '[%s] ERROR: %s\n' "$(now_iso)" "$*" >> "$MULTIAGENT_LOG"
+  printf '[%s] ERROR: %s\n' "$(now_iso)" "$*" >> "$IMPRINT_LOG"
 }
 
 # Hook scripts must never block Claude Code. Wrap risky calls so they exit 0.
 safe_run() {
-  if ! "$@" 2>>"$MULTIAGENT_LOG"; then
+  if ! "$@" 2>>"$IMPRINT_LOG"; then
     log_error "command failed: $*"
     return 0
   fi

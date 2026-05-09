@@ -11,7 +11,7 @@ source "$SCRIPT_DIR/lib/common.sh"
 
 usage() {
   cat <<'USAGE'
-multiagent advisor <subcommand> <prompt>
+imprint advisor <subcommand> <prompt>
 
   codex <prompt>    Run codex exec with the prompt; persist provider_run.
   gemini <prompt>   Run gemini -p with the prompt; persist provider_run.
@@ -24,7 +24,7 @@ ensure_db() {
     echo "sqlite3 not found in PATH" >&2
     exit 1
   fi
-  if [[ ! -f "$MULTIAGENT_DB" ]]; then
+  if [[ ! -f "$IMPRINT_DB" ]]; then
     bash "$SCRIPT_DIR/session-start.sh" </dev/null
   fi
 }

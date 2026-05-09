@@ -25,10 +25,10 @@ Claude Code가 직접 읽지 않습니다 — 사람이 보는 참고 문서입�
 ## 간단한 예시
 
 ```bash
-# scripts/multiagent/config-change.sh (미구현 예시)
+# scripts/imprint/config-change.sh (미구현 예시)
 INPUT=$(cat)
 PATH_=$(printf '%s' "$INPUT" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("file_path",""))')
-echo "$(date -u +%FT%TZ) config $PATH_" >> ~/.claude/multiagent/config-changes.log
+echo "$(date -u +%FT%TZ) config $PATH_" >> ~/.claude/imprint/config-changes.log
 ```
 
 ## 주의

@@ -1,5 +1,5 @@
 goal: |
-  iOS 팀의 사내 프로젝트 컨텍스트(Slack 대화, Notion 기획 정의서)를 multiagent
+  iOS 팀의 사내 프로젝트 컨텍스트(Slack 대화, Notion 기획 정의서)를 imprint
   Claude Code plugin이 lazy-fetch로 흡수하고, prefill 단계에서 LLM에 자동 보강하며,
   Stop hook에서 응답을 chunk로 추출해 memory에 환류하는 ingestion + rewrite-suggestion
   파이프라인을 추가한다.
@@ -7,16 +7,16 @@ goal: |
 constraints:
   - "Claude Code hook 모델: UserPromptSubmit hook은 prompt 자체를 교체할 수 없고 stdout으로 추가 컨텍스트만 prepend 가능하다"
   - "인증: OAuth 구독 기반(claude/codex/gemini CLI), 별도 API key 사용 금지"
-  - "저장소: 로컬 SQLite ~/.claude/multiagent/app.sqlite + project-local .multiagent/sources.json. 서버형 공유 DB 미사용"
+  - "저장소: 로컬 SQLite ~/.claude/imprint/app.sqlite + project-local .imprint/sources.json. 서버형 공유 DB 미사용"
   - "배포: iOS 팀 멤버 BYO. 각자 plugin 설치, 메모리·자격증명 공유 없음"
   - "런타임 의존: bash, python3, sqlite3, uuidgen, claude CLI (모호도 분석 + chunk 추출용). codex/gemini는 advisor 한정"
   - "외부 소스: Slack MCP + Notion(API 또는 마크다운 파일). 둘 중 하나 또는 모두 부재해도 plugin은 정상 동작해야 한다 (graceful degradation)"
   - "hook 실패가 사용자 세션을 차단해서는 안 된다 (기존 plugin 정책 유지)"
-  - ".multiagent/ 폴더는 SessionStart hook이 시드하며 기존 파일은 절대 덮어쓰지 않는다"
+  - ".imprint/ 폴더는 SessionStart hook이 시드하며 기존 파일은 절대 덮어쓰지 않는다"
 
 acceptance_criteria:
   - id: AC1
-    description: ".multiagent/sources.json에 정의된 Slack 채널·Notion 페이지가 prefill 시점에 UserPromptSubmit hook에 의해 lazy-fetch되고 [Project memory context] 블록에 prepend된다"
+    description: ".imprint/sources.json에 정의된 Slack 채널·Notion 페이지가 prefill 시점에 UserPromptSubmit hook에 의해 lazy-fetch되고 [Project memory context] 블록에 prepend된다"
   - id: AC2
     description: "매 prompt마다 claude -p가 모호도 점수 + 키워드를 JSON으로 반환하고, 모호도 임계치(예: 0.5) 초과 시 [Refined prompt suggestion: ...] 블록이 prepend된다"
   - id: AC3
@@ -32,7 +32,7 @@ acceptance_criteria:
   - id: AC8
     description: "claude -p가 외부 청크를 분류할 때 소스 구분 없이 기존 9개 chunk_type(decision/error/fix/command/test_result/summary/todo/code_context/note) 중 하나를 선택한다. 소스별 후보군 분기는 두지 않는다"
   - id: AC9
-    description: "신규 팀 멤버가 git에서 .multiagent/sources.json만 받아온 상태로 plugin을 설치해도, 모호한 prompt에서 prefill 분석 → lazy fetch → suggestion 흐름이 동일하게 동작한다 (BYO 격리 검증)"
+    description: "신규 팀 멤버가 git에서 .imprint/sources.json만 받아온 상태로 plugin을 설치해도, 모호한 prompt에서 prefill 분석 → lazy fetch → suggestion 흐름이 동일하게 동작한다 (BYO 격리 검증)"
   - id: AC10
     description: "memory_chunks_fts·events_fts가 trigram tokenizer로 빌드되어 있고, 한국어 부분문자열 검색('더스트' → '더스트가/더스트의')이 hit한다. SessionStart hook이 기존 unicode61 인덱스를 감지하면 DROP + REBUILD migration을 수행한다"
   - id: AC11
@@ -57,7 +57,7 @@ ontology_schema:
     - name: sources_config
       type: object
       description: |
-        <project>/.multiagent/sources.json 의 형식.
+        <project>/.imprint/sources.json 의 형식.
         예: { "slack": { "channels": ["#ios-payment"] }, "notion": { "pages": ["a1b2c3d4-prd"] } }
     - name: memory_chunks
       type: array
@@ -121,7 +121,7 @@ decisions:
     decision: "Lazy fetch — prefill 시점에 prompt 키워드로 Slack/Notion을 on-demand 조회. 메모리 누적은 자연스러운 부산물"
   - id: D6
     topic: "Source 정의 위치"
-    decision: "<project>/.multiagent/sources.json (git-share 가능). 없으면 SessionStart hook이 안내 메시지만 prepend"
+    decision: "<project>/.imprint/sources.json (git-share 가능). 없으면 SessionStart hook이 안내 메시지만 prepend"
   - id: D7
     topic: "모호도 + 키워드 추출"
     decision: "매 prompt마다 claude -p 호출. JSON 형식 {ambiguity_score, keywords, refined_prompt}로 회신"
@@ -146,8 +146,8 @@ decisions:
   - id: D14
     topic: "팀 멤버 간 메모리 공유 정책"
     decision: |
-      기본 격리. memory_chunks(SQLite ~/.claude/multiagent/app.sqlite)는 멤버별 로컬 only.
-      <project>/.multiagent/sources.json 만 git-share — 팀이 같은 외부 source-of-truth를 lazy fetch로 자연 재구성한다.
+      기본 격리. memory_chunks(SQLite ~/.claude/imprint/app.sqlite)는 멤버별 로컬 only.
+      <project>/.imprint/sources.json 만 git-share — 팀이 같은 외부 source-of-truth를 lazy fetch로 자연 재구성한다.
       LLM 응답에서 Stop hook이 추출한 내부 chunk(decision/todo/fix 등)는 작성자의 작업 기억으로 간주, 자동 공유 없음.
       이유: chunk엔 디버그 출력·코드 fragment·외부 API 응답이 섞여 있어 자동 push 위험 큼.
   - id: D15
@@ -194,7 +194,7 @@ decisions:
             → claude -p(haiku)가 prompt와 관련 있는 reply만 selection + summary로 압축
             → 1~3 chunk(원본 인용 + summary)로 memory_chunks insert
           · single message permalink: 해당 메시지만 단건 fetch → 1 chunk
-      (b) 키워드 검색 모드 — URL 없을 때 .multiagent/sources.json 채널에서 키워드 매칭
+      (b) 키워드 검색 모드 — URL 없을 때 .imprint/sources.json 채널에서 키워드 매칭
       Slack MCP는 사용자 환경에 이미 등록된 것 사용 (인증·범위는 사용자 책임).
   - id: D21
     topic: "Notion fetch 인터페이스 (D5 보강)"
@@ -230,7 +230,7 @@ flow_diagram: |
     ↓
   UserPromptSubmit hook
     ├─ 1. claude -p → {ambiguity_score, keywords, refined_prompt}
-    ├─ 2. keywords로 .multiagent/sources.json의 Slack 채널·Notion 페이지 lazy fetch
+    ├─ 2. keywords로 .imprint/sources.json의 Slack 채널·Notion 페이지 lazy fetch
     ├─ 3. fetched 청크 + 기존 memory_chunks → [Project memory context] prepend
     └─ 4. ambiguity_score > 임계치 시 [Refined prompt suggestion: ...] 추가 prepend
     ↓

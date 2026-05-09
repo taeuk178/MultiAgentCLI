@@ -25,10 +25,10 @@ Claude Code가 직접 읽지 않습니다 — 사람이 보는 참고 문서입�
 ## 간단한 예시
 
 ```bash
-# scripts/multiagent/subagent-start.sh (미구현 예시)
+# scripts/imprint/subagent-start.sh (미구현 예시)
 INPUT=$(cat)
 TYPE=$(printf '%s' "$INPUT" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("agent_type",""))')
-echo "$(date -u +%FT%TZ) spawn $TYPE" >> ~/.claude/multiagent/agents.log
+echo "$(date -u +%FT%TZ) spawn $TYPE" >> ~/.claude/imprint/agents.log
 ```
 
 ## 주의

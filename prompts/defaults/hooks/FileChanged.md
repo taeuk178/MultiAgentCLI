@@ -25,7 +25,7 @@ watch 대상 파일이 디스크에서 변경되면 발화. matcher에 파일명
 ## 간단한 예시
 
 ```bash
-# scripts/multiagent/file-changed.sh (미구현 예시)
+# scripts/imprint/file-changed.sh (미구현 예시)
 INPUT=$(cat)
 P=$(printf '%s' "$INPUT" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("file_path",""))')
 case "$(basename "$P")" in

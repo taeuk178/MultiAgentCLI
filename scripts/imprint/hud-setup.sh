@@ -1,5 +1,5 @@
 #!/bin/bash
-# Configure ~/.claude/settings.json statusLine to use multiagent HUD,
+# Configure ~/.claude/settings.json statusLine to use imprint HUD,
 # or restore a saved previous configuration.
 #
 # Usage:
@@ -14,18 +14,18 @@ source "$SCRIPT_DIR/lib/common.sh"
 
 CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 SETTINGS_FILE="$CLAUDE_DIR/settings.json"
-BACKUP_DIR="$MULTIAGENT_HOME/backups"
-PREV_FILE="$MULTIAGENT_HOME/previous-statusline.json"
-CONFIG_FILE="$MULTIAGENT_HOME/hud-config.json"
+BACKUP_DIR="$IMPRINT_HOME/backups"
+PREV_FILE="$IMPRINT_HOME/previous-statusline.json"
+CONFIG_FILE="$IMPRINT_HOME/hud-config.json"
 
 if [[ ! -f "$SCRIPT_DIR/hud.sh" ]]; then
   echo "hud.sh missing under $SCRIPT_DIR" >&2
   exit 1
 fi
 
-# <plugin-root>/scripts/multiagent → <plugin-root>
+# <plugin-root>/scripts/imprint → <plugin-root>
 PLUGIN_ROOT_GUESS="$(cd "$SCRIPT_DIR/../.." && pwd)"
-HUD_CMD="bash \"$PLUGIN_ROOT_GUESS/scripts/multiagent/hud.sh\""
+HUD_CMD="bash \"$PLUGIN_ROOT_GUESS/scripts/imprint/hud.sh\""
 
 require_python3() {
   if ! command -v python3 >/dev/null 2>&1; then
@@ -88,7 +88,7 @@ if os.path.exists(settings_path):
             data = {}
 
 current = data.get('statusLine')
-if current and 'multiagent' not in json.dumps(current):
+if current and 'imprint' not in json.dumps(current):
     with open(prev_path, 'w') as f:
         json.dump(current, f, indent=2)
 
@@ -101,7 +101,7 @@ data['statusLine'] = {
 os.makedirs(os.path.dirname(settings_path), exist_ok=True)
 with open(settings_path, 'w') as f:
     json.dump(data, f, indent=2)
-print('statusLine updated to multiagent HUD')
+print('statusLine updated to imprint HUD')
 PY
 
   write_layout "$layout"
@@ -122,9 +122,9 @@ if not sl:
     print('statusLine: not configured')
 else:
     cmd = sl.get('command') if isinstance(sl, dict) else sl
-    is_ours = 'multiagent' in (cmd or '')
+    is_ours = 'imprint' in (cmd or '')
     print(f'statusLine command: {cmd}')
-    print(f'multiagent HUD active: {is_ours}')
+    print(f'imprint HUD active: {is_ours}')
 PY
   if [[ -f "$CONFIG_FILE" ]]; then
     printf 'layout config: '

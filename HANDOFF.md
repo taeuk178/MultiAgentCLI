@@ -50,7 +50,7 @@ PR break는 별도 PR agent로 처리 — 본 인터뷰 scope에서 제외.
 
 가장 작은 첫 PR 후보 (위험도 ↓ 순):
 1. **schema.sql tokenizer migration** (D16) — `tokenize='trigram'`으로 변경 + SessionStart에서 unicode61 감지 시 DROP/REBUILD. 새 기능 0, DDL만
-2. **`.multiagent/sources.json` 시드 + 안내** (D6) — defaults에 빈 sample + SessionStart에서 부재 시 안내 메시지 prepend
+2. **`.imprint/sources.json` 시드 + 안내** (D6) — defaults에 빈 sample + SessionStart에서 부재 시 안내 메시지 prepend
 3. **stop.sh chunk 추출 (claude -p haiku)** (D8, D12, D17, D19) — 응답을 haiku에 넘겨 9개 chunk_type 후보로 분류 + keywords 배열, JSON line schema validation, memory_chunks insert
 4. **user-prompt-submit.sh 모호도 분석** (D2, D7, D19) — claude -p haiku로 ambiguity_score + keywords + refined_prompt JSON, 임계치 초과 시 [Refined prompt suggestion] 블록 prepend
 5. **Slack/Notion lazy fetch** (D5, D20–D24) — URL 감지 + dedup + selection+summary 적용
@@ -70,12 +70,12 @@ PR break는 별도 PR agent로 처리 — 본 인터뷰 scope에서 제외.
 - 두 가지 방식 비교 후 채택:
   1. 정규식/키워드 기반 추출 (빠름, 단순)
   2. `claude -p`로 LLM 추출 (정확, 비용은 구독)
-- 시작점: `scripts/multiagent/stop.sh` 마지막 부분에 추출 단계 추가.
+- 시작점: `scripts/imprint/stop.sh` 마지막 부분에 추출 단계 추가.
 
 **Redaction**
 - `memory.sh remember --redact` 플래그 미구현.
-- `~/.claude/multiagent/redact-rules.json` 형식으로 정규식 룰셋 정의.
-- 시작점: `scripts/multiagent/lib/common.sh`에 `redact_text()` 함수 추가.
+- `~/.claude/imprint/redact-rules.json` 형식으로 정규식 룰셋 정의.
+- 시작점: `scripts/imprint/lib/common.sh`에 `redact_text()` 함수 추가.
 
 **memory list 필터 보강**
 - 현재 `--recent`, `--pinned`, `--type` 만 지원.
@@ -84,7 +84,7 @@ PR break는 별도 PR agent로 처리 — 본 인터뷰 scope에서 제외.
 ### Phase 4 마무리 (Advisor skill 검증)
 
 **End-to-end 테스트**
-- `bash scripts/multiagent/advisor.sh codex "test"` 직접 실행 → codex CLI 인증 흐름과 출력 캡처 확인.
+- `bash scripts/imprint/advisor.sh codex "test"` 직접 실행 → codex CLI 인증 흐름과 출력 캡처 확인.
 - Gemini는 `GEMINI_CLI_TRUST_WORKSPACE=true` 환경변수 의존 — 사용자 머신 정책에 따라 실패 가능.
 - CCG 합성 단계에서 `claude -p`가 비대화형 OAuth로 동작하는지 확인.
 
@@ -102,12 +102,12 @@ PR break는 별도 PR agent로 처리 — 본 인터뷰 scope에서 제외.
 - `/pr-draft` — `git log <base>..HEAD` + memory로 PR 본문.
 - `/recap` — 오늘의 작업 요약.
 - `/handoff` — 다음 세션용 자동 brief (이 문서 재생성).
-- 위치 제안: `skills/workflow/SKILL.md` + `scripts/multiagent/workflow.sh`.
+- 위치 제안: `skills/workflow/SKILL.md` + `scripts/imprint/workflow.sh`.
 
 ### Phase 6. 외부 레지스트리 (미시작)
 
-- `multiagent skill add <github-url>` — GitHub repo에서 SKILL.md 다운로드 후 `~/.claude/multiagent/skills/`에 배치.
-- `multiagent skill publish <name>` — 본인 GitHub repo에 PR 또는 push.
+- `imprint skill add <github-url>` — GitHub repo에서 SKILL.md 다운로드 후 `~/.claude/imprint/skills/`에 배치.
+- `imprint skill publish <name>` — 본인 GitHub repo에 PR 또는 push.
 - manifest.json 포맷 정의 필요.
 - 권한·서명 검증은 Phase 6.5 이후.
 
@@ -126,11 +126,11 @@ PR break는 별도 PR agent로 처리 — 본 인터뷰 scope에서 제외.
 
 ## 공존하는 외부 plugin: oh-my-claudecode (omc)
 
-본 multiagent plugin과 별개로 **`oh-my-claudecode` (omc) plugin**이 동일 Claude Code 환경에 설치되어 있을 수 있고, 자체 메모리 시스템을 운영함. 두 plugin이 각자 메모리 저장소를 갖는 구조이므로 충돌·중복 주입 가능성에 유의.
+본 imprint plugin과 별개로 **`oh-my-claudecode` (omc) plugin**이 동일 Claude Code 환경에 설치되어 있을 수 있고, 자체 메모리 시스템을 운영함. 두 plugin이 각자 메모리 저장소를 갖는 구조이므로 충돌·중복 주입 가능성에 유의.
 
 - **저장 위치**: `<project>/.omc/project-memory.json` (per-project, JSON)
-  - vs multiagent: `~/.claude/multiagent/app.sqlite` (per-user, SQLite + FTS5)
-- **주입 시점**: omc의 `project-memory-session.mjs` hook이 SessionStart에서 별도 컨텍스트로 prepend (multiagent의 `[Project memory context]` 블록과는 별개 채널)
+  - vs imprint: `~/.claude/imprint/app.sqlite` (per-user, SQLite + FTS5)
+- **주입 시점**: omc의 `project-memory-session.mjs` hook이 SessionStart에서 별도 컨텍스트로 prepend (imprint의 `[Project memory context]` 블록과는 별개 채널)
 - **자동 갱신**: omc의 `project-memory-posttool.mjs` (PostToolUse)가 Read/Write/Edit/Bash 후 `hotPaths`, `lastAccessed` 등 자동 누적 / `project-memory-precompact.mjs`(PreCompact)가 압축 직전 보존
 - **저장 데이터**:
   - 자동 스캔: `techStack`, `build`, `conventions`, `directoryMap`, `hotPaths`
@@ -151,7 +151,7 @@ PR break는 별도 PR agent로 처리 — 본 인터뷰 scope에서 제외.
 
 1. **현재 우선순위 — Context Ingestion 확장 (Seed v0.6)**: 위 "TODO 3. 구현 시작" 섹션의 1번(schema.sql trigram migration)부터 점진적으로. Stop hook chunk 추출(Phase 3 마무리)도 이 Seed의 일부로 흡수됨.
 2. **남은 인터뷰 라운드**: TODO 1·2를 다른 노트북·세션에서 `/ouroboros:interview ...`로 재개. Seed v0.6이 immutable spec이므로 새 결정은 D25부터 추가.
-3. **빠른 검증**: `bash scripts/multiagent/advisor.sh codex "ping"`으로 OAuth advisor 흐름 확인 (별도 트랙).
+3. **빠른 검증**: `bash scripts/imprint/advisor.sh codex "ping"`으로 OAuth advisor 흐름 확인 (별도 트랙).
 4. **Phase 5 (workflow skill)**: `/commit-message` 등 — Context Ingestion이 안정된 뒤로 미룸.
 
 ## 파일 인덱스
@@ -165,7 +165,7 @@ skills/
   memory/SKILL.md
   advisor/SKILL.md
   hud/SKILL.md
-scripts/multiagent/
+scripts/imprint/
   lib/common.sh            DB·project·로그 헬퍼
   lib/schema.sql           SQLite 스키마 (idempotent)
   session-start.sh         SessionStart hook
@@ -186,7 +186,7 @@ HANDOFF.md                 이 문서
 f75f39b HANDOFF에 HUD 개선과 최신 커밋 히스토리 반영
 b50cfa0 HUD에 잔여 시간 표시와 활성 플러그인 카운트 반영
 8f15837 HANDOFF에 HUD 스킬 완료 내역 반영
-d9fc100 multiagent HUD 스킬과 statusline 스크립트 추가
+d9fc100 imprint HUD 스킬과 statusline 스크립트 추가
 89d7297 다음 세션 픽업용 HANDOFF 문서 추가
 736b55e Claude Code plugin 골격 추가
 5ba9034 LoadMap을 Claude Code plugin 방향으로 재정의

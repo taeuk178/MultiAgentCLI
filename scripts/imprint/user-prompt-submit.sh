@@ -2,7 +2,7 @@
 # UserPromptSubmit hook:
 #   1) log user input to events
 #   2) inject pinned + recent memory chunks (project memory context block)
-#   3) evaluate keyword routing rules from .multiagent/UserPromptSubmit.md and
+#   3) evaluate keyword routing rules from .imprint/UserPromptSubmit.md and
 #      prepend any matched advisories
 #
 # stdin: JSON with { "prompt": "...", "session_id": "...", ... }
@@ -23,7 +23,7 @@ try:
     print(data.get("prompt", ""))
 except Exception:
     pass
-' 2>>"$MULTIAGENT_LOG" || true)
+' 2>>"$IMPRINT_LOG" || true)
 
 if [[ -z "${PROMPT// }" ]]; then
   exit 0
@@ -39,26 +39,26 @@ if command -v sqlite3 >/dev/null 2>&1; then
   db_exec "
     INSERT INTO events (id, project_id, source, kind, text_clean, created_at)
     VALUES ('$EVENT_ID', '$PID', 'claude_code', 'user_message', '$ESC_PROMPT', '$NOW');
-  " 2>>"$MULTIAGENT_LOG" || true
+  " 2>>"$IMPRINT_LOG" || true
 else
   log_error "sqlite3 missing; user-prompt-submit DB write skipped"
   PID=""
 fi
 
-# --- 2. Routing advisories from .multiagent/UserPromptSubmit.md -------------
-# Resolution: <project>/.multiagent/UserPromptSubmit.md  →  plugin default
+# --- 2. Routing advisories from .imprint/UserPromptSubmit.md -------------
+# Resolution: <project>/.imprint/UserPromptSubmit.md  →  plugin default
 
 ROOT=$(project_root)
 RULES_FILE=""
-if [[ -f "$ROOT/.multiagent/UserPromptSubmit.md" ]]; then
-  RULES_FILE="$ROOT/.multiagent/UserPromptSubmit.md"
+if [[ -f "$ROOT/.imprint/UserPromptSubmit.md" ]]; then
+  RULES_FILE="$ROOT/.imprint/UserPromptSubmit.md"
 elif [[ -f "$DEFAULTS_DIR/UserPromptSubmit.md" ]]; then
   RULES_FILE="$DEFAULTS_DIR/UserPromptSubmit.md"
 fi
 
 ROUTING=""
 if [[ -n "$RULES_FILE" ]]; then
-  ROUTING=$(PROMPT="$PROMPT" RULES_FILE="$RULES_FILE" python3 - <<'PY' 2>>"$MULTIAGENT_LOG" || true
+  ROUTING=$(PROMPT="$PROMPT" RULES_FILE="$RULES_FILE" python3 - <<'PY' 2>>"$IMPRINT_LOG" || true
 import os, re, sys
 
 prompt = os.environ.get("PROMPT", "")
@@ -157,7 +157,7 @@ for cells in collect_table_after(lines, lambda l: "Agent" in l and "패턴" in l
         continue
 
 if out:
-    print("[multiagent routing — UserPromptSubmit]")
+    print("[imprint routing — UserPromptSubmit]")
     for line in out:
         print(line)
 PY
@@ -178,7 +178,7 @@ if [[ -n "$PID" ]]; then
       AND chunk_type IN ('decision', 'fix', 'todo', 'note')
     ORDER BY pinned DESC, created_at DESC
     LIMIT 5;
-  " 2>>"$MULTIAGENT_LOG" || true)
+  " 2>>"$IMPRINT_LOG" || true)
 
   if [[ -n "${INJECTED// }" ]]; then
     printf '\n[Project memory context]\n%s\n' "$INJECTED"

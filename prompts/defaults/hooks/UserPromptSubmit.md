@@ -1,12 +1,12 @@
 <!--
-이 파일은 multiagent plugin이 활용하는 UserPromptSubmit hook의 사용자 가이드입니다.
+이 파일은 imprint plugin이 활용하는 UserPromptSubmit hook의 사용자 가이드입니다.
 Claude Code가 직접 읽지 않습니다 — 사람이 보는 참고 문서입니다.
 
 언제 발화: 사용자가 prompt를 보낼 때마다 (매 turn)
 무엇을 함:
-  1) 라우팅 룰(.multiagent/UserPromptSubmit.md)을 평가해 매칭된 agent 권고 prepend
+  1) 라우팅 룰(.imprint/UserPromptSubmit.md)을 평가해 매칭된 agent 권고 prepend
   2) 메모리 청크(pinned + 최신 5개)를 [Project memory context] 블록으로 prepend
-사용자 손길이 닿는 곳: `<project>/.multiagent/UserPromptSubmit.md`
+사용자 손길이 닿는 곳: `<project>/.imprint/UserPromptSubmit.md`
 주의: 매 turn 토큰을 소모, 모델이 라우팅 권고를 거부할 수 있음
 -->
 
@@ -21,12 +21,12 @@ Claude Code가 직접 읽지 않습니다 — 사람이 보는 참고 문서입�
 
 ## 어떻게 활용
 
-`<project>/.multiagent/UserPromptSubmit.md`의 라우팅 표를 편집해 키워드 → agent 매핑을 추가/수정하세요.
+`<project>/.imprint/UserPromptSubmit.md`의 라우팅 표를 편집해 키워드 → agent 매핑을 추가/수정하세요.
 
 ## 간단한 예시
 
 ```markdown
-# .multiagent/UserPromptSubmit.md 라우팅 표 (사용자 편집)
+# .imprint/UserPromptSubmit.md 라우팅 표 (사용자 편집)
 
 | 패턴                       | Agent        | 권고 메시지                  |
 |---------------------------|--------------|------------------------------|
@@ -37,7 +37,7 @@ Claude Code가 직접 읽지 않습니다 — 사람이 보는 참고 문서입�
 `이 PR 본문 만들어줘`라는 prompt가 들어오면, 모델이 받기 직전에 다음이 prepend됩니다.
 
 ```
-[multiagent routing — UserPromptSubmit]
+[imprint routing — UserPromptSubmit]
 - [pr-agent] PR 작업 — pr-agent 호출 권장
 
 [Project memory context]

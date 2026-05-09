@@ -25,7 +25,7 @@ Claude Code가 직접 읽지 않습니다 — 사람이 보는 참고 문서입�
 ## 간단한 예시
 
 ```bash
-# scripts/multiagent/notification.sh (미구현 예시)
+# scripts/imprint/notification.sh (미구현 예시)
 INPUT=$(cat)
 TYPE=$(printf '%s' "$INPUT" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("notification_type",""))')
 MSG=$(printf '%s' "$INPUT" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("message",""))')

@@ -25,7 +25,7 @@ Claude Code가 직접 읽지 않습니다 — 사람이 보는 참고 문서입�
 ## 간단한 예시
 
 ```bash
-# scripts/multiagent/post-tool-use.sh (미구현 예시)
+# scripts/imprint/post-tool-use.sh (미구현 예시)
 INPUT=$(cat)
 TOOL=$(printf '%s' "$INPUT" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("tool_name",""))')
 case "$TOOL" in

@@ -27,11 +27,11 @@ reason 값으로 어떤 경로로 로드됐는지 구분된다: `session_start |
 ## 간단한 예시
 
 ```bash
-# scripts/multiagent/instructions-loaded.sh (미구현 예시)
+# scripts/imprint/instructions-loaded.sh (미구현 예시)
 INPUT=$(cat)
 FILE=$(printf '%s' "$INPUT" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("file_path",""))')
 WHY=$(printf '%s' "$INPUT" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("reason",""))')
-echo "$(date -u +%FT%TZ) load $WHY $FILE" >> ~/.claude/multiagent/instructions.log
+echo "$(date -u +%FT%TZ) load $WHY $FILE" >> ~/.claude/imprint/instructions.log
 ```
 
 ## 주의

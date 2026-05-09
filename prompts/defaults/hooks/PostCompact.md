@@ -24,12 +24,12 @@ Claude Code가 직접 읽지 않습니다 — 사람이 보는 참고 문서입�
 ## 간단한 예시
 
 ```bash
-# scripts/multiagent/post-compact.sh (미구현 예시)
+# scripts/imprint/post-compact.sh (미구현 예시)
 INPUT=$(cat)
 FREED=$(printf '%s' "$INPUT" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("tokens_freed",0))')
-echo "$(date -u +%FT%TZ) compact freed=$FREED" >> ~/.claude/multiagent/compaction.log
+echo "$(date -u +%FT%TZ) compact freed=$FREED" >> ~/.claude/imprint/compaction.log
 # pinned 청크 재주입
-sqlite3 ~/.claude/multiagent/app.sqlite "SELECT text FROM memory_chunks WHERE pinned=1 LIMIT 5"
+sqlite3 ~/.claude/imprint/app.sqlite "SELECT text FROM memory_chunks WHERE pinned=1 LIMIT 5"
 ```
 
 ## 주의

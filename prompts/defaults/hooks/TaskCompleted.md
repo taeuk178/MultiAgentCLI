@@ -25,10 +25,10 @@ Claude Code UI에서 task/checklist 항목이 완료 처리될 때 발화. 페�
 ## 간단한 예시
 
 ```bash
-# scripts/multiagent/task-completed.sh (미구현 예시)
+# scripts/imprint/task-completed.sh (미구현 예시)
 INPUT=$(cat)
 NAME=$(printf '%s' "$INPUT" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("task_name",""))')
-echo "$(date -u +%FT%TZ) done $NAME" >> ~/.claude/multiagent/tasks.log
+echo "$(date -u +%FT%TZ) done $NAME" >> ~/.claude/imprint/tasks.log
 ```
 
 ## 주의

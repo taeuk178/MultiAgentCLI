@@ -1,10 +1,10 @@
 <!--
-이 파일은 multiagent plugin이 활용하는 SessionStart hook의 사용자 가이드입니다.
+이 파일은 imprint plugin이 활용하는 SessionStart hook의 사용자 가이드입니다.
 Claude Code가 직접 읽지 않습니다 — 사람이 보는 참고 문서입니다.
 
 언제 발화: 세션 시작·재개·`/clear`·컨텍스트 압축 직후
-무엇을 함: `.multiagent/` 폴더 시드 + soul.md를 stdout으로 출력 → 컨텍스트에 prepend
-사용자 손길이 닿는 곳: `<project>/.multiagent/soul.md`
+무엇을 함: `.imprint/` 폴더 시드 + soul.md를 stdout으로 출력 → 컨텍스트에 prepend
+사용자 손길이 닿는 곳: `<project>/.imprint/soul.md`
 주의: 모델이 거부할 수 있고, 압축 시 휘발 가능 (compact matcher로 자동 재주입)
 -->
 
@@ -16,12 +16,12 @@ Claude Code가 직접 읽지 않습니다 — 사람이 보는 참고 문서입�
 
 ## 어떻게 활용
 
-`<project>/.multiagent/soul.md`를 편집하세요. 그 파일 내용이 매 세션 시작 시 컨텍스트에 prepend됩니다.
+`<project>/.imprint/soul.md`를 편집하세요. 그 파일 내용이 매 세션 시작 시 컨텍스트에 prepend됩니다.
 
 ## 간단한 예시
 
 ```markdown
-# .multiagent/soul.md (사용자 편집)
+# .imprint/soul.md (사용자 편집)
 
 당신은 한국어로 답하는 전문 코드 리뷰 어시스턴트입니다.
 - PR 본문은 항상 "Summary / Changes / Risk / Test plan" 4섹션 구조로

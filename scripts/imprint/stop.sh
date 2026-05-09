@@ -18,7 +18,7 @@ try:
     print(data.get("transcript_path", ""))
 except Exception:
     pass
-' 2>>"$MULTIAGENT_LOG" || true)
+' 2>>"$IMPRINT_LOG" || true)
 
 if [[ -z "${TRANSCRIPT_PATH// }" || ! -f "$TRANSCRIPT_PATH" ]]; then
   exit 0
@@ -30,7 +30,7 @@ if ! command -v sqlite3 >/dev/null 2>&1; then
 fi
 
 # Extract last assistant text from the JSONL transcript.
-LAST_TEXT=$(python3 - "$TRANSCRIPT_PATH" <<'PY' 2>>"$MULTIAGENT_LOG" || true
+LAST_TEXT=$(python3 - "$TRANSCRIPT_PATH" <<'PY' 2>>"$IMPRINT_LOG" || true
 import json, sys
 path = sys.argv[1]
 last = ""
@@ -78,7 +78,7 @@ ESC_TEXT=$(sql_escape "$LAST_TEXT")
 db_exec "
   INSERT INTO events (id, project_id, source, kind, text_clean, created_at)
   VALUES ('$EVENT_ID', '$PID', 'claude_code', 'llm_response', '$ESC_TEXT', '$NOW');
-" 2>>"$MULTIAGENT_LOG" || true
+" 2>>"$IMPRINT_LOG" || true
 
 log_info "stop logged event=$EVENT_ID project=$PID bytes=${#LAST_TEXT}"
 exit 0

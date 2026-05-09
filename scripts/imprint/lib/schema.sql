@@ -1,4 +1,4 @@
--- MultiAgent plugin SQLite schema.
+-- Imprint plugin SQLite schema.
 -- Applied idempotently on every session start.
 
 PRAGMA journal_mode = WAL;
