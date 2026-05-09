@@ -6,24 +6,49 @@ level: 2
 
 # Imprint HUD
 
-`scripts/imprint/hud.sh`가 statusline body를 출력하고, `scripts/imprint/hud-setup.sh`가 그 동작을 설정하는 dispatcher입니다. 이 skill의 역할은 사용자의 자연어 요청을 dispatcher 명령으로 변환하는 것입니다.
+`scripts/imprint/hud.sh`가 statusline body를 출력하고, `scripts/imprint/hud-setup.sh`가 그 동작을 설정하는 dispatcher입니다. 이 skill의 역할은 사용자가 HUD 필드 구성을 빠르게 바꿀 수 있게 해주는 것입니다.
 
-## 작동 방식 한눈에
+## 호출 흐름 — 두 갈래
+
+이 skill이 호출됐을 때 첫 단계에서 갈래를 결정하세요.
+
+### A. 자연어 요청에 매핑이 있으면 즉시 실행
+
+사용자가 "HUD에 cost 추가", "HUD 5h만", "HUD 꺼줘" 같이 의도를 명시했으면 **아래 매핑 표를 보고 바로 dispatcher 명령을 실행**하세요. 옵션 질문을 다시 던지지 마세요. 실행 후 결과 한 줄과 재시작 안내만 보고.
+
+### B. 의도가 모호하면 곧장 12 필드 선택 wizard 시작
+
+사용자가 단순히 "/imprint:hud", "HUD 커스텀해줘", "HUD 바꿔줘"처럼 어떤 필드인지 단서 없이 호출하면, **"기본 유지/풀스펙/직접 고르기" 같은 메타 옵션을 만들지 말고** 곧장 `AskUserQuestion`으로 12 필드 multiSelect를 호출하세요. AskUserQuestion은 옵션 4개 제한이 있으니 아래 3개 질문 그룹으로 묶고, **세 그룹을 같은 한 번의 AskUserQuestion 호출**에 `questions` 배열로 함께 보내야 사용자가 한 번에 답할 수 있습니다. 따로 호출하면 사용자가 3 turn을 대기.
 
 ```
-유저: "HUD에 cost 추가해줘"
-   ↓
-이 skill 호출
-   ↓
-Claude가 아래 매핑 표를 참조해서 즉시 실행:
-   bash $CLAUDE_PLUGIN_ROOT/scripts/imprint/hud-setup.sh fields enable cost
-   ↓
-사용자에게 적용 결과 + Claude Code 재시작 안내
+질문 1 (multiSelect, 4개): rate/context 그룹
+  - 5h    : 5시간 rate limit %(used) + 잔여 시간
+  - wk    : 7일 rate limit %(used) + 잔여
+  - ctx   : 컨텍스트 윈도우 사용 %
+  - tokens: 입력+출력 토큰 / 컨텍스트 크기
+
+질문 2 (multiSelect, 4개): 모델/세션/시간 그룹
+  - model : 모델 표시명 (Opus 등)
+  - effort: reasoning effort + thinking 플래그
+  - style : output style 이름
+  - dur   : 세션 wall-clock 경과 시간
+
+질문 3 (multiSelect, 4개): 비용/skills/시각 그룹
+  - cost  : 세션 추정 비용 USD
+  - skills: 로드된 skill 파일 수
+  - agents: 로드된 agent 파일 수
+  - time  : 현재 시각 HH:MM
 ```
 
-## 사용자 요청 → 명령 매핑
+질문 직전에 **현재 활성 필드**(`hud-setup.sh fields list`)를 한 줄로 보여줘서 사용자가 무엇이 켜져 있는지 인지하고 답하게 하세요. 예: "현재: `5h ctx time`. 새로 고르세요."
 
-먼저 묻기 전에 매핑 표에서 직접 의도를 잡으세요. 자연어 요청 대부분은 이 표 안에 있습니다.
+세 답이 모이면 합쳐 `bash hud-setup.sh fields set <id1> <id2> ...`로 통째 덮어쓰고 적용 결과 한 줄 + 재시작 안내. 표시 순서는 사용자가 선택한 순서가 아니라 **`5h, wk, ctx, tokens, model, effort, style, dur, cost, skills, agents, time`**의 캐논 순서로 정렬해 set하면 시각적으로 가장 자연스럽습니다.
+
+### Scope 처리
+
+사용자 요청에 "이 프로젝트만", "여기서만", "여기만"이 포함되면 모든 dispatcher 호출에 `--project` 플래그를 붙이세요. 명시 없으면 user scope.
+
+## 사용자 요청 → 명령 매핑 (갈래 A에서 사용)
 
 | 사용자 요청 | 실행 명령 |
 | --- | --- |
@@ -34,7 +59,6 @@ Claude가 아래 매핑 표를 참조해서 즉시 실행:
 | "HUD에 X 추가" (X가 12개 ID 중 하나) | `hud-setup.sh fields enable X` |
 | "HUD에서 X 빼" / "X 숨겨" | `hud-setup.sh fields disable X` |
 | "HUD를 X·Y만 보이게" / "X·Y만 띄워" | `hud-setup.sh fields set X Y` |
-| "이 프로젝트만 X·Y" / "여기서만" | 위 명령 + `--project` |
 | "HUD 기본값" / "최소 구성" | `hud-setup.sh fields set 5h ctx time` |
 | "HUD 풀스펙" / "다 보여줘" | `hud-setup.sh fields set 5h wk ctx skills agents time` |
 | "프리셋 minimal/focused/full" | `hud-setup.sh layout <name>` (backward-compat) |
@@ -74,16 +98,6 @@ Claude가 아래 매핑 표를 참조해서 즉시 실행:
 | **user** | `~/.claude/imprint/hud-config.json` | 기본. 모든 프로젝트에서 같은 HUD를 원할 때 |
 
 project가 user보다 항상 우선합니다.
-
-## 모호할 때만 AskUserQuestion
-
-**기본 원칙: 매핑 표로 의도가 잡히면 즉시 실행하고 결과를 보고하세요.** 사용자가 매번 옵션 리스트에서 고르는 건 피로합니다.
-
-옵션 질문이 정당화되는 경우:
-- 사용자가 "HUD 커스텀해줘"처럼 정말 모호하게만 요청 — 어떤 필드 ON/OFF인지 단서가 없을 때
-- 사용자가 안 쓸 ID(예: 12개 외)를 말했는데 표에 매칭이 안 될 때
-
-질문할 땐 한 번에 multiSelect 한 개로 끝내세요 — 12개 필드를 한 화면에 보여주고 선택받기.
 
 ## 실행 후 안내
 
