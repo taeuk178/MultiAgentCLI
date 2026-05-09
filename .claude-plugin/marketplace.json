@@ -1,0 +1,25 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "multiagent",
+  "description": "Local development memory system with multi-provider advisor orchestration",
+  "owner": {
+    "name": "MultiAgentCLI"
+  },
+  "plugins": [
+    {
+      "name": "multiagent",
+      "description": "Memory-augmented Claude Code plugin: persistent project memory, prefill context injection, and Claude/Codex/Gemini advisor via OAuth subscription.",
+      "version": "0.1.0",
+      "source": "./",
+      "category": "productivity",
+      "tags": [
+        "memory",
+        "advisor",
+        "ccg",
+        "multi-provider",
+        "hermes-agent"
+      ]
+    }
+  ],
+  "version": "0.1.0"
+}
