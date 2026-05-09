@@ -3,47 +3,27 @@
 **문서 책임**
 - 본 문서는 **단기**: 즉시 다음에 손댈 검토 안건, deferred TODO, 직전 작업의 미완 Phase, 다음 세션 시작 시 픽업 지점만 담는다.
 - **큰 그림**(비전·Phase 정의·아키텍처·위험 요소·미시작 Phase 5/6/7)은 `LoadMap.md` 참조.
+- **결정 사유 로그**(왜 그렇게 바꿨는지)는 `HISTORY.md` 참조.
 - 구현 완료된 Phase 1·2·3(부분)·4(부분)·HUD·플러그인 설치는 `README.md`의 사용/구조/데이터 위치 섹션 참조.
 
 최종 업데이트: 2026-05-09.
 
-## Chunk 분류 세분화 검토 (2026-05-09)
+## Chunk 분류 세분화 — 1단계 완료 (2026-05-09)
 
-청크 데이터가 한 테이블·9개 chunk_type enum + `metadata_json` 한 봉지에 모두 들어가는데, 실제 DB를 보면 **28건이 모두 `note` × `source=notion` 한 칸에 통밥**된 상태(외부 source chunk를 일괄 `note`로 INSERT). 9개 enum이 의미를 못 살리고 있고, 자주 쓰는 metadata 키(`source`, `page_id`, `url`)는 인덱스 없이 row마다 `json_extract`로 파싱됨.
+**1단계: 외부 source `chunk_type` 분리.** Notion → `spec`, Slack 단발 → `message`, Slack thread → `thread`. `ingestion.py`의 5개 INSERT 자리에서 hardcoded `"note"`를 source별 분기로 교체, `migrations.sh`에 멱등 backfill 추가. 사유는 `HISTORY.md` 2026-05-09 항목 참조.
 
-**현 schema 핵심 (`scripts/imprint/lib/schema.sql:39-54`)**
+**2단계: metadata 키 generated column + 인덱스 승격 (대기).** 검색 체감이 느려진 시점에 점진 도입.
 
-- 분류 축 3개: `chunk_type` enum(9), `metadata.source` JSON, `pinned`
-- 인덱스: `(project_id, pinned DESC, created_at DESC)`, `(project_id, chunk_type)` — metadata 인덱스 없음
-- 검색: FTS5 trigram(text) ∪ `metadata.keywords` 배열 hit ranking
+```sql
+ALTER TABLE memory_chunks ADD COLUMN
+  meta_source TEXT GENERATED ALWAYS AS (json_extract(metadata_json,'$.source')) VIRTUAL;
+ALTER TABLE memory_chunks ADD COLUMN
+  meta_page_id TEXT GENERATED ALWAYS AS (json_extract(metadata_json,'$.page_id')) VIRTUAL;
+CREATE INDEX idx_chunks_source ON memory_chunks(project_id, meta_source);
+CREATE INDEX idx_chunks_page ON memory_chunks(project_id, meta_page_id);
+```
 
-**제안 — 두 단계로 끊어서 진행**
-
-1. 외부 source `chunk_type` 분리 (작은 의미 변경)
-   - `note(notion)` → `spec`, `note(slack 단발)` → `message`, `note(slack thread)` → `thread`
-   - `fetch_notion_url` / `fetch_slack_*`의 INSERT 자리에서 chunk_type만 변경
-   - 기존 28건 backfill 1줄: `UPDATE memory_chunks SET chunk_type='spec' WHERE json_extract(metadata_json,'$.source')='notion';`
-
-2. metadata 키 generated column + 인덱스 승격 (검색 성능)
-   ```sql
-   ALTER TABLE memory_chunks ADD COLUMN
-     meta_source TEXT GENERATED ALWAYS AS (json_extract(metadata_json,'$.source')) VIRTUAL;
-   ALTER TABLE memory_chunks ADD COLUMN
-     meta_page_id TEXT GENERATED ALWAYS AS (json_extract(metadata_json,'$.page_id')) VIRTUAL;
-   CREATE INDEX idx_chunks_source ON memory_chunks(project_id, meta_source);
-   CREATE INDEX idx_chunks_page ON memory_chunks(project_id, meta_page_id);
-   ```
-   - `chunk_url_exists`, `cmd_refresh`, prefill 검색이 즉시 빨라짐
-   - 같은 Notion 페이지 N개 섹션의 page-level 그룹화 쿼리 정상화
-
-**가지 말아야 할 길**
-
-- 외부 source 별도 테이블 (`external_chunks` 등) — 현재 28건 규모에 union/trigger/FTS 두 벌 운영비가 분류 이득보다 큼
-- `chunk_type` enum 자유 텍스트화 — 일관성 상실
-
-**트레이드오프 한 줄**
-
-schema migration이 사용자 머신마다 한 번씩 돌아야 한다(`scripts/imprint/lib/migrations.sh`에 추가). 다만 데이터 양이 28건일 때가 마이그레이션 부담이 가장 작은 시점이라 분류 도입은 지금이 적기. 1번만 먼저 가고, 2번은 검색 체감이 느려졌을 때 추가하는 점진 전략 권장.
+진입 조건: `chunk_url_exists` / `cmd_refresh` / prefill 검색에서 row-level `json_extract` 비용이 체감될 때. 현재 28건 규모에서는 측정 가능한 차이가 없어 보류.
 
 ## TODO — 다음 세션에서 이어서
 
@@ -107,7 +87,8 @@ schema migration이 사용자 머신마다 한 번씩 돌아야 한다(`scripts/
 
 ## 다음 세션 시작 시 추천 픽업 지점
 
-1. **현재 우선순위** — 이 문서 상단의 "Chunk 분류 세분화 검토" 1번(외부 source `chunk_type` 분리 + backfill). schema migration이 작은 데이터(28건)일 때가 적기.
+1. **Phase 3·4 마무리** — 위 "직전 작업의 미완" 섹션. Redaction(`memory.sh remember --redact` + `redact-rules.json`), `memory list` 필터 보강, advisor timeout/cancellation, partial failure 저장. 사용자 손에 닿는 부분이라 가장 가시적인 가치.
 2. **남은 인터뷰 라운드** — TODO 1·2를 별도 세션에서 `/ouroboros:interview ...`로 재개. Seed v0.6이 immutable spec이므로 새 결정은 D25부터.
 3. **사용자 환경 검증** — TODO 3을 iOS 팀에 위임하고 plugin.log에서 `WARN: claude -p` 빈도 모니터링.
 4. **빠른 검증** — `bash scripts/imprint/advisor.sh codex "ping"`으로 OAuth advisor 흐름 확인 (별도 트랙).
+5. **Chunk 분류 2단계** — 위 1단계 완료 후 대기. 검색 체감 저하 시 진입.

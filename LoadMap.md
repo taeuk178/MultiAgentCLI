@@ -3,6 +3,8 @@
 **문서 책임**
 - 본 문서는 **큰 그림**: 비전·아키텍처·Phase 정의·미시작 단계·위험 요소·최종 목표만 담는다.
 - 단기적인 다음 세션 픽업 안건(즉시 검토, deferred TODO, 직전 Phase 마무리)은 `HANDOFF.md` 참조.
+- 결정 사유 로그(왜 그렇게 바꿨는지·폐기한 대안)는 `HISTORY.md` 참조.
+- hook 단계별 시스템 의존·운영 환경 변수는 `flow.md` 참조.
 - 구현된 동작·설치·사용은 `README.md` 참조.
 
 이 문서는 imprint(이전 코드명: `multi-agent-cli-v2` / 더 이전 세대: SwiftUI `MultiAgentCLI`)의 방향을 **Claude Code plugin**으로 정의합니다. 기존 Tauri 데스크톱 앱 청사진을 폐기하고, Claude Code의 hook·skill·subagent 시스템 위에 로컬 개발 작업 기억 시스템을 구축합니다.
@@ -134,7 +136,9 @@ memory_chunks(
   id text primary key,
   project_id text references projects(id),
   source_event_id text references events(id),
-  chunk_type text not null,        -- decision, error, fix, command, test_result, summary, todo, code_context, note
+  -- LLM 추출(Stop hook): decision, error, fix, command, test_result, summary, todo, code_context, note
+  -- 외부 source(ingestion): spec(notion), message(slack 단발), thread(slack thread)
+  chunk_type text not null,
   text text not null,
   metadata_json text not null default '{}',
   created_at text not null,

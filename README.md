@@ -62,7 +62,7 @@ flowchart TB
 | 경로 | 동작 |
 |---|---|
 | 동기 | `events.llm_response`로 응답 텍스트 archive |
-| 비동기 | `claude -p haiku`가 응답을 파싱해 9가지 chunk_type(`decision`·`error`·`fix`·`command`·`test_result`·`summary`·`todo`·`code_context`·`note`)으로 분류, `memory_chunks`에 누적 |
+| 비동기 | `claude -p haiku`가 응답을 9가지 chunk_type(`decision`·`error`·`fix`·`command`·`test_result`·`summary`·`todo`·`code_context`·`note`)으로 분류, `memory_chunks`에 누적. 외부 source(Slack·Notion)는 ingestion 경로에서 `spec`·`message`·`thread`로 직접 INSERT |
 
 ### 외부 소스 lazy-fetch (Notion · Slack)
 
@@ -160,5 +160,6 @@ statusline은 `hud-setup.sh install` 이후 자동 갱신됩니다. 데이터는
 
 - 큰 그림 (비전·Phase 정의·위험 요소·최종 목표): [`LoadMap.md`](LoadMap.md)
 - 단기 픽업 (즉시 다음 검토·deferred TODO·미완 Phase): [`HANDOFF.md`](HANDOFF.md)
+- 결정 사유 로그 (왜 그렇게 바꿨는지·폐기한 대안): [`HISTORY.md`](HISTORY.md)
 - 동작 흐름 디테일·시스템 의존·운영 환경 변수: [`flow.md`](flow.md)
 - LLM 턴 생애주기와 Claude Code hook 활용 카탈로그: [`LifeCycle.md`](LifeCycle.md)
