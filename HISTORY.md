@@ -11,7 +11,7 @@
 
 ## 2026-05-09 — Advisor skill 완전 제거
 
-**무엇:** `scripts/imprint/advisor.sh`, `skills/advisor/SKILL.md`, `provider_runs` 테이블 정의(`schema.sql`), `IMPRINT_ADVISOR_TIMEOUT` 환경 변수, plugin manifest의 advisor/ccg keyword·tag·description 흔적을 모두 삭제. 같은 날 직전 커밋(`e2c75f1`)에서 추가했던 advisor timeout wrapping도 함께 제거됨.
+**무엇:** `scripts/imprint/advisor.sh`, `skills/advisor/SKILL.md`, `provider_runs` 테이블 정의(`schema.sql`), plugin manifest의 advisor/ccg keyword·tag·description 흔적을 모두 삭제. 같은 날 직전 커밋(`e2c75f1`)에서 추가했던 advisor timeout wrapping(`IMPRINT_ADVISOR_TIMEOUT`·`with_timeout`·`gtimeout` 폴백)도 함께 제거됨.
 
 **왜:** advisor(`/advisor codex/gemini/ccg`)는 본인 워크플로에서 거의 호출되지 않는다. 코드(dispatcher 211줄, SKILL 77줄)와 schema(`provider_runs` 테이블)·plugin manifest 키워드·운영 환경 변수를 유지하는 비용이 거의-안-쓰이는 기능의 가치를 넘어선다. 이번 세션 내에 timeout wrapping까지 박은 직후라 상태가 깨끗할 때 통째로 제거하는 게 나중에 부분 제거하는 것보다 훨씬 작업이 단순.
 
@@ -20,24 +20,17 @@
 - `provider_runs` 테이블에 `DROP TABLE` 추가 — 기존 사용자 DB의 row를 지우는 건 부작용이 큼. `CREATE TABLE IF NOT EXISTS`만 빼서 새 사용자에게는 안 깔리고, 기존 row는 그대로 둠.
 - workflow skill(Phase 5)이 `claude -p` 합성을 쓸 때 advisor를 다시 살리는 옵션 — Phase 5는 단일 LLM 호출만으로 충분(memory + git porcelain 합성). multi-provider 합성을 다시 만들 때가 오면 그때 처음부터 다시.
 
-**Superseded:** 직전 항목(2026-05-09 — Phase 3·4 마무리(부분))의 (3) advisor timeout 변경은 모두 무효. `IMPRINT_ADVISOR_TIMEOUT`·`with_timeout`·`gtimeout` 폴백 로직은 advisor 자체가 사라져 더 이상 쓰이지 않는다.
+## 2026-05-09 — Phase 3 마무리: redaction · `memory list` 필터
 
-## 2026-05-09 — Phase 3·4 마무리(부분): redaction · list 필터 · advisor timeout (advisor 부분은 superseded)
-
-**무엇:** (1) `common.sh`에 `redact_text()` + `lib/redact-rules.default.json`(7개 룰: API key/PAT/JWT/AWS/private key block) 추가, `memory.sh remember --redact` 플래그로 INSERT 직전 마스킹. (2) `memory list`에 `--since <YYYY-MM-DD>`, `--limit <n>`, `--project <path|id-prefix>` 추가. (3) `advisor.sh`의 codex/gemini/합성 호출을 `IMPRINT_ADVISOR_TIMEOUT`(기본 60초)으로 wrap, macOS는 `gtimeout` 폴백·둘 다 없으면 unbounded + plugin.log 한 줄.
+**무엇:** (1) `common.sh`에 `redact_text()` + `lib/redact-rules.default.json`(7개 룰: API key/PAT/JWT/AWS/private key block) 추가, `memory.sh remember --redact` 플래그로 INSERT 직전 마스킹. (2) `memory list`에 `--since <YYYY-MM-DD>`, `--limit <n>`, `--project <path|id-prefix>` 추가.
 
 **왜:**
 - Redaction은 `LoadMap.md` 위험요소 #1(민감정보 저장)의 직접 대응. 룰셋 파일을 외부로 빼서 사용자가 추가 룰을 정의할 수 있게 함 — 사내 토큰 패턴은 조직마다 달라서 plugin이 결정할 수 없음.
 - `--limit`은 정수 검증으로 hardcoded 50 폴백, `--project`는 절대경로면 sha256 변환·아니면 prefix LIKE — path를 쓸 때 즉시 식별, prefix는 stats 출력에서 본 짧은 id를 그대로 붙여넣을 수 있게.
-- advisor timeout은 codex/gemini가 인증 누락이나 네트워크 hang으로 영원히 멈출 때 OAuth quota를 무의미하게 쓰는 걸 차단. 60초는 합성 단계 `claude -p haiku`가 실측 25초 타임아웃 두 배 마진.
 
 **폐기한 대안:**
 - Redaction을 `EXTRACT_PROMPT`/`UserPromptSubmit hook`에 박는 경로 — chunk INSERT 단계에서 처리하는 게 가장 좁고, FTS 인덱싱은 trigger가 자동 동기화하므로 별도 단계 불필요.
 - `--project` 인자에서 자동 fuzzy match — 모호하면 명시적 실패가 안전. path 또는 id-prefix 두 모드만 결정적으로 처리.
-- advisor timeout을 trap 기반 자체 구현 — bash trap + background pid kill은 race condition이 많고, `timeout(1)`/`gtimeout(1)`이 이미 그 책임을 가지므로 그쪽에 위임.
-
-**Deferred:**
-- Phase 4 e2e 검증(codex/gemini CLI 실제 호출)·partial failure status 정교화 — 사용자가 advisor를 자주 안 써서 우선순위 낮음. 사용 시점에 픽업.
 
 ## 2026-05-09 — 외부 source `chunk_type` 분리 (`note` → `spec`/`message`/`thread`)
 

@@ -4,15 +4,13 @@
 - 본 문서는 **단기**: 즉시 다음에 손댈 검토 안건, deferred TODO, 직전 작업의 미완 Phase, 다음 세션 시작 시 픽업 지점만 담는다.
 - **큰 그림**(비전·Phase 정의·아키텍처·위험 요소·미시작 Phase 5/6/7)은 `LoadMap.md` 참조.
 - **결정 사유 로그**(왜 그렇게 바꿨는지)는 `HISTORY.md` 참조.
-- 구현 완료된 Phase 1·2·3(부분)·4(부분)·HUD·플러그인 설치는 `README.md`의 사용/구조/데이터 위치 섹션 참조.
+- 구현 완료된 Phase 1·2·3·4.5·HUD·플러그인 설치의 사용·구조·데이터 위치는 `README.md` 참조.
 
 최종 업데이트: 2026-05-09.
 
-## Chunk 분류 세분화 — 1단계 완료 (2026-05-09)
+## Chunk 분류 2단계 (대기)
 
-**1단계: 외부 source `chunk_type` 분리.** Notion → `spec`, Slack 단발 → `message`, Slack thread → `thread`. `ingestion.py`의 5개 INSERT 자리에서 hardcoded `"note"`를 source별 분기로 교체, `migrations.sh`에 멱등 backfill 추가. 사유는 `HISTORY.md` 2026-05-09 항목 참조.
-
-**2단계: metadata 키 generated column + 인덱스 승격 (대기).** 검색 체감이 느려진 시점에 점진 도입.
+`metadata.source` / `page_id`를 generated column으로 승격하고 인덱스를 추가한다. 검색 체감이 느려진 시점에 점진 도입.
 
 ```sql
 ALTER TABLE memory_chunks ADD COLUMN
@@ -23,7 +21,7 @@ CREATE INDEX idx_chunks_source ON memory_chunks(project_id, meta_source);
 CREATE INDEX idx_chunks_page ON memory_chunks(project_id, meta_page_id);
 ```
 
-진입 조건: `chunk_url_exists` / `cmd_refresh` / prefill 검색에서 row-level `json_extract` 비용이 체감될 때. 현재 28건 규모에서는 측정 가능한 차이가 없어 보류.
+진입 조건: `chunk_url_exists` / `cmd_refresh` / prefill 검색에서 row-level `json_extract` 비용이 체감될 때. 현재 28건 규모에서는 측정 가능한 차이가 없어 보류. 1단계(외부 source `chunk_type` 분리)의 사유와 두 단계로 끊은 이유는 `HISTORY.md` 2026-05-09 참조.
 
 ## TODO — 다음 세션에서 이어서
 
@@ -51,18 +49,6 @@ CREATE INDEX idx_chunks_page ON memory_chunks(project_id, meta_page_id);
 1. iOS 팀 멤버 1명이 브랜치 checkout 후 자기 사내 프로젝트에서 1주 정성 검증 (AC5)
 2. `IMPRINT_ALLOWED_TOOLS_FETCH` 가 사용자 등록 Slack/Notion MCP 이름과 일치하는지 확인 (각자 다를 수 있음)
 3. plugin.log에서 `WARN: claude -p` 빈도 모니터링 — 일정 임계 초과 시 timeout 조정
-
-## Phase 3 마무리 + Phase 4 제거 (2026-05-09)
-
-**Phase 3 완료**
-
-- Redaction: `redact_text()` (`common.sh`), `lib/redact-rules.default.json` 기본 룰셋(API key·JWT·private key block 등 7개), `memory.sh remember --redact` 플래그. 사용자 override는 `~/.claude/imprint/redact-rules.json` 또는 `IMPRINT_REDACT_RULES`.
-- `memory list` 필터: `--since <YYYY-MM-DD>`, `--limit <n>`, `--project <path|id-prefix>`. `--limit`은 정수 검증으로 SQL injection 차단, `--project`는 절대경로면 sha256 변환, 그 외엔 project_id LIKE prefix.
-
-**Phase 4 (Advisor) 제거**
-
-- `advisor.sh`, `skills/advisor/`, `provider_runs` 테이블 정의를 통째로 삭제. plugin manifest의 keyword·description에서도 advisor 흔적 정리.
-- 사유는 `HISTORY.md` 2026-05-09 항목 참조. 직전에 추가됐던 `IMPRINT_ADVISOR_TIMEOUT` 환경 변수도 함께 제거.
 
 ## 단기 Watch List
 

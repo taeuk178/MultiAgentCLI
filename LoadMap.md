@@ -36,7 +36,7 @@ Claude Code 세션은 LLM 호출의 **prefill 단계**와 **응답 종료 단계
   -> 유저 표시
 ```
 
-API key 없이 구독 인증만으로 동작합니다. Hook 안에서 추가 LLM 호출이 필요하면 `claude -p`, `codex exec`, `gemini -p`를 그대로 씁니다.
+API key 없이 구독 인증만으로 동작합니다. Hook 안에서 추가 LLM 호출이 필요하면 백그라운드에서 `claude -p haiku`(prefill 분석·외부 source fetch·Stop chunk 추출)를 호출합니다.
 
 ## 해결하려는 문제
 
@@ -257,34 +257,9 @@ GitHub repo (imprint-skills)
 
 권한·서명 검증은 Phase 후반에 추가.
 
-## 단계별 로드맵
+## 단계별 로드맵 — 미시작
 
-### Phase 1. Memory 저장소 (1주)
-
-- `~/.claude/imprint/` 디렉터리 생성 로직
-- SQLite 스키마 마이그레이션
-- 이벤트 append API (Bash 또는 Python 헬퍼)
-- 기본 chunk type
-- `imprint` CLI 진입점 (skill에서 호출하기 위함)
-
-### Phase 2. Hook 통합 (1주)
-
-- UserPromptSubmit hook 스크립트
-- Stop hook 스크립트
-- 프로젝트 식별 (git root 기반)
-- 모호도 판단 단순 룰
-- 컨텍스트 주입 포맷 표준화 (`[Project memory context]` 블록)
-
-### Phase 3. Memory skill (1주)
-
-- `/memory search/inject/remember/pin/list/forget`
-- FTS5 적용
-- chunk_type별 검색 필터
-- 결과 포맷이 Claude Code 컨텍스트에 그대로 들어가도록 설계
-
-### Phase 4. Advisor skill — 제거됨 (2026-05-09)
-
-`/advisor codex/gemini/ccg`(`codex exec` + `gemini -p` + `claude -p` 합성)는 본인 워크플로에서 거의 쓰이지 않아 dispatcher · SKILL.md · `provider_runs` 테이블을 통째로 삭제했다. 사유는 `HISTORY.md` 2026-05-09 항목 참조.
+> 완료된 phase(1 Memory 저장소 / 2 Hook 통합 / 3 Memory skill / 4.5 사내 컨텍스트 ingestion)와 폐기된 phase(4 Advisor skill)의 결정 사유는 `HISTORY.md` 참조.
 
 ### Phase 5. Workflow skill (1주)
 
@@ -298,20 +273,6 @@ GitHub repo (imprint-skills)
 - `imprint skill add/remove/list/publish`
 - manifest.json 포맷 정의
 - 로컬 override 우선순위
-
-### Phase 4.5. 사내 컨텍스트 ingestion (구현 완료, `feat/context-ingestion`)
-
-iOS 팀의 사내 프로젝트 컨텍스트(Slack 대화, Notion 기획 정의서)를 prefill 단계에서 lazy fetch로 흡수해 LLM에 자동 보강. Seed v0.6 (Ouroboros 인터뷰 산출, 17개 AC + 24개 D) 구현.
-
-- FTS5 tokenizer를 `trigram`으로 변경 + unicode61 → trigram migration (한국어 부분문자열 검색)
-- `<project>/.imprint/sources.json`에 정의된 채널·페이지를 prompt 키워드로 lazy fetch
-- prompt 내 Slack permalink는 즉시 fetch (thread는 reply selection + 요약)
-- 모든 추가 LLM 호출(`prefill 분석`·`stop chunk 추출`·`Slack thread reply selection`)은 `claude -p --model haiku`
-- 외부 소스 chunk는 `events`를 거치지 않고 `memory_chunks`에 직접 insert (`source_event_id IS NULL`)
-- `metadata_json.url` 기반 dedup, TTL 무한, `/memory refresh` 명시 명령으로만 갱신
-- 모든 단계가 graceful degradation — sources.json 부재·MCP 다운·claude -p 실패에서 silent skip + 기존 prepend로 fallback
-
-구현 위치: `scripts/imprint/lib/ingestion.py` (Python 단일 모듈) + `scripts/imprint/lib/migrations.sh` + 기존 hook 스크립트 확장.
 
 ### Phase 7. Vector / 고급 추출 (선택)
 
@@ -384,17 +345,11 @@ hook 스크립트 오류는 Claude Code 세션을 차단할 수 있습니다.
 - 의존 누락 시 `IMPRINT_DISABLE_*` 환경 변수로 부분 비활성화 가능
 - Linux/Windows 호환은 사용자 요청 시 별도 Phase로 다룸
 
-## 우선순위
+## 우선순위 — 남은 단계
 
-가장 먼저 만들 가치가 큰 것은 다음입니다.
-
-1. Phase 1 + 2 (memory 저장소 + hook)
-2. Phase 3 (memory skill)
-3. Phase 4.5 (Slack/Notion lazy fetch)
-
-이 세 단계만 갖춰도 "유저 input이 memory에 등록되고, 모호한 질문이 보강되며, 응답에서 자동으로 chunk가 누적되고, prompt에 들어 있는 사내 Slack/Notion URL을 백그라운드에서 흡수해 다음 turn에 컨텍스트로 prepend하는" 흐름이 동작합니다.
-
-레지스트리(Phase 6)는 사용자 수가 늘어 공유 수요가 생길 때 시작합니다.
+1. **Phase 5 (Workflow skill)** — 매일 트리거할 사용자-facing 명령 4개. memory + git porcelain + `claude -p` 합성. 다음에 만들 가치가 가장 큼.
+2. **Phase 6 (레지스트리)** — 사용자 수가 늘어 skill 공유 수요가 생기는 시점에 시작.
+3. **Phase 7 (Vector / 고급 추출)** — FTS5 trigram의 한계(의미 검색 필요·외래어 매칭)가 보일 때 진입. 그 전에는 미루는 게 ROI 높음.
 
 ## 최종 목표
 
