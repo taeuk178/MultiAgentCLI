@@ -128,11 +128,14 @@ flowchart LR
 
 | 명령 | 동작 | 효과 |
 |---|---|---|
+| `/memory search <query>` | FTS5 trigram 검색 | matching chunk 목록(id·type·발췌) |
+| `/memory show <chunk-id>` (`--json`) | 단일 chunk의 text + metadata 상세 | 외부 source가 어떻게 sectioning됐는지·`url`·`section_title` 같은 메타데이터 디버깅 |
+| `/memory inject <chunk-id>` | chunk text를 stdout으로 출력 | Claude Code가 현재 turn 컨텍스트에 그대로 포함 |
 | `/memory remember <text>` (`--type` / `--pin` / `--redact`) | 사용자가 직접 작성한 텍스트를 chunk로 즉시 INSERT | 다음 prompt부터 검색·prepend 대상. `--redact`는 정규식 룰셋으로 secret 마스킹 |
-| `/memory search <query>` | FTS5 trigram 검색 | matching chunk 목록 표시 |
-| `/memory pin <chunk-id>` | 우선 노출 플래그 ON | prefill 정렬에서 항상 위쪽 |
-| `/memory list` (`--recent` / `--pinned` / `--type` / `--source`) | 누적 chunk 나열 | 필터링된 chunk 표 |
+| `/memory pin` / `unpin <chunk-id>` | 우선 노출 플래그 토글 | pin은 prefill 정렬에서 항상 위쪽, unpin은 해제 |
+| `/memory list` (`--recent` / `--pinned` / `--type` / `--source` / `--since <date>` / `--limit <n>` / `--project <path\|id-prefix>`) | 누적 chunk 나열 | 필터링된 chunk 표. `--project`로 다른 프로젝트도 검색 가능 |
 | `/memory stats` (`--all` / `--json`) | 분포·통계 요약 | 총 chunk 수, chunk_type·source 분포, 외부 unique URL 수 |
+| `/memory forget <chunk-id>` | chunk 영구 삭제 | DB row + FTS 인덱스 동시 제거(trigger 자동 동기화) |
 | `/memory refresh <url \| source slack \| source notion \| project>` | 외부 chunk 갱신 | DELETE → 재 fetch → INSERT |
 
 `/memory remember`로 사용자가 직접 박은 chunk와 hook이 응답에서 자동 추출한 chunk가 같은 `memory_chunks` 테이블에 누적되어, 다음 turn부터 동등한 자격으로 prefill 후보가 됩니다.
