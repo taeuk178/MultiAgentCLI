@@ -115,9 +115,9 @@ LifeCycle.md               LLM 턴 생애주기 ↔ Claude Code hook 매핑 + �
 - `bash`, `python3`, `sqlite3`, `uuidgen` (macOS 기본 포함)
 - 사용할 provider CLI(`claude`, `codex`, `gemini`)는 별도 설치·인증 필요
 
-## 계획된 확장: 사내 컨텍스트 ingestion
+## 사내 컨텍스트 ingestion
 
-> ⚠️ 아래 흐름은 **Ouroboros 인터뷰로 합의된 설계 (미구현)**. iOS 팀의 사내 프로젝트 컨텍스트(Slack 대화, Notion 기획 정의서)를 메모리에 흡수해 prefill 단계에서 LLM에 자동 보강하는 다음 단계입니다.
+> ✅ Seed v0.6 의 17개 acceptance criteria · 24개 decisions를 hook + `scripts/imprint/lib/ingestion.py` 단일 모듈로 구현. `feat/context-ingestion` 브랜치에서 wiring 완료, 실제 사내 환경 정성 검증(AC5)은 사용자 측에서 진행.
 
 ### 흐름 한 장 요약
 
@@ -187,7 +187,9 @@ Notion 섹션:
 }
 ```
 
-### `.imprint/sources.json` 형식 (예정)
+### `.imprint/sources.json` 형식
+
+SessionStart hook이 `prompts/defaults/sources.json`을 `<project>/.imprint/sources.json`으로 시드합니다 (기존 파일은 덮어쓰지 않음). 사용자가 직접 채널·페이지를 채우고 git에 커밋합니다.
 
 ```json
 {
@@ -246,9 +248,33 @@ LLM 응답에서 Stop hook이 추출한 내부 chunk(decision/todo/fix 등)는 �
   - `/memory refresh project` — 외부 소스 chunk 전체 갱신
   - 동작: 대상 chunk DELETE → 재 fetch → INSERT (덮어쓰기). history는 Slack/Notion 원본이 source-of-truth
 
+### 구현 위치
+
+| 책임 | 파일 |
+|------|------|
+| FTS5 trigram 마이그레이션 | `scripts/imprint/lib/migrations.sh` (session-start 진입 시 실행) |
+| Schema (trigram tokenizer) | `scripts/imprint/lib/schema.sql` |
+| Lazy fetch · 모호도 분석 · 검색 · refresh | `scripts/imprint/lib/ingestion.py` (Python 단일 모듈) |
+| `.imprint/sources.json` 시드 | `prompts/defaults/sources.json` + `scripts/imprint/session-start.sh` |
+| Prefill 파이프라인 | `scripts/imprint/user-prompt-submit.sh` → `ingestion.py prefill` |
+| Stop chunk 추출 | `scripts/imprint/stop.sh` → `ingestion.py extract` |
+| `/memory refresh` | `scripts/imprint/memory.sh` → `ingestion.py refresh` |
+
+환경 변수로 동작을 조정할 수 있습니다:
+
+| 변수 | 기본값 | 의미 |
+|------|--------|------|
+| `IMPRINT_AMBIGUITY_THRESHOLD` | 0.5 | 이 값 이상이면 `[Refined prompt suggestion]` 블록을 prepend |
+| `IMPRINT_CLAUDE_TIMEOUT_PREFILL` | 8 | 모호도 분석 claude -p 타임아웃(초) |
+| `IMPRINT_CLAUDE_TIMEOUT_FETCH` | 20 | Slack/Notion fetch claude -p 타임아웃(초) |
+| `IMPRINT_CLAUDE_TIMEOUT_EXTRACT` | 15 | Stop chunk 추출 claude -p 타임아웃(초) |
+| `IMPRINT_CLAUDE_BIN` | `claude` | 사용할 claude CLI 경로 |
+| `IMPRINT_DISABLE_EXTRACT` | 0 | 1이면 Stop hook의 chunk 추출 비활성 |
+| `IMPRINT_ALLOWED_TOOLS_FETCH` | (Notion·Slack MCP read-only) | fetch claude -p에 전달할 `--allowed-tools` 값 |
+
 ### Seed (결정 동결)
 
-위 결정사항(D1–D24)은 [`.ouroboros/seeds/context-ingestion.yaml`](.ouroboros/seeds/context-ingestion.yaml)에 immutable Seed YAML로 결정화되어 있습니다 (goal · constraints · 17개 acceptance_criteria · ontology_schema · 24개 decisions · evaluation_principles · risks · deferred_topics). 구현 단계에서 이 spec과 drift가 발생하면 README와 함께 명시적으로 update합니다.
+위 결정사항(D1–D24)은 [`.ouroboros/seeds/context-ingestion.yaml`](.ouroboros/seeds/context-ingestion.yaml)에 immutable Seed YAML로 결정화되어 있습니다 (goal · constraints · 17개 acceptance_criteria · ontology_schema · 24개 decisions · evaluation_principles · risks · deferred_topics).
 
 **Deferred (다음 인터뷰 라운드 후보):**
 - chunk lifecycle (dedup·자동 pin·ranking 가중치)
