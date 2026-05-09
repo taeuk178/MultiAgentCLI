@@ -80,5 +80,12 @@ db_exec "
   VALUES ('$EVENT_ID', '$PID', 'claude_code', 'llm_response', '$ESC_TEXT', '$NOW');
 " 2>>"$IMPRINT_LOG" || true
 
+# Chunk extraction via claude -p haiku (AC3, AC11, D8, D12). Failures silent.
+if [[ "${IMPRINT_DISABLE_EXTRACT:-0}" != "1" ]] && command -v python3 >/dev/null 2>&1; then
+  printf '%s' "$LAST_TEXT" \
+    | python3 "$SCRIPT_DIR/lib/ingestion.py" extract "$PID" "$EVENT_ID" 2>>"$IMPRINT_LOG" \
+    || true
+fi
+
 log_info "stop logged event=$EVENT_ID project=$PID bytes=${#LAST_TEXT}"
 exit 0

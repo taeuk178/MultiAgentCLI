@@ -168,9 +168,24 @@ if [[ -n "${ROUTING// }" ]]; then
   printf '\n%s\n' "$ROUTING"
 fi
 
-# --- 3. Memory context block ------------------------------------------------
+# --- 3. Prefill pipeline ----------------------------------------------------
+# ingestion.py prefill handles:
+#   - claude -p haiku ambiguity analysis (AC2)
+#   - Slack/Notion lazy fetch with url-based dedup (AC1, AC12, AC15)
+#   - Memory search via FTS5 + keywords union ranking (AC11)
+#   - Emits [Refined prompt suggestion] + [Project memory context] blocks
+# Failures are silent (log-only) so the hook never blocks the user (AC4).
 
-if [[ -n "$PID" ]]; then
+PREFILL_OUT=""
+if [[ -n "$PID" && -x "$(command -v python3)" ]]; then
+  PREFILL_OUT=$(printf '%s' "$PROMPT" \
+    | python3 "$SCRIPT_DIR/lib/ingestion.py" prefill "$PID" 2>>"$IMPRINT_LOG" || true)
+fi
+
+# Fallback: if ingestion.py produced nothing (claude CLI missing, OAuth not
+# configured, etc.) emit the legacy simple memory context so the user still
+# benefits from prior chunks.
+if [[ -z "${PREFILL_OUT// }" && -n "$PID" ]] && command -v sqlite3 >/dev/null 2>&1; then
   INJECTED=$(db_exec "
     SELECT '- [' || chunk_type || '] ' || REPLACE(text, char(10), ' ')
     FROM memory_chunks
@@ -181,8 +196,12 @@ if [[ -n "$PID" ]]; then
   " 2>>"$IMPRINT_LOG" || true)
 
   if [[ -n "${INJECTED// }" ]]; then
-    printf '\n[Project memory context]\n%s\n' "$INJECTED"
+    PREFILL_OUT=$(printf '\n[Project memory context]\n%s' "$INJECTED")
   fi
+fi
+
+if [[ -n "${PREFILL_OUT// }" ]]; then
+  printf '%s\n' "$PREFILL_OUT"
 fi
 
 exit 0
