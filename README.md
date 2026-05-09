@@ -128,7 +128,7 @@ flowchart LR
 
 | 명령 | 동작 | 효과 |
 |---|---|---|
-| `/memory remember <text>` | 사용자가 직접 작성한 텍스트를 chunk로 즉시 INSERT | 다음 prompt부터 검색·prepend 대상 |
+| `/memory remember <text>` (`--type` / `--pin` / `--redact`) | 사용자가 직접 작성한 텍스트를 chunk로 즉시 INSERT | 다음 prompt부터 검색·prepend 대상. `--redact`는 정규식 룰셋으로 secret 마스킹 |
 | `/memory search <query>` | FTS5 trigram 검색 | matching chunk 목록 표시 |
 | `/memory pin <chunk-id>` | 우선 노출 플래그 ON | prefill 정렬에서 항상 위쪽 |
 | `/memory list` (`--recent` / `--pinned` / `--type` / `--source`) | 누적 chunk 나열 | 필터링된 chunk 표 |

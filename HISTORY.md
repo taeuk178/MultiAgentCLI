@@ -9,6 +9,23 @@
 
 기록 순서는 **최신이 위**. 항목당 한 단락 안에 변경/사유/대안 폐기 근거를 묶는다.
 
+## 2026-05-09 — Phase 3·4 마무리(부분): redaction · list 필터 · advisor timeout
+
+**무엇:** (1) `common.sh`에 `redact_text()` + `lib/redact-rules.default.json`(7개 룰: API key/PAT/JWT/AWS/private key block) 추가, `memory.sh remember --redact` 플래그로 INSERT 직전 마스킹. (2) `memory list`에 `--since <YYYY-MM-DD>`, `--limit <n>`, `--project <path|id-prefix>` 추가. (3) `advisor.sh`의 codex/gemini/합성 호출을 `IMPRINT_ADVISOR_TIMEOUT`(기본 60초)으로 wrap, macOS는 `gtimeout` 폴백·둘 다 없으면 unbounded + plugin.log 한 줄.
+
+**왜:**
+- Redaction은 `LoadMap.md` 위험요소 #1(민감정보 저장)의 직접 대응. 룰셋 파일을 외부로 빼서 사용자가 추가 룰을 정의할 수 있게 함 — 사내 토큰 패턴은 조직마다 달라서 plugin이 결정할 수 없음.
+- `--limit`은 정수 검증으로 hardcoded 50 폴백, `--project`는 절대경로면 sha256 변환·아니면 prefix LIKE — path를 쓸 때 즉시 식별, prefix는 stats 출력에서 본 짧은 id를 그대로 붙여넣을 수 있게.
+- advisor timeout은 codex/gemini가 인증 누락이나 네트워크 hang으로 영원히 멈출 때 OAuth quota를 무의미하게 쓰는 걸 차단. 60초는 합성 단계 `claude -p haiku`가 실측 25초 타임아웃 두 배 마진.
+
+**폐기한 대안:**
+- Redaction을 `EXTRACT_PROMPT`/`UserPromptSubmit hook`에 박는 경로 — chunk INSERT 단계에서 처리하는 게 가장 좁고, FTS 인덱싱은 trigger가 자동 동기화하므로 별도 단계 불필요.
+- `--project` 인자에서 자동 fuzzy match — 모호하면 명시적 실패가 안전. path 또는 id-prefix 두 모드만 결정적으로 처리.
+- advisor timeout을 trap 기반 자체 구현 — bash trap + background pid kill은 race condition이 많고, `timeout(1)`/`gtimeout(1)`이 이미 그 책임을 가지므로 그쪽에 위임.
+
+**Deferred:**
+- Phase 4 e2e 검증(codex/gemini CLI 실제 호출)·partial failure status 정교화 — 사용자가 advisor를 자주 안 써서 우선순위 낮음. 사용 시점에 픽업.
+
 ## 2026-05-09 — 외부 source `chunk_type` 분리 (`note` → `spec`/`message`/`thread`)
 
 **무엇:** `memory_chunks.chunk_type`에 `spec`(Notion), `message`(Slack 단발), `thread`(Slack thread)를 추가하고 `ingestion.py`의 5개 INSERT 자리(`fetch_slack_url` URL/keyword, `fetch_notion_url` URL/keyword, `cmd_refresh`)에서 hardcoded `"note"`를 source별로 분기. `migrations.sh`에 backfill 함수(`backfill_external_chunk_types`) 추가 — `chunk_type='note'` 필터로 멱등성 보장. `search_memory` fallback 쿼리에 새 타입 포함.

@@ -75,6 +75,8 @@ flowchart TB
 | `IMPRINT_ALLOWED_TOOLS_FETCH` | (Notion·Slack 와일드카드) | fetch `claude -p`에 전달할 `--allowed-tools` 값 |
 | `IMPRINT_NO_SEED` | `0` | `1`이면 SessionStart의 `.imprint/` 시드 비활성 |
 | `IMPRINT_HOME` | `~/.claude/imprint` | DB · log 저장 위치 |
+| `IMPRINT_ADVISOR_TIMEOUT` | `60` | `advisor.sh`의 codex/gemini/합성 호출 타임아웃(초). `timeout`/`gtimeout` 미설치 시 wrapping skip |
+| `IMPRINT_REDACT_RULES` | (사용자 파일 ↔ plugin default) | `memory remember --redact` 룰셋 경로. 미지정 시 `~/.claude/imprint/redact-rules.json` → plugin default 순 |
 
 ## 데이터 위치 요약
 

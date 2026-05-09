@@ -37,12 +37,16 @@ FTS5 search across memory chunks for the current project.
 imprint memory search "advisor 합성 흐름"
 ```
 
-### `/memory remember <text>`
-Store an explicit memory chunk. Optionally specify chunk_type.
+### `/memory remember <text> [--type <t>] [--pin] [--redact]`
+Store an explicit memory chunk. Optionally specify chunk_type, pin it, or
+redact secrets before storing.
 
 ```bash
 imprint memory remember "Quick 모드는 one-shot 실행, advisor 활성" --type decision
+imprint memory remember "key sk-ant-XXX 작동 확인" --redact     # secrets masked before INSERT
 ```
+
+`--redact`는 정규식 룰셋으로 chunk text를 마스킹하고 metadata에 `redacted: true`를 기록합니다. 룰셋 우선순위: `$IMPRINT_REDACT_RULES` > `~/.claude/imprint/redact-rules.json` > plugin default(`scripts/imprint/lib/redact-rules.default.json` — Anthropic/OpenAI/GitHub PAT/Slack token/AWS access key/JWT/PEM private key block 7가지). 사용자 룰셋 형식은 plugin default를 그대로 복사해 추가 패턴을 더하면 됩니다.
 
 Chunk types:
 - `decision` - design or implementation decisions
@@ -90,11 +94,19 @@ imprint memory stats --json       # 자동화/대시보드용 JSON
 ### `/memory pin <chunk-id>`
 Mark chunk as pinned so the prefill hook always includes it.
 
-### `/memory list [--recent | --pinned | --type <type> | --source <slack|notion|internal>]`
-List memory chunks for the current project. 출력에 `source` 컬럼이 포함돼
-외부 소스(Slack/Notion)와 내부(LLM 추출 / `remember`로 저장한) chunk를
-한눈에 구분할 수 있습니다. `--source slack`/`notion`/`internal`로 필터링
-가능합니다.
+### `/memory list [필터들...]`
+List memory chunks for the current project (또는 `--project`로 다른 프로젝트).
+
+| 필터 | 동작 |
+|---|---|
+| `--recent` (기본) / `--pinned` | 정렬·pinned-only 토글 |
+| `--type <chunk_type>` | `decision`/`spec`/`message`/`thread` 등 enum 필터 |
+| `--source <slack|notion|internal>` | 외부 source 또는 내부(LLM 추출/`remember`) 필터 |
+| `--since <YYYY-MM-DD>` | `created_at >= ?` |
+| `--limit <n>` | 결과 행 수 (기본 50, 정수 아니면 50으로 폴백) |
+| `--project <path|id-prefix>` | 다른 프로젝트 검색. 절대경로면 sha256으로 project_id 변환, 아니면 `LIKE 'prefix%'` |
+
+`--project`는 `/memory stats --all`로 본 짧은 id를 그대로 붙여넣어 다른 프로젝트의 chunk를 빠르게 훑을 때 유용합니다.
 
 ### `/memory forget <chunk-id>`
 Delete a chunk.
