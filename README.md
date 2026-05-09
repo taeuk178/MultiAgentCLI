@@ -274,7 +274,7 @@ LLM 응답에서 Stop hook이 추출한 내부 chunk(decision/todo/fix 등)는 �
 
 ### Seed (결정 동결)
 
-위 결정사항(D1–D24)은 [`.ouroboros/seeds/context-ingestion.yaml`](.ouroboros/seeds/context-ingestion.yaml)에 immutable Seed YAML로 결정화되어 있습니다 (goal · constraints · 17개 acceptance_criteria · ontology_schema · 24개 decisions · evaluation_principles · risks · deferred_topics).
+위 결정사항(D1–D24)은 Seed v0.6 (Ouroboros Socratic 인터뷰 산출 — 17개 acceptance_criteria · 24개 decisions · 7 risks · ontology_schema)으로 결정화된 뒤 본 브랜치에서 구현됐습니다. spec YAML은 구현 동결 후 제거됐으며, 결정 내역은 위 narrative와 커밋 히스토리에 보존됩니다.
 
 **Deferred (다음 인터뷰 라운드 후보):**
 - chunk lifecycle (dedup·자동 pin·ranking 가중치)

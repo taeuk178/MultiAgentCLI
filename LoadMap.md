@@ -320,7 +320,7 @@ GitHub repo (imprint-skills)
 
 ### Phase 4.5. 사내 컨텍스트 ingestion (구현 완료, `feat/context-ingestion`)
 
-iOS 팀의 사내 프로젝트 컨텍스트(Slack 대화, Notion 기획 정의서)를 prefill 단계에서 lazy fetch로 흡수해 LLM에 자동 보강. Seed v0.6 (`.ouroboros/seeds/context-ingestion.yaml`) 17개 AC + 24개 D 구현.
+iOS 팀의 사내 프로젝트 컨텍스트(Slack 대화, Notion 기획 정의서)를 prefill 단계에서 lazy fetch로 흡수해 LLM에 자동 보강. Seed v0.6 (Ouroboros 인터뷰 산출, 17개 AC + 24개 D) 구현.
 
 - FTS5 tokenizer를 `trigram`으로 변경 + unicode61 → trigram migration (한국어 부분문자열 검색)
 - `<project>/.imprint/sources.json`에 정의된 채널·페이지를 prompt 키워드로 lazy fetch

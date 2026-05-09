@@ -6,7 +6,7 @@
 
 ## Context Ingestion 구현 — feat/context-ingestion 브랜치 (2026-05-09)
 
-Seed v0.6 (`.ouroboros/seeds/context-ingestion.yaml`)의 17개 acceptance criteria + 24개 decisions를 구현. `feat/context-ingestion` 브랜치에서 wiring 완료.
+Seed v0.6의 17개 acceptance criteria + 24개 decisions를 구현. `feat/context-ingestion` 브랜치에서 wiring 완료. spec YAML은 구현 동결 후 제거 — 결정 내역은 README의 `## 사내 컨텍스트 ingestion` 섹션과 본 브랜치 커밋 히스토리에 보존됨.
 
 **구현 산출물:**
 
@@ -40,8 +40,8 @@ Seed v0.6 (`.ouroboros/seeds/context-ingestion.yaml`)의 17개 acceptance criter
 Ouroboros Socratic 인터뷰로 사내 프로젝트 컨텍스트(Slack 대화, Notion 기획 정의서)를 lazy fetch로 흡수하고 prefill에서 LLM에 자동 보강하는 파이프라인을 spec 단계까지 동결.
 
 **산출물:**
-- Seed YAML — [`.ouroboros/seeds/context-ingestion.yaml`](.ouroboros/seeds/context-ingestion.yaml) v0.6.0-draft (24개 decisions, 17개 acceptance_criteria, 7 risks, ambiguity_score 0.08)
-- README — `## 계획된 확장: 사내 컨텍스트 ingestion` 섹션에 narrative + 결정 표 + sources.json/metadata 예시 모두 반영
+- Seed v0.6.0-draft (24개 decisions, 17개 acceptance_criteria, 7 risks, ambiguity_score 0.08) — 구현 동결 후 spec YAML은 제거, narrative만 README/HANDOFF/LoadMap에 보존
+- README — `## 사내 컨텍스트 ingestion` 섹션에 narrative + 결정 표 + sources.json/metadata 예시 모두 반영
 - 인터뷰 세션: `interview_20260508_054044`
 
 **핵심 결정 한 줄 요약:**
