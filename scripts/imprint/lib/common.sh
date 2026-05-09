@@ -71,6 +71,25 @@ safe_run() {
   fi
 }
 
+# IMPRINT_PROFILE=1 일 때만 ~/.claude/imprint/profile.jsonl 에 한 줄을 추가한다.
+# 기본 OFF — 평소 hook latency 영향은 env 검사 한 번뿐.
+# usage: profile_emit STAGE key1=val1 key2=val2 ...
+# stage·key·val 안의 따옴표는 단순 escape만 한다 (값에 큰따옴표 쓰지 말 것).
+profile_emit() {
+  [[ "${IMPRINT_PROFILE:-0}" != "1" ]] && return 0
+  local stage="${1:-unknown}"; shift || true
+  local kv="$*"
+  ensure_home
+  printf '{"ts":"%s","pid":%s,"stage":"%s","kv":"%s"}\n' \
+    "$(now_iso)" "$$" "${stage//\"/\\\"}" "${kv//\"/\\\"}" \
+    >> "$IMPRINT_HOME/profile.jsonl" 2>/dev/null || true
+}
+
+# 현재 시각을 ms 단위 정수로 반환. profile span 측정용.
+now_ms() {
+  python3 -c 'import time; print(int(time.monotonic()*1000))' 2>/dev/null || echo 0
+}
+
 # 정규식 룰셋으로 secret을 마스킹한다. argv[1]을 입력으로 받고 결과를 stdout.
 # 룰셋 우선순위: $IMPRINT_REDACT_RULES > ~/.claude/imprint/redact-rules.json > plugin default.
 # python3·룰 파일·re.sub 중 하나라도 실패하면 원문 그대로 통과(무 redaction)한다.

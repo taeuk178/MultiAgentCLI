@@ -73,6 +73,48 @@ def log(level: str, msg: str) -> None:
         pass
 
 
+# ---------------------------------------------------------------------------
+# Profile (env-gated): IMPRINT_PROFILE=1 → profile.jsonl 1줄 추가.
+# 기본 OFF — hook 차단 비용은 env 검사 한 번. 분석 hook lifecycle = env_gated.
+# ---------------------------------------------------------------------------
+
+PROFILE_ENABLED = os.environ.get("IMPRINT_PROFILE") == "1"
+PROFILE_LOG = IMPRINT_HOME / "profile.jsonl"
+
+
+def _profile_emit(stage: str, **fields: Any) -> None:
+    if not PROFILE_ENABLED:
+        return
+    try:
+        IMPRINT_HOME.mkdir(parents=True, exist_ok=True)
+        rec = {"ts": now_iso(), "pid": os.getpid(), "stage": stage}
+        rec.update(fields)
+        with PROFILE_LOG.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False, default=str) + "\n")
+    except OSError:
+        pass
+
+
+import contextlib  # noqa: E402  (profile helper 의존)
+
+
+@contextlib.contextmanager
+def _profile_span(stage: str, **fields: Any):
+    if not PROFILE_ENABLED:
+        yield
+        return
+    t0 = time.monotonic()
+    err: str | None = None
+    try:
+        yield
+    except Exception as exc:  # noqa: BLE001  (계측만 하고 다시 raise)
+        err = type(exc).__name__
+        raise
+    finally:
+        dur_ms = int((time.monotonic() - t0) * 1000)
+        _profile_emit(stage, dur_ms=dur_ms, err=err, **fields)
+
+
 def db() -> sqlite3.Connection:
     IMPRINT_HOME.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(IMPRINT_DB, timeout=5.0)
@@ -142,29 +184,46 @@ def call_claude(prompt: str, *, timeout: int, needs_tools: bool = False) -> str 
     # 막는다. session-start / user-prompt-submit / stop 모두 이 변수를 보고 즉시 종료한다.
     sub_env = os.environ.copy()
     sub_env["IMPRINT_BYPASS_HOOKS"] = "1"
+    t0 = time.monotonic()
+    rc: int | None = None
+    err: str | None = None
+    out_bytes = 0
     try:
-        # stdin=DEVNULL: claude -p가 stdin을 3초 기다리는 "no stdin data received"
-        # 경고를 회피한다. 우리는 prompt를 argv로만 전달하므로 stdin이 필요 없다.
-        result = subprocess.run(
-            cmd,
-            capture_output=True, text=True,
-            timeout=timeout,
-            env=sub_env,
-            stdin=subprocess.DEVNULL,
+        try:
+            # stdin=DEVNULL: claude -p가 stdin을 3초 기다리는 "no stdin data received"
+            # 경고를 회피한다. 우리는 prompt를 argv로만 전달하므로 stdin이 필요 없다.
+            result = subprocess.run(
+                cmd,
+                capture_output=True, text=True,
+                timeout=timeout,
+                env=sub_env,
+                stdin=subprocess.DEVNULL,
+            )
+        except FileNotFoundError:
+            err = "FileNotFoundError"
+            log("WARN", f"claude CLI not found at {CLAUDE_BIN}")
+            return None
+        except subprocess.TimeoutExpired:
+            err = "TimeoutExpired"
+            log("WARN", f"claude -p timeout after {timeout}s")
+            return None
+        except OSError as exc:
+            err = "OSError"
+            log("WARN", f"claude -p exec error: {exc}")
+            return None
+        rc = result.returncode
+        out_bytes = len(result.stdout) if result.stdout else 0
+        if rc != 0:
+            log("WARN", f"claude -p rc={rc}: {result.stderr[:300]}")
+            return None
+        return result.stdout
+    finally:
+        _profile_emit(
+            "call_claude",
+            dur_ms=int((time.monotonic() - t0) * 1000),
+            timeout=timeout, needs_tools=needs_tools,
+            rc=rc, err=err, stdout_bytes=out_bytes,
         )
-    except FileNotFoundError:
-        log("WARN", f"claude CLI not found at {CLAUDE_BIN}")
-        return None
-    except subprocess.TimeoutExpired:
-        log("WARN", f"claude -p timeout after {timeout}s")
-        return None
-    except OSError as exc:
-        log("WARN", f"claude -p exec error: {exc}")
-        return None
-    if result.returncode != 0:
-        log("WARN", f"claude -p rc={result.returncode}: {result.stderr[:300]}")
-        return None
-    return result.stdout
 
 
 def parse_json_relaxed(text: str | None) -> Any:
@@ -808,16 +867,26 @@ def lazy_fetch(
     mode. Returns number of NEW chunks inserted."""
     inserted = 0
 
+    def _payload_bytes(cs: list[dict] | None) -> int:
+        if not cs:
+            return 0
+        return sum(len((c.get("text") or "").encode("utf-8")) for c in cs)
+
     # 1) URL-explicit Slack permalinks in prompt
     for url in list(dict.fromkeys(SLACK_PERMALINK_RE.findall(prompt)))[:3]:
         if chunk_url_exists(conn, project_id, url):
             log("INFO", f"slack url cache hit, skip fetch: {url}")
             continue
-        try:
-            chunks = fetch_slack_url(url, prompt)
-        except Exception as exc:  # noqa: BLE001  (must never propagate)
-            log("WARN", f"slack fetch failed {url}: {exc}")
-            chunks = None
+        chunks: list[dict] | None = None
+        with _profile_span("fetch_slack_url", url=url):
+            try:
+                chunks = fetch_slack_url(url, prompt)
+            except Exception as exc:  # noqa: BLE001  (must never propagate)
+                log("WARN", f"slack fetch failed {url}: {exc}")
+                chunks = None
+        _profile_emit("fetch_slack_url.payload",
+                      url=url, chunks=len(chunks or []),
+                      payload_bytes=_payload_bytes(chunks))
         if not chunks:
             continue
         ct = "thread" if is_slack_thread_url(url) else "message"
@@ -829,11 +898,16 @@ def lazy_fetch(
     for url in list(dict.fromkeys(NOTION_URL_RE.findall(prompt)))[:3]:
         if chunk_url_exists(conn, project_id, url):
             continue
-        try:
-            chunks = fetch_notion_url(url)
-        except Exception as exc:  # noqa: BLE001
-            log("WARN", f"notion url fetch failed {url}: {exc}")
-            chunks = None
+        chunks = None
+        with _profile_span("fetch_notion_url", url=url):
+            try:
+                chunks = fetch_notion_url(url)
+            except Exception as exc:  # noqa: BLE001
+                log("WARN", f"notion url fetch failed {url}: {exc}")
+                chunks = None
+        _profile_emit("fetch_notion_url.payload",
+                      url=url, chunks=len(chunks or []),
+                      payload_bytes=_payload_bytes(chunks))
         if not chunks:
             continue
         for c in chunks:
@@ -848,11 +922,17 @@ def lazy_fetch(
         slack_cfg = (sources.get("slack") or {}) if isinstance(sources, dict) else {}
         channels = slack_cfg.get("channels") or []
         if channels and isinstance(channels, list):
-            try:
-                slack_chunks = fetch_slack_keywords(channels, keywords)
-            except Exception as exc:  # noqa: BLE001
-                log("WARN", f"slack keyword search failed: {exc}")
-                slack_chunks = []
+            slack_chunks: list[dict] = []
+            with _profile_span("fetch_slack_keywords",
+                               channels=len(channels), keywords=len(keywords)):
+                try:
+                    slack_chunks = fetch_slack_keywords(channels, keywords)
+                except Exception as exc:  # noqa: BLE001
+                    log("WARN", f"slack keyword search failed: {exc}")
+                    slack_chunks = []
+            _profile_emit("fetch_slack_keywords.payload",
+                          chunks=len(slack_chunks),
+                          payload_bytes=_payload_bytes(slack_chunks))
             for c in slack_chunks:
                 url = c["metadata"].get("url")
                 if url and chunk_url_exists(conn, project_id, url):
@@ -863,11 +943,17 @@ def lazy_fetch(
         notion_cfg = (sources.get("notion") or {}) if isinstance(sources, dict) else {}
         pages = notion_cfg.get("pages") or []
         if pages and isinstance(pages, list):
-            try:
-                notion_chunks = fetch_notion_keywords(pages, keywords)
-            except Exception as exc:  # noqa: BLE001
-                log("WARN", f"notion keyword search failed: {exc}")
-                notion_chunks = []
+            notion_chunks: list[dict] = []
+            with _profile_span("fetch_notion_keywords",
+                               pages=len(pages), keywords=len(keywords)):
+                try:
+                    notion_chunks = fetch_notion_keywords(pages, keywords)
+                except Exception as exc:  # noqa: BLE001
+                    log("WARN", f"notion keyword search failed: {exc}")
+                    notion_chunks = []
+            _profile_emit("fetch_notion_keywords.payload",
+                          chunks=len(notion_chunks),
+                          payload_bytes=_payload_bytes(notion_chunks))
             for c in notion_chunks:
                 url = c["metadata"].get("url")
                 if url and chunk_url_exists(conn, project_id, url):
@@ -905,13 +991,22 @@ def cmd_prefill(argv: list[str]) -> int:
     if not prompt.strip():
         return 0
 
+    t0 = time.monotonic()
+    chunks: list[dict] = []
     try:
-        with db() as conn:
-            # keywords는 비워서 search_memory의 recency-fallback 경로를 탄다.
-            chunks = search_memory(conn, project_id, [], prompt, limit=8)
-    except sqlite3.Error as exc:
-        log("WARN", f"db prefill: {exc}")
-        chunks = []
+        try:
+            with db() as conn:
+                # keywords는 비워서 search_memory의 recency-fallback 경로를 탄다.
+                chunks = search_memory(conn, project_id, [], prompt, limit=8)
+        except sqlite3.Error as exc:
+            log("WARN", f"db prefill: {exc}")
+            chunks = []
+    finally:
+        _profile_emit("cmd_prefill",
+                      project_id=project_id,
+                      dur_ms=int((time.monotonic() - t0) * 1000),
+                      chunks=len(chunks),
+                      prompt_bytes=len(prompt))
 
     if not chunks:
         return 0
@@ -945,20 +1040,29 @@ def cmd_lazy_fetch(argv: list[str]) -> int:
     if not prompt.strip():
         return 0
 
-    analysis = analyze_prompt(prompt) or {}
-    keywords = list(analysis.get("keywords") or [])
-
-    root = project_root()
-    sources = load_sources(root)
+    _profile_emit("cmd_lazy_fetch.enter", project_id=project_id, prompt_bytes=len(prompt))
+    t0 = time.monotonic()
+    inserted = 0
     try:
-        with db() as conn:
-            try:
-                inserted = lazy_fetch(conn, project_id, prompt, keywords, sources)
-                log("INFO", f"bg lazy-fetch inserted={inserted} project={project_id}")
-            except Exception as exc:  # noqa: BLE001
-                log("WARN", f"bg lazy_fetch wrapper: {exc}")
-    except sqlite3.Error as exc:
-        log("WARN", f"bg lazy_fetch db: {exc}")
+        analysis = analyze_prompt(prompt) or {}
+        keywords = list(analysis.get("keywords") or [])
+
+        root = project_root()
+        sources = load_sources(root)
+        try:
+            with db() as conn:
+                try:
+                    inserted = lazy_fetch(conn, project_id, prompt, keywords, sources)
+                    log("INFO", f"bg lazy-fetch inserted={inserted} project={project_id}")
+                except Exception as exc:  # noqa: BLE001
+                    log("WARN", f"bg lazy_fetch wrapper: {exc}")
+        except sqlite3.Error as exc:
+            log("WARN", f"bg lazy_fetch db: {exc}")
+    finally:
+        _profile_emit("cmd_lazy_fetch.exit",
+                      project_id=project_id,
+                      dur_ms=int((time.monotonic() - t0) * 1000),
+                      inserted=inserted)
     return 0
 
 
@@ -970,21 +1074,32 @@ def cmd_extract(argv: list[str]) -> int:
     response = sys.stdin.read()
     if not response.strip():
         return 0
-    chunks = extract_chunks_from_response(response)
-    if not chunks:
-        return 0
+    _profile_emit("cmd_extract.enter",
+                  project_id=project_id, response_bytes=len(response))
+    t0 = time.monotonic()
+    chunks_count = 0
     try:
-        with db() as conn:
-            for c in chunks:
-                insert_extracted_chunk(
-                    conn, project_id, source_event_id,
-                    c["chunk_type"], c["text"], c["keywords"],
-                )
-            conn.commit()
-        log("INFO", f"extracted {len(chunks)} chunks for project={project_id}")
-    except sqlite3.Error as exc:
-        log("WARN", f"extract insert: {exc}")
-    return 0
+        chunks = extract_chunks_from_response(response)
+        chunks_count = len(chunks)
+        if not chunks:
+            return 0
+        try:
+            with db() as conn:
+                for c in chunks:
+                    insert_extracted_chunk(
+                        conn, project_id, source_event_id,
+                        c["chunk_type"], c["text"], c["keywords"],
+                    )
+                conn.commit()
+            log("INFO", f"extracted {len(chunks)} chunks for project={project_id}")
+        except sqlite3.Error as exc:
+            log("WARN", f"extract insert: {exc}")
+        return 0
+    finally:
+        _profile_emit("cmd_extract.exit",
+                      project_id=project_id,
+                      dur_ms=int((time.monotonic() - t0) * 1000),
+                      chunks=chunks_count)
 
 
 def cmd_refresh(argv: list[str]) -> int:

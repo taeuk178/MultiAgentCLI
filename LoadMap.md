@@ -345,6 +345,79 @@ hook 스크립트 오류는 Claude Code 세션을 차단할 수 있습니다.
 - 의존 누락 시 `IMPRINT_DISABLE_*` 환경 변수로 부분 비활성화 가능
 - Linux/Windows 호환은 사용자 요청 시 별도 Phase로 다룸
 
+## 설계상 병목 후보·대응 플랜
+
+README의 mermaid가 그리는 hook/ingestion 파이프라인에서 미래 병목으로 발현 가능한 3축을 사전 식별합니다. 각 축은 `IMPRINT_PROFILE=1` env-gated 계측 hook이 박혀 있고(`scripts/imprint/lib/common.sh:profile_emit`, `scripts/imprint/lib/ingestion.py:_profile_emit/_profile_span`), 활성화 시 측정값이 `~/.claude/imprint/profile.jsonl`에 JSONL로 누적됩니다. 평소 OFF — hook 추가 비용은 env 검사 1회.
+
+### A. transcript JSONL 재파싱 (stage `stop.transcript_reparse`)
+
+- **위치**: `scripts/imprint/stop.sh` 의 transcript 추출 블록. 매 turn마다 JSONL 전체를 line-by-line 재파싱해 마지막 assistant text 추출.
+- **시나리오**: 세션이 길어질수록 O(n). turn마다 동기 경로에 누적 → 사용자 입력 직후 1초 보장이 깨질 수 있음.
+- **실측** (각 5회 median, 같은 머신·콜드/워밍 캐시 구분 없음):
+
+  | file size | lines | assistants | last bytes | median ms | max ms |
+  | ---: | ---: | ---: | ---: | ---: | ---: |
+  | 36.6 KB | 11 | 4 | 3,665 | 0.2 | 1.2 |
+  | 553.7 KB | 217 | 106 | 109 | 2.7 | 3.1 |
+  | 3,603.3 KB | 1,199 | 498 | 1,933 | 12.1 | 14.2 |
+
+  선형 모델 ≈ `0.2 + 0.0101 × lines` ms (≈ `3.4 ms / MB`).
+- **임계점 후보**:
+  - 동기 추가 지연 100 ms → ~10,000 lines / ~30 MB / ~4,000 assistants
+  - 동기 추가 지연 500 ms → ~50,000 lines / ~150 MB / ~20,000 assistants
+- **대안** (단순 → 복잡):
+  1. **tail-only seek**: 파일 끝에서 ~64 KB만 `f.seek`로 읽고 앞쪽 incomplete line만 버린 뒤 마지막 assistant 추출. 50 MB 세션에서도 ~3 ms.
+  2. **incremental offset 저장**: `~/.claude/imprint/transcript-offsets/<session_id>.txt`에 마지막 read offset 기록, 다음 turn은 그 위치부터 read.
+- **probe lifecycle**: env_gated (`IMPRINT_PROFILE=1`)
+
+### B. 외부 fetch payload 폭주 (stages `fetch_slack_url`, `fetch_notion_url`, `fetch_slack_keywords`, `fetch_notion_keywords`, `cmd_lazy_fetch.*`, `call_claude`)
+
+- **위치**: `scripts/imprint/lib/ingestion.py` 의 `fetch_slack_url` / `fetch_slack_keywords` / `fetch_notion_url` / `fetch_notion_keywords` + `lazy_fetch` 오케스트레이터 + `cmd_lazy_fetch` 진입점.
+- **시나리오**:
+  - 큰 Notion 페이지(H1/H2/H3 다수)는 sectioning 시 chunk 수십 개 + `claude -p haiku` 응답이 길어 `CLAUDE_TIMEOUT_FETCH=45 s` 임박.
+  - 긴 Slack thread는 reply selection이 무거움.
+  - prompt 내 URL이 4개 이상이면 처음 3개만 처리(`[:3]`)하고 silent skip — 사용자 모르게 누락.
+  - dedup이 `metadata_json.url` 기준이라 같은 URL의 원본 갱신은 영구 stale, 명시적 `/memory refresh`로만 새로고침.
+- **실측**: 운영 환경 OAuth + MCP 의존이라 격리 측정 불가. `IMPRINT_PROFILE=1` 시 다음이 자동 수집됨 — 각 fetch stage의 `dur_ms` + `payload_bytes` + `chunks`, `call_claude`의 `dur_ms` + `rc` + `stdout_bytes` + `timeout`.
+- **임계점 후보** (코드 분석 기반, 실측으로 갱신 예정):
+  - 단일 fetch payload > 50 KB → `claude -p haiku` 응답에 담기 어려움, sectioning 실패율 ↑
+  - 단일 `fetch_*_url` wall clock > 30 s → 45 s 타임아웃의 67%, 다음 turn에 chunk 비노출 위험
+  - prompt 내 URL > 3 → 현 구현에서 silent skip 발생
+  - chunk `fetched_at` age > 14 d → stale 위험, refresh 권유 대상
+- **대안**:
+  1. URL 개수 cap을 silent 대신 `plugin.log` warn으로 노출.
+  2. `fetched_at` TTL: N일 지난 url-dedup chunk는 stale flag로 마킹, `/memory list`/`show`가 표시.
+  3. 큰 Notion 페이지의 chunking을 H1 단위로 단순화하고 H2·H3는 본문에 inline — chunk 수 절감.
+- **probe lifecycle**: env_gated
+
+### C. 동시 백그라운드 부하 (stages `ups.spawn`, `cmd_lazy_fetch.enter|exit`, `stop.spawn`, `cmd_extract.enter|exit`, `call_claude`)
+
+- **위치**: `scripts/imprint/user-prompt-submit.sh` 의 백그라운드 spawn 블록 + `scripts/imprint/stop.sh` 의 extract spawn 블록 + ingestion.py `cmd_lazy_fetch` / `cmd_extract`.
+- **시나리오**:
+  - 빠른 turn cycle에서 turn N의 `cmd_extract`와 turn N+1의 `cmd_lazy_fetch`가 동시 실행 → `claude -p haiku` 프로세스 2개 + OAuth refresh + SQLite write 두 군데.
+  - 단일 `cmd_lazy_fetch`가 외부 fetch까지 가면 최대 45 s. 그 시간 안에 turn N+2가 시작되면 spawn 누적.
+  - 노트북 슬립/재개 시 좀비 spawn — `enter`만 남고 `exit` 없는 상태로 profile에 누적.
+- **이미 있는 보호**: `schema.sql` 의 `PRAGMA journal_mode = WAL` + `PRAGMA busy_timeout = 5000`, `IMPRINT_BYPASS_HOOKS=1` 재귀 가드, `IMPRINT_DISABLE_EXTRACT=1` escape hatch.
+- **실측**: 운영 환경 의존. `IMPRINT_PROFILE=1` 시 위 stage들이 PID·timestamp와 함께 자동 수집되어 enter↔exit 짝짓기로 동시성 + 좀비 분석 가능.
+- **임계점 후보**:
+  - 5분 윈도에서 enter(exit 미도달) > 2건 → CPU·OAuth 부하 알림
+  - `call_claude` 동시성 > 2 → API 큐잉 대기
+  - profile.jsonl 의 enter ↔ exit 짝이 30 s 초과 미매칭 → 좀비 후보
+- **대안**:
+  1. lazy-fetch 단일 실행 lockfile(`~/.claude/imprint/locks/lazy-fetch.lock`) — 이미 도는 spawn 있으면 skip.
+  2. 좀비 detection: `/memory stats`가 profile.jsonl 을 분석해 "stale spawn N건" 노출.
+  3. SQLite write 단일 writer 큐로 직렬화 — WAL + busy_timeout 으로 부족할 때만. 우선 측정 후 결정.
+- **probe lifecycle**: env_gated
+
+### 측정 활성화
+
+```bash
+export IMPRINT_PROFILE=1
+# Claude Code 세션을 평소처럼 사용 → 측정값이 ~/.claude/imprint/profile.jsonl 에 누적
+```
+
+기본 OFF. 비활성 시 hook 추가 비용 = env 검사 1회. 활성 시 stage당 file append 1줄 (sub-ms). 모든 probe는 env_gated 라이프사이클이며, 영구 fix는 별도 사이클로 분리합니다.
+
 ## 우선순위 — 남은 단계
 
 1. **Phase 5 (Workflow skill)** — 매일 트리거할 사용자-facing 명령 4개. memory + git porcelain + `claude -p` 합성. 다음에 만들 가치가 가장 큼.

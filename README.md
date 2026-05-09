@@ -84,6 +84,104 @@ prompt에 Notion/Slack URL이 들어 있거나 `<project>/.imprint/sources.json`
 
 각 단계가 의존하는 시스템 도구·운영 환경 변수·실패 모드 매핑은 [`flow.md`](flow.md) 참조.
 
+<!-- TEMP:bottleneck-mitigations 2026-05-09 — HANDOFF.md "성능 병목 진단 — 3축" 적용 후 합쳐 이 섹션은 제거 -->
+
+## (임시) 대응안 적용 후 가상 플로우
+
+이 섹션은 [`HANDOFF.md`](HANDOFF.md) "성능 병목 진단 — 3축" 의 대응안 4개가 모두 적용됐을 때의 **가상** 다이어그램입니다. 실제 코드는 아직 위의 본 플로우대로 동작하며, `IMPRINT_PROFILE=1` 측정 → 임계 도달 → 단계적 적용 흐름으로만 진행합니다. 모든 대응안이 머지되면 위 본 다이어그램과 병합하고 이 임시 섹션은 제거합니다.
+
+반영된 대응안:
+
+- **A1** — Stop hook 의 transcript 재파싱을 tail-only seek (~64 KB) 로 전환
+- **B1** — `lazy_fetch` 의 `[:3]` cap 으로 잘려나간 URL 을 silent skip 대신 `plugin.log WARN` 으로 노출
+- **B2** — `metadata_json.fetched_at` age > 14 d 인 chunk 는 `/memory list` / `/memory show` 가 `[stale]` 태그로 표시
+- **C1** — UserPromptSubmit 의 백그라운드 spawn 직전에 `~/.claude/imprint/locks/lazy-fetch.lock` 게이트 — 이미 도는 spawn 이 있으면 그 turn 은 skip
+- **C2** — `/memory stats` 가 `profile.jsonl` 의 enter ↔ exit 짝을 맞춰 30 s 초과 unmatched 를 "stale spawn" 으로 표시 (자동 kill 안 함)
+
+### 전체 플로우 (가상)
+
+```mermaid
+flowchart TB
+    U([사용자 프롬프트]) --> CC[Claude Code]
+    CC --> UPS{{UserPromptSubmit hook}}
+
+    UPS -->|동기 약 1초| LOG[(events.user_message 기록)]
+    UPS -->|동기| SEARCH[기존 chunk FTS 검색]
+    SEARCH --> CTX[Project memory context prepend]
+    CTX --> RESP[Claude 응답 생성]
+
+    UPS -.비동기 spawn.-> LOCK{lazy-fetch lock?}
+    LOCK -->|점유 중| SKIP[skip + plugin.log info]
+    LOCK -->|free → 잠금| BGF[백그라운드 lazy-fetch]
+    BGF --> ANL[claude -p haiku 키워드+모호도]
+    ANL --> URL{prompt에 URL?}
+    URL -->|Notion / Slack ≤3| FETCH[read-only MCP fetch]
+    URL -.URL > 3.-> WARN[plugin.log WARN: dropped n URLs]
+    URL -->|없음| KW[sources.json 키워드 검색]
+    FETCH --> CHUNK[(memory_chunks INSERT)]
+    KW --> CHUNK
+
+    RESP --> USR([사용자에게 응답 표시])
+    RESP --> ST{{Stop hook}}
+    ST -->|tail-only seek ~64KB| LOG2[(events.llm_response archive)]
+    ST -.비동기 spawn.-> BGE[백그라운드 extract]
+    BGE --> EX[claude -p haiku 응답 분류]
+    EX --> CHUNK2[(decision / fix / todo INSERT)]
+
+    CHUNK -.다음 turn 후보.-> SEARCH
+    CHUNK2 -.다음 turn 후보.-> SEARCH
+```
+
+기존 본 다이어그램과의 차이:
+
+| 노드/엣지 | 본 플로우 | 가상 플로우 |
+|---|---|---|
+| UPS 비동기 spawn 진입 | 곧바로 BGF | `LOCK` 게이트 → 점유 중이면 SKIP, free 면 잠금 후 BGF |
+| `URL?` 분기 | URL 있음 / 없음 두 갈래 | URL ≤3 fetch / URL > 3 점선 `WARN` 보조 가지 / 없음 KW |
+| Stop → archive 엣지 | 라벨 없음 | `tail-only seek ~64KB` 라벨 |
+
+### Memory 플로우 (가상)
+
+```mermaid
+flowchart LR
+    UI[사용자 프롬프트] --> H[UserPromptSubmit hook]
+    H -->|동기 검색| FTS[(FTS5)]
+    FTS --> CTX[프로젝트 메모리 prepend]
+    CTX --> CC[Claude 응답]
+    H -.비동기 ingestion.-> BG[백그라운드 워커]
+    BG --> DB[(memory_chunks)]
+    DB -.다음 turn 후보.-> FTS
+    REM[/memory remember/] -->|즉시 INSERT| DB
+    PIN[/memory pin/] -->|우선 노출 플래그| DB
+    REF[/memory refresh/] -->|DELETE 후 재 fetch| DB
+    DB --> LIST[/memory list · show/]
+    LIST --> AGE{fetched_at age > 14d?}
+    AGE -->|yes| STALE[stale 태그 표시]
+    AGE -->|no| FRESH[정상 출력]
+    PROF[(profile.jsonl)] --> STATS[/memory stats/]
+    STATS --> ZOMBIE{enter ↔ exit 짝}
+    ZOMBIE -->|30s 초과 unmatched| ZSHOW[stale spawn N건 표시]
+    ZOMBIE -->|정상 짝| OK[정상 통계만 표시]
+```
+
+기존 Memory 플로우와의 차이:
+
+| 노드/엣지 | 본 플로우 | 가상 플로우 |
+|---|---|---|
+| `/memory list` / `show` | 다이어그램에 없음 | `DB → LIST → AGE` 분기 신설, age 임계 시 `[stale]` 태그 |
+| `/memory stats` | 다이어그램에 없음 | `profile.jsonl → STATS → ZOMBIE` 분기 신설, unmatched enter 표시 |
+| 자동 kill / 자동 refresh | — | **없음** (사용자가 보고 결정 — 외부 트래픽·정상 fetch 보호) |
+
+### 적용 순서 — 단순한 순으로
+
+1. **A1** (tail-only seek) — 임계 도달 신호: `stop.transcript_reparse.dur_ms` > 80 ms 두 번 이상
+2. **B1** (URL cap warn) — 임계 도달 신호: `lazy_fetch dropped` 가 한 번이라도
+3. **C1** (lazy-fetch lockfile) — 임계 도달 신호: 5분 윈도에 enter 만 있고 exit 없는 spawn 2건 이상
+4. **C2** (`/memory stats` 좀비 표시) — C1 적용 후 자연스럽게
+5. **B2** (fetched_at stale flag) — 측정 데이터로 14 d 임계 재조정한 뒤
+
+각 항목은 적용 후 측정 비교 (계측 hook 그대로 유지) → 안정 확인 → 다음 항목 순으로 분리해 진행합니다. 더 자세한 사유·트레이드오프는 [`HANDOFF.md`](HANDOFF.md) "성능 병목 진단 — 3축" 참조.
+
 ## 설치
 
 자세한 절차는 [`INSTALL.md`](INSTALL.md). 요약:

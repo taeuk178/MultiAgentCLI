@@ -37,13 +37,23 @@ if ! command -v sqlite3 >/dev/null 2>&1; then
 fi
 
 # Extract last assistant text from the JSONL transcript.
-LAST_TEXT=$(python3 - "$TRANSCRIPT_PATH" <<'PY' 2>>"$IMPRINT_LOG" || true
-import json, sys
+# IMPRINT_PROFILE=1: 같은 python 호출 안에서 파싱 시간/줄 수/파일 크기/assistant 수를
+# ~/.claude/imprint/profile.jsonl 에 한 줄로 emit. 추가 process spawn 없음.
+LAST_TEXT=$(IMPRINT_HOME_BG="${IMPRINT_HOME:-$HOME/.claude/imprint}" \
+  IMPRINT_PROFILE_BG="${IMPRINT_PROFILE:-0}" \
+  python3 - "$TRANSCRIPT_PATH" <<'PY' 2>>"$IMPRINT_LOG" || true
+import json, os, sys, time
+from datetime import datetime, timezone
+
 path = sys.argv[1]
 last = ""
+lines_total = 0
+assistants = 0
+t0 = time.monotonic()
 try:
     with open(path, "r", encoding="utf-8") as f:
         for line in f:
+            lines_total += 1
             line = line.strip()
             if not line:
                 continue
@@ -53,6 +63,7 @@ try:
                 continue
             if row.get("type") != "assistant":
                 continue
+            assistants += 1
             msg = row.get("message", {})
             parts = msg.get("content", [])
             buf = []
@@ -69,6 +80,30 @@ try:
                 last = joined
 except FileNotFoundError:
     pass
+
+if os.environ.get("IMPRINT_PROFILE_BG") == "1":
+    try:
+        home = os.environ.get("IMPRINT_HOME_BG") or os.path.expanduser("~/.claude/imprint")
+        os.makedirs(home, exist_ok=True)
+        try:
+            file_bytes = os.path.getsize(path)
+        except OSError:
+            file_bytes = -1
+        rec = {
+            "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "pid": os.getpid(),
+            "stage": "stop.transcript_reparse",
+            "dur_ms": int((time.monotonic() - t0) * 1000),
+            "file_bytes": file_bytes,
+            "lines_total": lines_total,
+            "assistants": assistants,
+            "last_text_bytes": len(last.encode("utf-8")),
+        }
+        with open(os.path.join(home, "profile.jsonl"), "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+
 print(last)
 PY
 )
@@ -92,6 +127,7 @@ db_exec "
 if [[ "${IMPRINT_DISABLE_EXTRACT:-0}" != "1" ]] && command -v python3 >/dev/null 2>&1; then
   TMP_BG=$(mktemp 2>/dev/null || echo "/tmp/imprint-stop-$$.tmp")
   printf '%s' "$LAST_TEXT" > "$TMP_BG"
+  profile_emit "stop.spawn" "project=$PID event=$EVENT_ID resp_bytes=${#LAST_TEXT}"
   ( python3 "$SCRIPT_DIR/lib/ingestion.py" extract "$PID" "$EVENT_ID" < "$TMP_BG" 2>>"$IMPRINT_LOG"
     rm -f "$TMP_BG"
   ) </dev/null >/dev/null 2>&1 &

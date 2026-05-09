@@ -185,6 +185,7 @@ fi
 if [[ -n "$PID" && -x "$(command -v python3)" ]]; then
   TMP_BG=$(mktemp 2>/dev/null || echo "/tmp/imprint-ups-$$.tmp")
   printf '%s' "$PROMPT" > "$TMP_BG"
+  profile_emit "ups.spawn" "project=$PID prompt_bytes=${#PROMPT}"
   ( python3 "$SCRIPT_DIR/lib/ingestion.py" lazy-fetch "$PID" < "$TMP_BG" 2>>"$IMPRINT_LOG"
     rm -f "$TMP_BG"
   ) </dev/null >/dev/null 2>&1 &
