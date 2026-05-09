@@ -213,10 +213,13 @@ print(len(skill_paths), len(agent_paths))
 
 UPDATED_AT=$(date +"%H:%M")
 
-DIM='\033[2m'
-BOLD='\033[1m'
-RESET='\033[0m'
-LABEL='\033[36m'
+# printf로 진짜 ESC byte를 박아둔다. literal '\033[2m' 문자열을 그대로 변수에
+# 두면 'printf "%s" "$VAR"' 패턴(메인 루프의 SEP 출력 등)에서 escape이 해석되지
+# 않아 raw 그대로 statusline에 찍힌다.
+DIM=$(printf '\033[2m')
+BOLD=$(printf '\033[1m')
+RESET=$(printf '\033[0m')
+LABEL=$(printf '\033[36m')
 SEP="${DIM}│${RESET}"
 
 format_pct() {
