@@ -25,38 +25,38 @@ sequenceDiagram
     actor U as 사용자
     participant CC as Claude Code
     participant UPS as UserPromptSubmit
-    participant DB as SQLite (FTS5)
-    participant BG as 백그라운드 워커
-    participant MCP as Notion / Slack MCP
-    participant ST as Stop hook
+    participant DB as SQLite_FTS5
+    participant BG as 백그라운드_워커
+    participant MCP as MCP
+    participant ST as Stop_hook
 
     U->>CC: 프롬프트 제출
-    CC->>UPS: stdin (prompt + session JSON)
+    CC->>UPS: stdin prompt + session JSON
     activate UPS
     UPS->>DB: events.user_message 기록
     UPS->>DB: 기존 chunk FTS 검색
-    UPS-->>CC: [Project memory context] prepend
-    UPS-)BG: lazy-fetch 비동기 spawn (nohup)
+    UPS-->>CC: Project memory context prepend
+    UPS-)BG: lazy-fetch 비동기 spawn
     deactivate UPS
-    Note right of UPS: 동기 경로 ≈ 1초
+    Note right of UPS: 동기 경로 약 1초
 
-    par 백그라운드 ingestion (다음 turn부터 노출)
-        BG->>BG: claude -p haiku — 키워드 + 모호도
+    par 백그라운드 ingestion
+        BG->>BG: claude -p haiku 키워드+모호도
         BG->>MCP: URL 또는 sources.json fetch
-        MCP-->>BG: 페이지 섹션 / Slack 메시지
+        MCP-->>BG: 페이지 섹션 또는 메시지
         BG->>DB: memory_chunks INSERT
     and 메인 응답
         CC->>CC: Claude 응답 생성
         CC->>U: 응답 표시
     end
 
-    CC->>ST: stdin (transcript_path)
+    CC->>ST: stdin transcript_path
     activate ST
     ST->>DB: events.llm_response 기록
-    ST-)BG: extract 비동기 spawn (nohup)
+    ST-)BG: extract 비동기 spawn
     deactivate ST
-    BG->>BG: claude -p haiku — chunk 분류
-    BG->>DB: decision / fix / todo / ... INSERT
+    BG->>BG: claude -p haiku chunk 분류
+    BG->>DB: decision / fix / todo INSERT
 ```
 
 ### UserPromptSubmit (프롬프트 진입 직전)
