@@ -83,18 +83,25 @@ skills/
   hud/SKILL.md
 prompts/defaults/          첫 SessionStart에서 <project>/.imprint/로 시드되는 기본 콘텐츠
   soul.md                  persona·동작 규칙
-  hooks/                   Claude Code의 22개 hook 카탈로그(사람용 가이드, OpenClaw 스타일)
+  UserPromptSubmit.md      라우팅 룰 기본값
+  sources.json             Slack 채널·Notion 페이지 설정 기본값
+  hooks/                   활성 listener 3종 reference doc (SessionStart / UserPromptSubmit / Stop)
 scripts/imprint/
   lib/common.sh            DB·project·로그 헬퍼
   lib/schema.sql           SQLite 스키마 (FTS5 trigger 포함)
+  lib/migrations.sh        FTS5 trigram tokenizer 마이그레이션
+  lib/ingestion.py         lazy-fetch · prefill · extract · refresh 단일 모듈 (claude -p haiku 호출)
   session-start.sh         SessionStart hook (DB 보장 + .imprint/ 시드 + soul.md emit)
-  user-prompt-submit.sh    UserPromptSubmit hook (라우팅 평가 + 메모리 주입)
-  stop.sh                  Stop hook (assistant 응답 archive)
+  user-prompt-submit.sh    UserPromptSubmit hook (라우팅 평가 + 메모리 주입 + bg lazy-fetch)
+  stop.sh                  Stop hook (assistant 응답 archive + bg chunk extract)
   memory.sh                /memory dispatcher
   advisor.sh               /advisor dispatcher
   hud.sh                   statusline body
   hud-setup.sh             statusLine install/status/uninstall/layout
+INSTALL.md                 설치 가이드
 LifeCycle.md               LLM 턴 생애주기 ↔ Claude Code hook 매핑 + 깊이 있는 카탈로그
+LoadMap.md                 방향성·로드맵
+HANDOFF.md                 다음 세션용 미해결 작업·검토 노트
 ```
 
 ## 데이터 위치
@@ -103,7 +110,7 @@ LifeCycle.md               LLM 턴 생애주기 ↔ Claude Code hook 매핑 + �
 |---|---|
 | `<project>/.imprint/soul.md` | 세션 시작·압축 후 자동 prepend되는 persona·동작 규칙. 사용자 자유 편집. (plugin defaults에서 자동 시드) |
 | `<project>/.imprint/UserPromptSubmit.md` | 매 prompt마다 평가되는 키워드 → agent 라우팅 룰. 사용자 자유 편집. |
-| `<project>/.imprint/hooks/*.md` | Claude Code의 22개 hook 카탈로그 + 본 plugin이 등록한 hook(✅) 표시. OpenClaw 스타일 짧은 가이드(무엇 / 어떻게 활용 / 간단한 예시 / 주의). Claude Code가 직접 읽진 않는 사람용 참고 문서. |
+| `<project>/.imprint/hooks/*.md` | 본 plugin이 등록한 활성 listener 3종(SessionStart / UserPromptSubmit / Stop) 가이드. Claude Code가 직접 읽진 않는 사람용 참고 문서. |
 | `~/.claude/imprint/app.sqlite` | projects · conversations · events · memory_chunks · provider_runs (FTS5 포함) |
 | `~/.claude/imprint/plugin.log` | hook · dispatcher 로그 |
 | `~/.claude/imprint/previous-statusline.json` | hud-setup install 시 백업된 이전 statusLine 설정 |
