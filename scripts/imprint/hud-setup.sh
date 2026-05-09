@@ -5,7 +5,11 @@
 # Usage:
 #   hud-setup.sh install [--layout minimal|focused|full]
 #   hud-setup.sh status
-#   hud-setup.sh layout <minimal|focused|full>
+#   hud-setup.sh layout <minimal|focused|full>          (backward-compat)
+#   hud-setup.sh fields list   [--project]
+#   hud-setup.sh fields set    <id...> [--project]
+#   hud-setup.sh fields enable <id...> [--project]
+#   hud-setup.sh fields disable <id...> [--project]
 #   hud-setup.sh uninstall
 
 set -euo pipefail
@@ -175,6 +179,197 @@ cmd_layout() {
   esac
 }
 
+# fields 관련 헬퍼 ----------------------------------------------------------
+
+ALLOWED_FIELDS="5h wk ctx tokens model effort style cost dur skills agents time"
+
+# --project 플래그를 골라내고 나머지를 globals에 채운다.
+parse_fields_args() {
+  FIELDS_SCOPE="user"
+  FIELDS_ARGS=()
+  for a in "$@"; do
+    if [[ "$a" == "--project" ]]; then
+      FIELDS_SCOPE="project"
+    else
+      FIELDS_ARGS+=("$a")
+    fi
+  done
+}
+
+resolve_config_path() {
+  if [[ "$FIELDS_SCOPE" == "project" ]]; then
+    local root
+    root=$(git rev-parse --show-toplevel 2>/dev/null) || {
+      echo "--project requires a git repo (or run inside one)" >&2; exit 1; }
+    mkdir -p "$root/.imprint"
+    FIELDS_CONFIG="$root/.imprint/hud-config.json"
+  else
+    ensure_home
+    FIELDS_CONFIG="$IMPRINT_HOME/hud-config.json"
+  fi
+}
+
+# 알 수 없는 id를 검사해서 stderr에 한 번에 보고하고 비-zero 종료.
+validate_field_ids() {
+  local bad=()
+  for id in "$@"; do
+    case " $ALLOWED_FIELDS " in
+      *" $id "*) ;;
+      *) bad+=("$id") ;;
+    esac
+  done
+  if (( ${#bad[@]} )); then
+    echo "unknown field id(s): ${bad[*]}" >&2
+    echo "allowed: $ALLOWED_FIELDS" >&2
+    exit 1
+  fi
+}
+
+write_fields() {
+  local ids_csv="$1"
+  CONFIG="$FIELDS_CONFIG" IDS="$ids_csv" python3 - <<'PY'
+import json, os
+path = os.environ['CONFIG']
+ids = [x for x in os.environ['IDS'].split(',') if x]
+data = {}
+if os.path.exists(path):
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except Exception:
+        data = {}
+data['fields'] = ids
+# 명시적 fields가 있을 때 layout 키는 제거 (혼란 방지)
+data.pop('layout', None)
+with open(path, 'w') as f:
+    json.dump(data, f, indent=2)
+PY
+  echo "fields ($FIELDS_SCOPE) = $(echo "$ids_csv" | tr ',' ' ')"
+  echo "  $FIELDS_CONFIG"
+}
+
+read_fields() {
+  CONFIG="$FIELDS_CONFIG" python3 - <<'PY'
+import json, os
+path = os.environ['CONFIG']
+if not os.path.exists(path):
+    print("")
+    raise SystemExit(0)
+try:
+    with open(path) as f:
+        data = json.load(f)
+except Exception:
+    print("")
+    raise SystemExit(0)
+fields = data.get('fields')
+if isinstance(fields, list):
+    print(' '.join(x for x in fields if isinstance(x, str)))
+    raise SystemExit(0)
+LAYOUT_MAP = {
+    "minimal": ["5h","time"],
+    "focused": ["5h","wk","ctx","time"],
+    "full":    ["5h","wk","ctx","skills","agents","time"],
+}
+layout = data.get('layout')
+if isinstance(layout, str) and layout in LAYOUT_MAP:
+    print(' '.join(LAYOUT_MAP[layout]))
+    raise SystemExit(0)
+print("")
+PY
+}
+
+cmd_fields_list() {
+  parse_fields_args "$@"
+  resolve_config_path
+  local current; current=$(read_fields)
+  echo "scope:        $FIELDS_SCOPE"
+  echo "config:       $FIELDS_CONFIG"
+  if [[ -z "$current" ]]; then
+    echo "active:       (none — falls back to default 5h ctx time)"
+  else
+    echo "active:       $current"
+  fi
+  echo
+  echo "available IDs:"
+  printf '  %s\n' \
+    "5h       5-hour rate limit %(used) + remaining time" \
+    "wk       7-day rate limit %(used) + remaining" \
+    "ctx      context window used %" \
+    "tokens   input+output tokens / context size" \
+    "model    model display name (Opus / Sonnet)" \
+    "effort   reasoning effort + thinking flag" \
+    "style    output style name" \
+    "cost     session cost in USD" \
+    "dur      session wall-clock duration" \
+    "skills   loaded skills count (filesystem)" \
+    "agents   loaded agents count (filesystem)" \
+    "time     current time HH:MM"
+}
+
+cmd_fields_set() {
+  parse_fields_args "$@"
+  if (( ${#FIELDS_ARGS[@]} == 0 )); then
+    echo "fields set requires at least one id (or use 'fields list' to inspect)" >&2; exit 1
+  fi
+  validate_field_ids "${FIELDS_ARGS[@]}"
+  resolve_config_path
+  local csv; csv=$(IFS=,; echo "${FIELDS_ARGS[*]}")
+  write_fields "$csv"
+}
+
+cmd_fields_enable() {
+  parse_fields_args "$@"
+  if (( ${#FIELDS_ARGS[@]} == 0 )); then
+    echo "fields enable requires at least one id" >&2; exit 1
+  fi
+  validate_field_ids "${FIELDS_ARGS[@]}"
+  resolve_config_path
+  local current; current=$(read_fields)
+  local merged=()
+  for x in $current "${FIELDS_ARGS[@]}"; do
+    local seen=0
+    for y in "${merged[@]:-}"; do
+      [[ "$y" == "$x" ]] && { seen=1; break; }
+    done
+    (( seen )) || merged+=("$x")
+  done
+  local csv; csv=$(IFS=,; echo "${merged[*]}")
+  write_fields "$csv"
+}
+
+cmd_fields_disable() {
+  parse_fields_args "$@"
+  if (( ${#FIELDS_ARGS[@]} == 0 )); then
+    echo "fields disable requires at least one id" >&2; exit 1
+  fi
+  resolve_config_path
+  local current; current=$(read_fields)
+  if [[ -z "$current" ]]; then
+    echo "no active fields to remove" >&2; return
+  fi
+  local kept=()
+  for x in $current; do
+    local drop=0
+    for y in "${FIELDS_ARGS[@]}"; do
+      [[ "$y" == "$x" ]] && { drop=1; break; }
+    done
+    (( drop )) || kept+=("$x")
+  done
+  local csv; csv=$(IFS=,; echo "${kept[*]:-}")
+  write_fields "$csv"
+}
+
+cmd_fields() {
+  local action="${1:-list}"; shift || true
+  case "$action" in
+    list)    cmd_fields_list "$@" ;;
+    set)     cmd_fields_set "$@" ;;
+    enable)  cmd_fields_enable "$@" ;;
+    disable) cmd_fields_disable "$@" ;;
+    *) echo "fields action must be one of: list | set | enable | disable" >&2; exit 1 ;;
+  esac
+}
+
 main() {
   local sub="${1:-status}"; shift || true
   case "$sub" in
@@ -182,7 +377,8 @@ main() {
     status)    cmd_status ;;
     uninstall) cmd_uninstall ;;
     layout)    cmd_layout "$@" ;;
-    *) echo "usage: hud-setup.sh install|status|uninstall|layout <name>" >&2; exit 1 ;;
+    fields)    cmd_fields "$@" ;;
+    *) echo "usage: hud-setup.sh install|status|uninstall|layout <name>|fields <list|set|enable|disable> [ids...] [--project]" >&2; exit 1 ;;
   esac
 }
 
