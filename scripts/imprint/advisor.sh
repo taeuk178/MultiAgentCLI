@@ -9,6 +9,30 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib/common.sh"
 
+# 무한 대기 차단(D? — Phase 4 마무리). codex/gemini/claude -p가 인증 누락이나
+# 네트워크 hang으로 영원히 멈추는 경우를 막는다. macOS는 `timeout`이 기본
+# 미설치라 `gtimeout`(brew coreutils)로 폴백하고, 둘 다 없으면 wrapping을
+# 건너뛰고 plugin.log에 한 줄 남긴다.
+ADVISOR_TIMEOUT="${IMPRINT_ADVISOR_TIMEOUT:-60}"
+
+if command -v timeout >/dev/null 2>&1; then
+  TIMEOUT_BIN=timeout
+elif command -v gtimeout >/dev/null 2>&1; then
+  TIMEOUT_BIN=gtimeout
+else
+  TIMEOUT_BIN=""
+  log_info "advisor: timeout/gtimeout not found, advisor calls run unbounded"
+fi
+
+# $1...$N → 명령어. timeout binary가 있으면 그 앞에 붙이고, 없으면 그냥 실행.
+with_timeout() {
+  if [[ -n "$TIMEOUT_BIN" ]]; then
+    "$TIMEOUT_BIN" "${ADVISOR_TIMEOUT}s" "$@"
+  else
+    "$@"
+  fi
+}
+
 usage() {
   cat <<'USAGE'
 imprint advisor <subcommand> <prompt>
@@ -64,7 +88,7 @@ run_codex() {
     echo "codex CLI not found" >&2
     return 1
   fi
-  codex exec "$prompt"
+  with_timeout codex exec "$prompt"
 }
 
 run_gemini() {
@@ -73,7 +97,8 @@ run_gemini() {
     echo "gemini CLI not found" >&2
     return 1
   fi
-  GEMINI_CLI_TRUST_WORKSPACE=true gemini -p "$prompt"
+  export GEMINI_CLI_TRUST_WORKSPACE=true
+  with_timeout gemini -p "$prompt"
 }
 
 cmd_codex() {
@@ -157,9 +182,14 @@ EOF
 
   if command -v claude >/dev/null 2>&1; then
     local final
-    final=$(claude -p "$synth_prompt")
-    persist_run "claude" "advisor_synthesize" "$synth_prompt" "$final" "succeeded" >/dev/null
-    printf '%s\n' "$final"
+    if final=$(with_timeout claude -p "$synth_prompt"); then
+      persist_run "claude" "advisor_synthesize" "$synth_prompt" "$final" "succeeded" >/dev/null
+      printf '%s\n' "$final"
+    else
+      persist_run "claude" "advisor_synthesize" "$synth_prompt" "$final" "failed" >/dev/null
+      echo "claude -p synthesis failed/timeout; printing raw advisor outputs." >&2
+      printf '[Codex]\n%s\n\n[Gemini]\n%s\n' "$codex_out" "$gemini_out"
+    fi
   else
     echo "claude CLI not found; printing raw advisor outputs." >&2
     printf '[Codex]\n%s\n\n[Gemini]\n%s\n' "$codex_out" "$gemini_out"
