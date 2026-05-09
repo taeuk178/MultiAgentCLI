@@ -66,16 +66,21 @@ CREATE TABLE IF NOT EXISTS provider_runs (
   finished_at       TEXT
 );
 
+-- FTS5 인덱스: 한국어 부분문자열 매칭(예: '더스트' → '더스트가/더스트의')을
+-- 위해 trigram tokenizer 사용. unicode61 기반 기존 인덱스가 남아 있으면
+-- session-start.sh에서 DROP + REBUILD 마이그레이션을 수행한다 (D16, AC10).
 CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(
   text_clean,
   content='events',
-  content_rowid='rowid'
+  content_rowid='rowid',
+  tokenize='trigram'
 );
 
 CREATE VIRTUAL TABLE IF NOT EXISTS memory_chunks_fts USING fts5(
   text,
   content='memory_chunks',
-  content_rowid='rowid'
+  content_rowid='rowid',
+  tokenize='trigram'
 );
 
 CREATE TRIGGER IF NOT EXISTS events_ai AFTER INSERT ON events BEGIN

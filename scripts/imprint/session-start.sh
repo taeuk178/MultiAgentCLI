@@ -10,6 +10,7 @@
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib/common.sh"
+source "$SCRIPT_DIR/lib/migrations.sh"
 
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 DEFAULTS_DIR="$PLUGIN_ROOT/prompts/defaults"
@@ -19,6 +20,12 @@ ensure_home
 # --- 1. SQLite schema -------------------------------------------------------
 
 if command -v sqlite3 >/dev/null 2>&1; then
+  # Trigram FTS migration must run BEFORE schema.sql apply: schema.sql uses
+  # CREATE IF NOT EXISTS, so it would silently leave a pre-existing unicode61
+  # FTS table in place. The migration drops+recreates with trigram tokenizer
+  # when needed; schema.sql then re-asserts triggers.
+  run_migrations
+
   # Suppress stdout (PRAGMA results etc) — SessionStart's stdout becomes
   # session context, so any stray output would pollute the model input.
   sqlite3 "$IMPRINT_DB" < "$SCRIPT_DIR/lib/schema.sql" >/dev/null 2>>"$IMPRINT_LOG" \
@@ -47,8 +54,8 @@ if [[ "${IMPRINT_NO_SEED:-0}" != "1" && -d "$DEFAULTS_DIR" ]]; then
   MA_DIR="$ROOT/.imprint"
   mkdir -p "$MA_DIR" 2>/dev/null || true
 
-  # Top-level configs: soul.md, UserPromptSubmit.md
-  for fname in soul.md UserPromptSubmit.md; do
+  # Top-level configs: soul.md, UserPromptSubmit.md, sources.json
+  for fname in soul.md UserPromptSubmit.md sources.json; do
     src="$DEFAULTS_DIR/$fname"
     dst="$MA_DIR/$fname"
     if [[ -f "$src" && ! -e "$dst" ]]; then
