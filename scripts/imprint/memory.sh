@@ -24,6 +24,12 @@ imprint memory <subcommand> [args]
   unpin <id>                 Remove pinned status
   list [--recent|--pinned|--type <t>]
   forget <id>                Delete a chunk
+  refresh <spec>             Drop cached external chunks matching spec
+                             and re-fetch on next prefill (D24, AC16):
+                               <url>          single URL — DELETE + immediate re-fetch
+                               source slack   all slack chunks (re-fetch on next prefill)
+                               source notion  all notion chunks (re-fetch on next prefill)
+                               project        all external (slack+notion) chunks
 USAGE
 }
 
@@ -144,6 +150,19 @@ cmd_forget() {
   echo "deleted $id"
 }
 
+cmd_refresh() {
+  if [[ $# -lt 1 ]]; then
+    echo "refresh requires <url|source slack|source notion|project>" >&2
+    exit 1
+  fi
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "python3 not found in PATH" >&2
+    exit 1
+  fi
+  local pid; pid=$(project_id)
+  python3 "$SCRIPT_DIR/lib/ingestion.py" refresh "$pid" "$@"
+}
+
 main() {
   ensure_db
   local sub="${1:-}"; shift || true
@@ -155,6 +174,7 @@ main() {
     unpin)    cmd_pin "$@" 0 ;;
     list)     cmd_list "$@" ;;
     forget)   cmd_forget "$@" ;;
+    refresh)  cmd_refresh "$@" ;;
     ""|-h|--help|help) usage ;;
     *) usage; exit 1 ;;
   esac
