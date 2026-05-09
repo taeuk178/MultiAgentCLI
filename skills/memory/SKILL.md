@@ -58,11 +58,28 @@ Chunk types:
 ### `/memory inject <chunk-id>`
 Output a specific chunk's text so Claude Code includes it in context.
 
+### `/memory show <chunk-id> [--json]`
+Pretty-print a chunk's full text + `metadata_json` for **debugging**. 외부
+소스(Slack/Notion)가 어떻게 sectioning됐는지, `url`·`section_title`·
+`last_edited_at` 같은 메타데이터가 정확히 어떻게 채워졌는지 확인할 때
+사용합니다. `<chunk-id>`는 정확한 ID 또는 unique prefix를 받습니다.
+
+```bash
+imprint memory show ab12cd            # 사람이 읽기 좋은 형태
+imprint memory show ab12cd --json     # 스크립트 친화적 JSON
+```
+
+`--json` 출력은 `id`/`chunk_type`/`metadata`(파싱된 객체)/`text`를 포함해
+파이프라인에서 `jq`로 필드를 뽑아 쓰기 좋은 구조입니다.
+
 ### `/memory pin <chunk-id>`
 Mark chunk as pinned so the prefill hook always includes it.
 
-### `/memory list [--recent | --pinned | --type <type>]`
-List memory chunks for the current project.
+### `/memory list [--recent | --pinned | --type <type> | --source <slack|notion|internal>]`
+List memory chunks for the current project. 출력에 `source` 컬럼이 포함돼
+외부 소스(Slack/Notion)와 내부(LLM 추출 / `remember`로 저장한) chunk를
+한눈에 구분할 수 있습니다. `--source slack`/`notion`/`internal`로 필터링
+가능합니다.
 
 ### `/memory forget <chunk-id>`
 Delete a chunk.
