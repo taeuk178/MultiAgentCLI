@@ -21,6 +21,7 @@ imprint memory <subcommand> [args]
   remember <text>            Store an explicit chunk (--type <t>, --pin)
   inject <id>                Print a chunk's text for context injection
   show <id> [--json]         Pretty-print a chunk's text + metadata (debug)
+  stats [--all] [--json]     Memory 분포·통계 요약(현 프로젝트 또는 전 프로젝트)
   pin <id>                   Mark chunk as pinned (always prefilled)
   unpin <id>                 Remove pinned status
   list [--recent|--pinned|--type <t>|--source <slack|notion|internal>]
@@ -252,6 +253,149 @@ print(wrapped)
 PY
 }
 
+cmd_stats() {
+  local scope="project"
+  local fmt="pretty"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --all)  scope="all"; shift ;;
+      --json) fmt="json"; shift ;;
+      *)      shift ;;
+    esac
+  done
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "python3 not found in PATH" >&2
+    exit 1
+  fi
+  local pid; pid=$(project_id)
+  local root; root=$(project_root)
+  IMPRINT_DB="$IMPRINT_DB" \
+  STATS_PROJECT_ID="$pid" \
+  STATS_PROJECT_ROOT="$root" \
+  STATS_SCOPE="$scope" \
+  STATS_FMT="$fmt" \
+  python3 - <<'PY'
+import json, os, sqlite3, sys
+
+db_path = os.environ["IMPRINT_DB"]
+project_id = os.environ["STATS_PROJECT_ID"]
+project_root = os.environ["STATS_PROJECT_ROOT"]
+scope = os.environ.get("STATS_SCOPE", "project")
+fmt = os.environ.get("STATS_FMT", "pretty")
+
+try:
+    conn = sqlite3.connect(db_path, timeout=5.0)
+except sqlite3.Error as exc:
+    sys.stderr.write(f"db open failed: {exc}\n")
+    sys.exit(1)
+
+def project_summary(pid):
+    cur = conn.execute(
+        "SELECT COUNT(*), SUM(pinned), MIN(created_at), MAX(created_at) "
+        "FROM memory_chunks WHERE project_id = ?;",
+        (pid,),
+    )
+    total, pinned, oldest, newest = cur.fetchone()
+    total = total or 0
+    pinned = pinned or 0
+
+    type_dist = conn.execute(
+        "SELECT chunk_type, COUNT(*) FROM memory_chunks "
+        "WHERE project_id = ? GROUP BY chunk_type ORDER BY 2 DESC;",
+        (pid,),
+    ).fetchall()
+
+    source_dist = conn.execute(
+        "SELECT COALESCE(json_extract(metadata_json,'$.source'),'internal'), COUNT(*) "
+        "FROM memory_chunks WHERE project_id = ? "
+        "GROUP BY 1 ORDER BY 2 DESC;",
+        (pid,),
+    ).fetchall()
+
+    notion_urls = conn.execute(
+        "SELECT COUNT(DISTINCT json_extract(metadata_json,'$.page_id')) "
+        "FROM memory_chunks WHERE project_id = ? "
+        "  AND json_extract(metadata_json,'$.source') = 'notion';",
+        (pid,),
+    ).fetchone()[0] or 0
+
+    slack_urls = conn.execute(
+        "SELECT COUNT(DISTINCT json_extract(metadata_json,'$.url')) "
+        "FROM memory_chunks WHERE project_id = ? "
+        "  AND json_extract(metadata_json,'$.source') = 'slack';",
+        (pid,),
+    ).fetchone()[0] or 0
+
+    return {
+        "project_id": pid,
+        "total": total, "pinned": pinned,
+        "oldest": oldest, "newest": newest,
+        "chunk_type": dict(type_dist),
+        "source": dict(source_dist),
+        "external_urls": {"notion_pages": notion_urls, "slack_messages": slack_urls},
+    }
+
+def all_projects():
+    rows = conn.execute(
+        "SELECT p.id, p.root_path, COUNT(m.id), SUM(m.pinned), MAX(m.created_at) "
+        "FROM projects p LEFT JOIN memory_chunks m ON m.project_id = p.id "
+        "GROUP BY p.id, p.root_path "
+        "ORDER BY 3 DESC;"
+    ).fetchall()
+    return [
+        {"project_id": r[0], "path": r[1], "total": r[2] or 0,
+         "pinned": r[3] or 0, "newest": r[4]}
+        for r in rows
+    ]
+
+if scope == "all":
+    summary = all_projects()
+    if fmt == "json":
+        sys.stdout.write(json.dumps(summary, ensure_ascii=False, indent=2) + "\n")
+        sys.exit(0)
+    if not summary:
+        print("(no projects)")
+        sys.exit(0)
+    print(f"{'project_id':<18} {'chunks':>7} {'pinned':>7}  newest                path")
+    for r in summary:
+        newest = r["newest"] or "-"
+        print(f"{r['project_id']:<18} {r['total']:>7} {r['pinned']:>7}  {newest:<20}  {r['path']}")
+    sys.exit(0)
+
+# project scope
+s = project_summary(project_id)
+if fmt == "json":
+    s["path"] = project_root
+    sys.stdout.write(json.dumps(s, ensure_ascii=False, indent=2) + "\n")
+    sys.exit(0)
+
+print(f"project:       {s['project_id']}")
+print(f"path:          {project_root}")
+print(f"chunks total:  {s['total']}")
+print(f"pinned:        {s['pinned']}")
+print(f"oldest:        {s['oldest'] or '-'}")
+print(f"newest:        {s['newest'] or '-'}")
+print()
+print("chunk_type:")
+if s["chunk_type"]:
+    for k, v in sorted(s["chunk_type"].items(), key=lambda x: (-x[1], x[0])):
+        print(f"  {k:<14} {v}")
+else:
+    print("  <empty>")
+print()
+print("source:")
+if s["source"]:
+    for k, v in sorted(s["source"].items(), key=lambda x: (-x[1], x[0])):
+        print(f"  {k:<14} {v}")
+else:
+    print("  <empty>")
+print()
+print("external URLs (unique):")
+print(f"  notion_pages   {s['external_urls']['notion_pages']}")
+print(f"  slack_messages {s['external_urls']['slack_messages']}")
+PY
+}
+
 cmd_forget() {
   local id="${1:-}"
   if [[ -z "$id" ]]; then
@@ -284,6 +428,7 @@ main() {
     remember) cmd_remember "$@" ;;
     inject)   cmd_inject "$@" ;;
     show)     cmd_show "$@" ;;
+    stats)    cmd_stats "$@" ;;
     pin)      cmd_pin "$@" 1 ;;
     unpin)    cmd_pin "$@" 0 ;;
     list)     cmd_list "$@" ;;

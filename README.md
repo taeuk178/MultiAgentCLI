@@ -132,6 +132,7 @@ flowchart LR
 | `/memory search <query>` | FTS5 trigram 검색 | matching chunk 목록 표시 |
 | `/memory pin <chunk-id>` | 우선 노출 플래그 ON | prefill 정렬에서 항상 위쪽 |
 | `/memory list` (`--recent` / `--pinned` / `--type` / `--source`) | 누적 chunk 나열 | 필터링된 chunk 표 |
+| `/memory stats` (`--all` / `--json`) | 분포·통계 요약 | 총 chunk 수, chunk_type·source 분포, 외부 unique URL 수 |
 | `/memory refresh <url \| source slack \| source notion \| project>` | 외부 chunk 갱신 | DELETE → 재 fetch → INSERT |
 
 `/memory remember`로 사용자가 직접 박은 chunk와 hook이 응답에서 자동 추출한 chunk가 같은 `memory_chunks` 테이블에 누적되어, 다음 turn부터 동등한 자격으로 prefill 후보가 됩니다.

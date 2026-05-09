@@ -72,6 +72,21 @@ imprint memory show ab12cd --json     # 스크립트 친화적 JSON
 `--json` 출력은 `id`/`chunk_type`/`metadata`(파싱된 객체)/`text`를 포함해
 파이프라인에서 `jq`로 필드를 뽑아 쓰기 좋은 구조입니다.
 
+### `/memory stats [--all] [--json]`
+현 프로젝트의 memory 분포를 한 화면 요약: 총 chunk 수, pinned 수, 가장
+오래된·가장 최근 chunk 시점, `chunk_type`/`source` 분포, 외부 source의
+unique URL 수(notion 페이지, slack 메시지). "지금 memory에 뭐가 얼마나
+쌓여 있는가"를 파악할 때 첫 번째로 호출합니다.
+
+```bash
+imprint memory stats              # 현 프로젝트 요약
+imprint memory stats --all        # 전 프로젝트 한 줄씩 비교
+imprint memory stats --json       # 자동화/대시보드용 JSON
+```
+
+`/memory list`는 chunk를 행 단위로 나열하지만 분포는 보여주지 않습니다.
+`stats`는 그 반대 — 분포만 보여주고 개별 chunk는 안 찍습니다.
+
 ### `/memory pin <chunk-id>`
 Mark chunk as pinned so the prefill hook always includes it.
 
