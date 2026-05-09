@@ -33,15 +33,15 @@
 ```mermaid
 flowchart TB
     P[사용자 prompt] --> S[UserPromptSubmit hook]
-    S --> E1["events.user_message 기록<br/>(sqlite3)"]
-    S --> R["routing 평가<br/>(python3 + UserPromptSubmit.md)"]
-    S --> F["chunk FTS 검색<br/>(sqlite3 trigram)"]
-    F --> CTX["[Project memory context] prepend"]
-    S -.비동기 spawn.-> A["claude -p haiku<br/>키워드 + 모호도"]
+    S --> E1[events.user_message 기록]
+    S --> R[routing 평가]
+    S --> F[chunk FTS 검색]
+    F --> CTX[Project memory context prepend]
+    S -.비동기 spawn.-> A[claude -p haiku 키워드+모호도]
     A --> U{prompt에 URL?}
-    U -->|Notion/Slack URL| FETCH["read-only MCP fetch"]
-    U -->|없음| KW["sources.json 키워드 검색"]
-    FETCH --> I["memory_chunks INSERT<br/>(다음 turn 활용)"]
+    U -->|Notion/Slack URL| FETCH[read-only MCP fetch]
+    U -->|없음| KW[sources.json 키워드 검색]
+    FETCH --> I[memory_chunks INSERT]
     KW --> I
 ```
 
