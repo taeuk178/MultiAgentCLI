@@ -2,8 +2,6 @@
 
 로컬 작업 기억(SQLite + FTS5), 외부 소스(Slack · Notion) lazy-fetch, statusline HUD를 Claude Code의 hook · skill · subagent 시스템으로 제공하는 plugin입니다.
 
-> 이 repo는 `imprint`로 리네임되었습니다. 이전 정체성이었던 Tauri 데스크톱 앱 청사진(코드명 `multi-agent-cli-v2`)과 더 이전 세대 SwiftUI 앱(`MultiAgentCLI`)은 **폐기되었습니다.** 본 repo는 Claude Code plugin 단일 책임을 가집니다. 이전 SwiftUI 앱이 필요하다면 [`MultiAgentCLI`](../MultiAgentCLI) 원본 repo를 참고하세요.
-
 ## 무엇을 하는가
 
 | 영역 | 역할 |
@@ -98,18 +96,6 @@ claude plugin install imprint@imprint
 
 설치 후 Claude Code 세션을 새로 열면 `SessionStart` hook이 SQLite 스키마를 idempotent하게 생성합니다.
 
-statusline 활성화는 별도 단계입니다.
-
-```bash
-bash scripts/imprint/hud-setup.sh install                       # 기존 statusLine 백업 후 교체
-bash scripts/imprint/hud-setup.sh fields list                   # 가용 필드 12개 + 현재 활성 보기
-bash scripts/imprint/hud-setup.sh fields set 5h ctx cost time   # 사용자가 원하는 순서로 명시
-bash scripts/imprint/hud-setup.sh fields set 5h ctx --project   # 이 프로젝트만 다르게(.imprint/hud-config.json)
-bash scripts/imprint/hud-setup.sh uninstall                     # 백업 복원
-```
-
-가용 필드 12개: `5h`/`wk`(rate limit), `ctx`/`tokens`(컨텍스트), `model`/`effort`/`style`, `cost`/`dur`, `skills`/`agents`, `time`. 자세한 의미와 출처는 [`skills/hud/SKILL.md`](skills/hud/SKILL.md) 참조.
-
 ## 사용
 
 ### Memory
@@ -144,15 +130,6 @@ flowchart LR
 
 `/memory remember`로 사용자가 직접 박은 chunk와 hook이 응답에서 자동 추출한 chunk가 같은 `memory_chunks` 테이블에 누적되어, 다음 turn부터 동등한 자격으로 prefill 후보가 됩니다.
 
-### Routing (옵션)
-
-`UserPromptSubmit` hook은 `<project>/.imprint/UserPromptSubmit.md`(없으면 plugin defaults)에서 라우팅 표를 읽어 매칭된 권고를 prepend합니다. 본 plugin은 라우팅 룰 markdown을 ship하지 않으므로 사용자가 다음 형식으로 직접 작성합니다.
-
-```markdown
-| 패턴       | Agent     | 권고 메시지   |
-|-----------|-----------|---------------|
-| `<regex>`  | <agent>   | <권고 텍스트> |
-```
 
 작성 시 주의:
 
@@ -160,14 +137,3 @@ flowchart LR
 - 정규식 alternation `|`는 `\|`로 escape — markdown 셀 구분자와 충돌하기 때문.
 - 매칭된 agent가 실제 호출되려면 해당 subagent 정의가 plugin 또는 사용자 영역에 등록돼 있어야 합니다.
 
-### HUD
-
-statusline은 `hud-setup.sh install` 이후 자동 갱신됩니다. 데이터는 Claude Code가 매 갱신마다 stdin으로 넘기는 세션 JSON(`rate_limits.*.resets_at`, `context_window.used_percentage` 등)을 그대로 사용합니다.
-
-## 진행 상황·로드맵
-
-- 큰 그림 (비전·Phase 정의·위험 요소·최종 목표): [`LoadMap.md`](LoadMap.md)
-- 단기 픽업 (즉시 다음 검토·deferred TODO·미완 Phase): [`HANDOFF.md`](HANDOFF.md)
-- 결정 사유 로그 (왜 그렇게 바꿨는지·폐기한 대안): [`HISTORY.md`](HISTORY.md)
-- 동작 흐름 디테일·시스템 의존·운영 환경 변수: [`flow.md`](flow.md)
-- LLM 턴 생애주기와 Claude Code hook 활용 카탈로그: [`LifeCycle.md`](LifeCycle.md)
