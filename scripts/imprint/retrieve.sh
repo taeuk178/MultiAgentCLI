@@ -1,8 +1,10 @@
 #!/bin/bash
 # Hybrid retrieval dispatcher — Python module 호출용 얇은 wrapper.
 # usage:
-#   retrieve.sh <query> [top_k]
-#   retrieve.sh --json <query> [top_k]
+#   retrieve.sh <query> [top_k]                 — chunk-only (7a)
+#   retrieve.sh --json <query> [top_k]          — chunk-only JSON
+#   retrieve.sh --routed <query>                — scope routing (local/feature/global)
+#   retrieve.sh --routed --json <query>         — scope routing JSON
 # project_id 는 git toplevel 기반으로 자동 결정.
 
 set -euo pipefail
@@ -11,14 +13,19 @@ source "$SCRIPT_DIR/lib/common.sh"
 
 ensure_home
 
+ROUTED=0
 JSON_MODE=0
-if [[ "${1:-}" == "--json" ]]; then
-  JSON_MODE=1
+while [[ "${1:-}" == --* ]]; do
+  case "$1" in
+    --routed) ROUTED=1 ;;
+    --json) JSON_MODE=1 ;;
+    *) echo "unknown option: $1" >&2; exit 2 ;;
+  esac
   shift
-fi
+done
 
 if [[ $# -lt 1 ]]; then
-  echo "usage: $(basename "$0") [--json] <query> [top_k]" >&2
+  echo "usage: $(basename "$0") [--routed] [--json] <query> [top_k]" >&2
   exit 2
 fi
 
@@ -26,7 +33,12 @@ QUERY="$1"
 TOP_K="${2:-10}"
 PID=$(project_id)
 
-cmd="retrieve"
-[[ "$JSON_MODE" == "1" ]] && cmd="retrieve_json"
-
-cd "$SCRIPT_DIR/lib" && python3 -m retrieval.cli "$cmd" "$PID" "$QUERY" "$TOP_K"
+if [[ "$ROUTED" == "1" ]]; then
+  cmd="routed"
+  [[ "$JSON_MODE" == "1" ]] && cmd="routed_json"
+  cd "$SCRIPT_DIR/lib" && python3 -m retrieval.cli "$cmd" "$PID" "$QUERY"
+else
+  cmd="retrieve"
+  [[ "$JSON_MODE" == "1" ]] && cmd="retrieve_json"
+  cd "$SCRIPT_DIR/lib" && python3 -m retrieval.cli "$cmd" "$PID" "$QUERY" "$TOP_K"
+fi

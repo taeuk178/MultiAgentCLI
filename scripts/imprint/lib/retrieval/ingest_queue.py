@@ -1,6 +1,7 @@
 """append-only ingest queue. enqueue / claim / complete / drain.
 
 queue payload 는 JSON. status: pending → claimed → done | failed.
+priority: 낮을수록 먼저 처리 (1=높음, 5=중간 기본, 9=낮음).
 attempt_count 는 retry 시 increment, 일정 횟수 초과 시 호출자가 dead-letter 처리.
 """
 from __future__ import annotations
@@ -11,8 +12,22 @@ from typing import Any, Callable
 
 from ._common import db_connect, log, new_id, now_iso
 
+# 명세 "비동기 job 우선순위" 매핑.
+PRIORITY_J2_EXTRACT = 1
+PRIORITY_J1_FETCH = 1
+PRIORITY_J5_SUMMARY = 5
+PRIORITY_J6_CONTRADICTION = 5
+PRIORITY_J4_ENTITY = 9
+PRIORITY_J3_WARM = 9
 
-def enqueue(project_id: str, payload: dict[str, Any], conn: sqlite3.Connection | None = None) -> str:
+
+def enqueue(
+    project_id: str,
+    payload: dict[str, Any],
+    *,
+    priority: int = 5,
+    conn: sqlite3.Connection | None = None,
+) -> str:
     own = conn is None
     if own:
         conn = db_connect()
@@ -20,10 +35,10 @@ def enqueue(project_id: str, payload: dict[str, Any], conn: sqlite3.Connection |
     try:
         conn.execute(
             """
-            INSERT INTO ingest_queue (id, project_id, payload_json, status, created_at)
-            VALUES (?, ?, ?, 'pending', ?)
+            INSERT INTO ingest_queue (id, project_id, payload_json, status, priority, created_at)
+            VALUES (?, ?, ?, 'pending', ?, ?)
             """,
-            (qid, project_id, json.dumps(payload, ensure_ascii=False), now_iso()),
+            (qid, project_id, json.dumps(payload, ensure_ascii=False), priority, now_iso()),
         )
     finally:
         if own:
@@ -32,7 +47,7 @@ def enqueue(project_id: str, payload: dict[str, Any], conn: sqlite3.Connection |
 
 
 def _claim_one(conn: sqlite3.Connection, project_id: str | None) -> sqlite3.Row | None:
-    """가장 오래된 pending 항목 하나를 claimed 로 마킹하고 반환.
+    """priority 낮은 순 → 같은 priority 면 오래된 순으로 한 건 claim.
 
     UPDATE ... WHERE id = (SELECT ...) 단일 SQL 로 race 회피.
     polling worker 다중일 때도 같은 row 를 두 번 claim 안 함.
@@ -47,7 +62,7 @@ def _claim_one(conn: sqlite3.Connection, project_id: str | None) -> sqlite3.Row 
         WHERE id = (
             SELECT id FROM ingest_queue
             WHERE status = 'pending'{where_extra}
-            ORDER BY created_at
+            ORDER BY priority, created_at
             LIMIT 1
         )
         RETURNING id, project_id, payload_json, attempt_count
