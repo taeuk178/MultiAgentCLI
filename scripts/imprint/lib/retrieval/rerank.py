@@ -36,8 +36,10 @@ def _try_load_model():
         try:
             from sentence_transformers import CrossEncoder  # type: ignore
 
-            log("INFO", f"loading cross-encoder {CROSS_ENCODER_NAME} (cold-load)")
-            _model = CrossEncoder(CROSS_ENCODER_NAME)
+            cache_dir = os.environ.get("IMPRINT_MODEL_CACHE_DIR")
+            log("INFO", f"loading cross-encoder {CROSS_ENCODER_NAME} (cold-load) cache={cache_dir or 'default'}")
+            kwargs = {"cache_folder": cache_dir} if cache_dir else {}
+            _model = CrossEncoder(CROSS_ENCODER_NAME, **kwargs)
         except Exception as exc:
             _load_failed = True
             log("WARN", f"cross-encoder load failed: {exc!r} — rerank disabled")

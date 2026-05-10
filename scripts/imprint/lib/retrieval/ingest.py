@@ -162,6 +162,7 @@ def ingest_document(
     chunk_config: ChunkConfig | None = None,
     generate_context_prefix: bool = False,
     generate_embedding: bool = True,
+    dispatch: bool = True,
 ) -> IngestStats:
     """문서 한 건을 청크화해 저장. 호출자(scheduler) 가 source 별 raw_chunk_type 지정."""
     conn = db_connect()
@@ -306,7 +307,7 @@ def ingest_document(
                     """,
                     (write_ts, document_id),
                 )
-        return IngestStats(
+        stats = IngestStats(
             document_inserted=inserted,
             document_updated=updated,
             chunks_inserted=inserted_count,
@@ -316,3 +317,17 @@ def ingest_document(
         )
     finally:
         conn.close()
+
+    # W1 commit dispatcher — 변경 분석 결과를 ingest_queue 에 enqueue.
+    if dispatch and (inserted or updated):
+        from . import dispatch as dispatch_mod
+
+        dispatch_mod.dispatch_commit(dispatch_mod.CommitChangeSet(
+            project_id=project_id,
+            changed_document_ids=[document_id],
+            decision_chunk_inserted=(normalized_type == "decision" and stats.chunks_inserted > 0),
+            entity_link_changed=False,
+            supersede_changed=False,
+            new_chunk_inserted=stats.chunks_inserted > 0,
+        ))
+    return stats

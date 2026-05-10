@@ -217,12 +217,14 @@ CREATE TABLE IF NOT EXISTS chunk_entities (
 CREATE INDEX IF NOT EXISTS idx_chunk_entities_entity
   ON chunk_entities (entity_id);
 
--- append-only ingest queue. polling worker 가 status 로 drain.
+-- append-only ingest queue. polling worker 가 status 와 priority 로 drain.
+-- priority: 낮을수록 먼저 처리 (1=높음, 5=중간, 9=낮음). J2/J1=1, J5/J6=5, J4/J3=9.
 CREATE TABLE IF NOT EXISTS ingest_queue (
   id            TEXT PRIMARY KEY,
   project_id    TEXT NOT NULL REFERENCES projects(id),
-  payload_json  TEXT NOT NULL,                -- {kind: chunk|alias|version, ...}
+  payload_json  TEXT NOT NULL,                -- {kind: chunk|alias|version|summary|contradiction, ...}
   status        TEXT NOT NULL DEFAULT 'pending',  -- pending | claimed | done | failed
+  priority      INTEGER NOT NULL DEFAULT 5,
   attempt_count INTEGER NOT NULL DEFAULT 0,
   last_error    TEXT,
   created_at    TEXT NOT NULL,
@@ -230,7 +232,97 @@ CREATE TABLE IF NOT EXISTS ingest_queue (
   completed_at  TEXT
 );
 
-CREATE INDEX IF NOT EXISTS idx_ingest_queue_status_created
-  ON ingest_queue (status, created_at);
+CREATE INDEX IF NOT EXISTS idx_ingest_queue_status_priority
+  ON ingest_queue (status, priority, created_at);
 CREATE INDEX IF NOT EXISTS idx_ingest_queue_project
   ON ingest_queue (project_id, status);
+
+-- feature / document / project 단위 계층 요약. retrieval 라우팅이 질문 해상도에
+-- 맞춰 이 테이블을 검색.
+CREATE TABLE IF NOT EXISTS summaries (
+  id                    TEXT PRIMARY KEY,
+  project_id            TEXT NOT NULL REFERENCES projects(id),
+  level                 TEXT NOT NULL,         -- feature | document | project
+  target_key            TEXT NOT NULL,         -- feature:<key> | document:<id> | project:<id>
+  title                 TEXT,
+  summary_text          TEXT NOT NULL,         -- 사용자에게 보여줄 본문
+  retrieval_text        TEXT NOT NULL,         -- 검색용 텍스트 (context prefix 포함)
+  embedding             BLOB,                  -- 1024 dim float32
+  source_chunk_count    INTEGER NOT NULL DEFAULT 0,
+  source_summary_count  INTEGER NOT NULL DEFAULT 0,
+  valid_from            TEXT,
+  valid_to              TEXT,
+  is_current            INTEGER NOT NULL DEFAULT 1,
+  generator             TEXT,                  -- llm | deterministic — 누가 만들었는지 추적
+  updated_at            TEXT NOT NULL,
+  UNIQUE (project_id, level, target_key, is_current)
+);
+
+CREATE INDEX IF NOT EXISTS idx_summaries_project_level
+  ON summaries (project_id, level, is_current);
+CREATE INDEX IF NOT EXISTS idx_summaries_target
+  ON summaries (target_key);
+
+-- summaries retrieval_text BM25 검색용. trigram tokenizer.
+CREATE VIRTUAL TABLE IF NOT EXISTS summaries_fts USING fts5(
+  retrieval_text,
+  content='summaries',
+  content_rowid='rowid',
+  tokenize='trigram'
+);
+
+CREATE TRIGGER IF NOT EXISTS summaries_ai AFTER INSERT ON summaries BEGIN
+  INSERT INTO summaries_fts(rowid, retrieval_text)
+  VALUES (new.rowid, new.retrieval_text);
+END;
+
+CREATE TRIGGER IF NOT EXISTS summaries_ad AFTER DELETE ON summaries BEGIN
+  INSERT INTO summaries_fts(summaries_fts, rowid, retrieval_text)
+  VALUES ('delete', old.rowid, old.retrieval_text);
+END;
+
+CREATE TRIGGER IF NOT EXISTS summaries_au AFTER UPDATE ON summaries BEGIN
+  INSERT INTO summaries_fts(summaries_fts, rowid, retrieval_text)
+  VALUES ('delete', old.rowid, old.retrieval_text);
+  INSERT INTO summaries_fts(rowid, retrieval_text)
+  VALUES (new.rowid, new.retrieval_text);
+END;
+
+-- summary 가 어떤 하위 summary / chunk 를 대표하는지 연결. drill-down 근거 추적용.
+CREATE TABLE IF NOT EXISTS summary_links (
+  parent_summary_id TEXT NOT NULL REFERENCES summaries(id),
+  child_kind        TEXT NOT NULL,             -- summary | chunk
+  child_id          TEXT NOT NULL,
+  rank_order        INTEGER NOT NULL DEFAULT 0,
+  weight            REAL NOT NULL DEFAULT 1.0,
+  PRIMARY KEY (parent_summary_id, child_kind, child_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_summary_links_child
+  ON summary_links (child_kind, child_id);
+CREATE INDEX IF NOT EXISTS idx_summary_links_parent_rank
+  ON summary_links (parent_summary_id, rank_order);
+
+-- contradiction 결과 캐시. query 시 매번 chunk 쌍을 다시 비교하지 않기 위해 저장.
+CREATE TABLE IF NOT EXISTS contradictions (
+  id                  TEXT PRIMARY KEY,
+  project_id          TEXT NOT NULL REFERENCES projects(id),
+  entity_id           TEXT REFERENCES entities(id),
+  scope_key           TEXT,                    -- feature key 또는 section_path
+  chunk_a_id          TEXT NOT NULL REFERENCES chunks_v2(id),
+  chunk_b_id          TEXT NOT NULL REFERENCES chunks_v2(id),
+  contradiction_score REAL NOT NULL,
+  detector            TEXT NOT NULL,           -- nli | llm | rule
+  status              TEXT NOT NULL,           -- candidate | neutral | confirmed | dismissed
+  reason              TEXT,
+  created_at          TEXT NOT NULL,
+  updated_at          TEXT NOT NULL,
+  UNIQUE (chunk_a_id, chunk_b_id, detector)
+);
+
+CREATE INDEX IF NOT EXISTS idx_contradictions_project_status
+  ON contradictions (project_id, status);
+CREATE INDEX IF NOT EXISTS idx_contradictions_entity
+  ON contradictions (entity_id, status);
+CREATE INDEX IF NOT EXISTS idx_contradictions_scope
+  ON contradictions (project_id, scope_key, status);

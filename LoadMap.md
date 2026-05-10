@@ -1,11 +1,11 @@
 # imprint Load Map
 
 **문서 책임**
-- 본 문서는 **큰 그림**: 비전·아키텍처·Phase 정의·미시작 단계·위험 요소·최종 목표만 담는다.
-- 단기적인 다음 세션 픽업 안건(즉시 검토, deferred TODO, 직전 Phase 마무리)은 `HANDOFF.md` 참조.
+- 본 문서는 **큰 그림**: 비전·아키텍처·Phase 정의·완료 단계·미시작 단계·위험 요소·최종 목표.
+- 단기적인 다음 세션 픽업 안건(즉시 검토, deferred TODO, 측정 후 캘리브레이션 항목)은 `HANDOFF.md` 참조.
 - 결정 사유 로그(왜 그렇게 바꿨는지·폐기한 대안)는 `HISTORY.md` 참조.
 - hook 단계별 시스템 의존·운영 환경 변수는 `flow.md` 참조.
-- 구현된 동작·설치·사용은 `README.md` 참조.
+- 구현된 동작·설치·사용·전체 플로우 다이어그램은 `README.md` 참조.
 
 이 문서는 imprint(이전 코드명: `multi-agent-cli-v2` / 더 이전 세대: SwiftUI `MultiAgentCLI`)의 방향을 **Claude Code plugin**으로 정의합니다. 기존 Tauri 데스크톱 앱 청사진을 폐기하고, Claude Code의 hook·skill·subagent 시스템 위에 로컬 개발 작업 기억 시스템을 구축합니다.
 
@@ -257,57 +257,45 @@ GitHub repo (imprint-skills)
 
 권한·서명 검증은 Phase 후반에 추가.
 
-## 단계별 로드맵 — 미시작
+## 단계별 로드맵
 
-> 완료된 phase(1 Memory 저장소 / 2 Hook 통합 / 3 Memory skill / 4.5 사내 컨텍스트 ingestion)와 폐기된 phase(4 Advisor skill)의 결정 사유는 `HISTORY.md` 참조.
+> 완료 phase 의 결정 사유는 `HISTORY.md` 참조. 폐기된 phase(4 Advisor skill)도 같은 문서.
 
-### Phase 5. Workflow skill (1주)
+### 완료된 단계
+
+- **Phase 1**: SQLite memory 저장소 + FTS5 trigram (`memory_chunks` · `events`)
+- **Phase 2**: SessionStart / UserPromptSubmit / Stop hook 통합
+- **Phase 3**: `/memory` skill (search · remember · pin · list · stats · forget · refresh · inject)
+- **Phase 4.5**: 사내 컨텍스트 ingestion (Slack / Notion lazy fetch + `sources.json`)
+- **Phase 7a**: chunk-level hybrid retrieval — SQLite + FTS5 + sqlite-vec, BGE-M3 임베딩 (opt-in), contextual prefix, entity alias canonicalization, versioning (`valid_from / valid_to / is_current / supersedes_chunk_id`), hybrid retrieval (RRF) + 조건부 cross-encoder rerank (RG 게이트 200 ms timeout), single-writer ingest queue (`PACK* → ENQ → DEDUPE → VRES → CONF → W1`)
+- **Phase 7b**: project-level interpretation — feature/document/project 3계층 요약 (RAPTOR 형, incremental rebuild), query scope classifier (rule-based `local/feature/global`), depth limit 라우팅 (`HYB1/2/3`), grounding drill-down (`summary_links`), contradiction detection (NLI primary → LLM judge fallback → rule retry, 3구간 `candidate/neutral`), `confirmed` 승격은 사용자 명시만
+- **chunk_entities 자동 NER**: `J4` 가 chunk → entity mention 추출, conf ≥ 0.9 auto-confirm, 그 외 review queue
+- **ML 의존성 opt-in**: `requirements-optional.txt` (sqlite-vec / sentence-transformers / transformers), `IMPRINT_MODEL_CACHE_DIR` 환경 변수, 미설치 시 FTS-only + LLM judge fallback 으로 안전 동작
+
+런타임 플로우 시각화는 `README.md` "전체 플로우 다이어그램" 참조. 다이어그램 노드 ↔ 코드 매핑은 `HANDOFF.md` "다이어그램 노드 ↔ 구현 매핑" 참조.
+
+### 미시작 단계
+
+#### Phase 5. Workflow skill (1주)
 
 - `/commit-message`, `/pr-draft`, `/recap`, `/handoff`
 - git porcelain + memory 결합
 - 출력은 사용자가 검토 후 그대로 사용 가능한 형태
 
-### Phase 6. 레지스트리 (2주)
+#### Phase 6. 레지스트리 (2주)
 
 - GitHub 기반 skill 레지스트리
 - `imprint skill add/remove/list/publish`
 - manifest.json 포맷 정의
 - 로컬 override 우선순위
 
-### Phase 7a. Chunk-level retrieval 정밀도 (의미 검색 + 엔티티 + 버전)
+### 영구 deferred
 
-7개 결정(2026-05-10)에 따라 다음 컴포넌트를 한 사이클 안에 묶음:
-
-- **SQLite + FTS5 + sqlite-vec** — 단일 파일 정체성 유지
-- **로컬 multilingual 임베딩** (multilingual-e5 / BGE 계열) — 외부 API key 의존 없음
-- **contextual prefix + retrieval_text** 분리 저장 (Anthropic contextual retrieval 방식)
-- **entity alias canonicalization** — 자동 추출 + review queue (오탐 방지)
-- **versioning 필드** (`valid_from` / `valid_to` / `is_current` / `supersedes_chunk_id`) — 사용자 명시 기본 + 자동 제안 보조
-- **hybrid retrieval (RRF) + 조건부 cross-encoder rerank** — `RG{count≥10 AND top-1<0.85 AND cache miss}` 게이트로 발동, 200 ms timeout graceful
-- **single-writer ingest queue** — 모든 백그라운드(J1/J2/J4)가 `PACK* → ENQ → DEDUPE → VRES → CONF → W1` 직렬 commit. 성능 병목 진단의 영구 deferred 였던 C축 #3 이 자연 흡수
-- **inline-first + daemon-ready abstraction** — `QEMB` · `HYB` · `RR` · `W1` · `WC` 5개 노드가 daemon 후보. 동기 경로 latency budget 위반 시 escape hatch
-- **warm cache (J3) + entity refresh (J4)** — 임베딩 모델 콜드 로드 비용 흡수, recent query embedding cache 를 `QEMB` 에 dotted 제공
-
-상세 명세·결정 사항·후속 결정·latency budget·구현 우선순위는 `HANDOFF.md` 의 **"Phase 7a — 청크 + 의미 검색 + 엔티티 정규화 + 버전"** 참조. 결정 사유는 `HISTORY.md` 2026-05-10 참조. 런타임 플로우 시각화는 `README.md` 의 **"Phase 7a — 검색 정밀도 (1단계)"** 참조.
-
-### Phase 7b. 계층 요약 + 충돌 감지 (검색 결과를 프로젝트 수준에서 해석)
-
-Phase 7a 가 안정적으로 운용된 뒤 진입. **그래프 DB 도입이 아니라**, 1단계 retrieval 엔진 위에 **질문 해상도에 맞는 요약 계층** 과 **충돌 감지 계층** 을 얹는 단계. 단계 정의:
-
-- **1단계 (7a)**: 검색을 잘하게 만든다
-- **2단계 (7b)**: 검색된 결과를 프로젝트 수준에서 해석하게 만든다
-
-핵심 컴포넌트:
-
-- **RAPTOR 형 계층 요약** — feature / document / project 3계층, leaf 변경이 상위로 incremental 전파. `J5` 가 `W1` commit 직후 변경 발생 시에만 trigger
-- **query scope classifier (`SC`)** — local / feature / global 분류, retrieval 단위를 질문 해상도에 맞춤 (`HYB1` / `HYB2` / `HYB3` 분기)
-- **depth limit** — feature 검색 `summary 5 + chunk 8`, global 검색 `proj 1 + doc 3 + feat 5 + chunk 6` — context 폭주 방지
-- **경량 contradiction awareness** — 같은 entity 의 상충 decision 을 candidate 로 잡고 NLI 판정 (timeout 500 ms). score 3 구간 (high → `candidate`, mid·low → `neutral`) — false negative 영구 dismiss 방지. `confirmed` 승격은 사용자 명시만
-- **resolution-aware answer assembly** — `GROUND` 가 `summary_links` 따라 근거 chunk 1~3 개 drill-down + `CCHECK` 가 `confirmed` conflict 표시
-
-상세 명세·후속 결정·구현 우선순위·완료 조건은 `HANDOFF.md` 의 **"Phase 7b — 계층 요약 + 충돌 감지 (2단계 명세)"** 참조. 런타임 플로우 시각화는 `README.md` 의 **"Phase 7b — 프로젝트 수준 해석 (2단계)"** 참조.
-
-**영구 deferred** (Phase 7b 에서도 도입 안 함): full knowledge graph DB · GraphRAG / HippoRAG 풀스택 · graph traversal multi-hop · 자동 belief revision · 완전 자동 supersede 확정.
+- Full knowledge graph DB / GraphRAG / HippoRAG 풀스택
+- Graph traversal 기반 multi-hop reasoning
+- 자동 belief revision 엔진
+- 완전 자동 supersede 확정 (사용자 명시만 confirmed)
+- Linux/Windows 호환 (요청 시 별도 Phase)
 
 ## Tauri 앱 처리
 
@@ -450,8 +438,13 @@ export IMPRINT_PROFILE=1
 
 1. **Phase 5 (Workflow skill)** — 매일 트리거할 사용자-facing 명령 4개. memory + git porcelain + `claude -p` 합성. 다음에 만들 가치가 가장 큼.
 2. **Phase 6 (레지스트리)** — 사용자 수가 늘어 skill 공유 수요가 생기는 시점에 시작.
-3. **Phase 7a (Chunk-level retrieval 정밀도)** — FTS5 trigram 의 한계(의미 검색 필요·외래어 매칭·paraphrase 미스)가 보일 때 진입. 결정 사항·후속 결정은 `HANDOFF.md` 참조.
-4. **Phase 7b (Project-level graph)** — Phase 7a 가 안정적으로 운용된 뒤. 프로젝트가 길어질수록 ROI 가 시간에 비례해 커짐.
+
+retrieval 인프라(7a/7b)는 모두 머지됐으니 측정 데이터가 쌓이면 다음을 고려:
+
+- contradiction 임계 (`HIGH=0.8`, `MID=0.4`) 캘리브레이션 — 첫 100~200 쌍 측정 후
+- daemon 분리 (`QEMB` / `HYB` / `RR` / `W1` / `WC`) — 동기 경로 budget 위반 누적 시
+- summary LLM 정밀도 vs deterministic concat — 실제 사용 후 비교
+- entity merge / split UI — 같은 entity 가 분리 등록될 때
 
 ## 최종 목표
 

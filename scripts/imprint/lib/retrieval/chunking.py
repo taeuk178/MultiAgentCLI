@@ -53,8 +53,23 @@ class ChunkConfig:
 
 
 def _split_by_paragraph(text: str) -> list[str]:
+    """빈 줄로 paragraph 분할. paragraph 첫 줄이 markdown heading 이면 그 줄을
+    별도 paragraph 로 분리 — heading 직후 빈 줄이 없는 입력도 정상 인식.
+    """
     parts = _BLANK_LINE_RE.split(text.strip())
-    return [p.strip() for p in parts if p.strip()]
+    out: list[str] = []
+    for p in parts:
+        p = p.strip()
+        if not p:
+            continue
+        first, sep, rest = p.partition("\n")
+        if _HEADING_RE.match(first):
+            out.append(first)
+            if rest.strip():
+                out.append(rest.strip())
+        else:
+            out.append(p)
+    return out
 
 
 def _hard_split(text: str, max_tokens: int) -> list[str]:
