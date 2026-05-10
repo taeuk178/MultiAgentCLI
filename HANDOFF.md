@@ -111,15 +111,13 @@ ML 의존성(transformers / sentence-transformers / sqlite-vec) 은 모두 lazy 
 | `(async/single-writer)` | `DEDUPE` · `VRES` · `W1` | (항상 ON, single-writer 직렬 commit) |
 | ML 옵션 | `QEMB` (BGE-M3) · `RR` (cross-encoder) · `CDJUDGE` (NLI / LLM) · `NEREXT` (LLM NER) | `IMPRINT_DISABLE_EMBEDDING/RERANK/NLI/LLM_JUDGE/NER_LLM/SQLITE_VEC=1` |
 
-## 동기 경로 latency budget
+## 동기 경로 latency budget 위반 대응
 
-`README.md` 의 동일 표 참조. 위반 시 `(sync/daemon-ready)` 노드(`QEMB` · `HYB*` · `RR`) 를 daemon backend 로 분리하는 것이 첫 escape hatch — inline-first + daemon-ready abstraction 이 이미 박혀 있어 호출 측 코드 변경 없이 swap 가능.
-
-위반 감지·대응:
+표 자체는 `README.md` 의 동일 표. 위반 감지·대응:
 
 - `IMPRINT_PROFILE=1` 시 모든 `(sync)` / `(sync/daemon-ready)` 노드가 진입/탈출 wall clock 을 `~/.claude/imprint/profile.jsonl` 에 기록.
-- 같은 budget 위반이 5분 윈도에 3회 이상 → 가장 무거운 노드부터 daemon 으로 분리.
-- `QEMB` 콜드 로드 비용 흡수는 `J3` warm cache 가 1차 방어, daemon 분리가 2차.
+- 같은 budget 위반이 5분 윈도에 3회 이상 → 가장 무거운 노드부터 daemon 분리 (`QEMB` / `HYB*` / `RR`). inline-first + daemon-ready abstraction 이 이미 박혀 있어 호출 측 코드 변경 없이 swap.
+- `QEMB` 콜드 로드는 `J3` warm cache 가 1차 방어, daemon 분리가 2차.
 
 ## 성능 병목 진단 — 3축 (2026-05-09)
 

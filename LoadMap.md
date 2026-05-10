@@ -99,114 +99,31 @@ Claude/Codex/Gemini를 같은 SQLite memory에 누적합니다. Claude Code 세�
   skills/                                 # 프로젝트 전용 skill
 ```
 
-### Memory 스키마
+### Memory 스키마 (초기 설계)
+
+Phase 1~3 의 핵심 테이블 — `events` (raw I/O log), `memory_chunks` (Stop hook 추출 + ingestion). FTS5 는 trigram tokenizer 로 한국어 부분 매칭.
 
 ```sql
-projects(
-  id text primary key,
-  root_path text not null unique,
-  name text,
-  created_at text not null,
-  updated_at text not null
-);
+projects(id, root_path, name, created_at, updated_at)
+events(id, project_id, conversation_id, source, kind, text_clean, metadata_json, created_at)
+memory_chunks(id, project_id, source_event_id, chunk_type, text, metadata_json, created_at, pinned)
+-- chunk_type: decision/error/fix/command/test_result/summary/todo/code_context/note (LLM 추출)
+--           + spec/message/thread (외부 source ingestion)
 
-conversations(
-  id text primary key,
-  project_id text references projects(id),
-  source text not null,            -- claude_code, codex, gemini
-  title text,
-  created_at text not null,
-  updated_at text not null
-);
-
-events(
-  id text primary key,
-  project_id text references projects(id),
-  conversation_id text references conversations(id),
-  source text not null,            -- claude_code, hook, skill, codex, gemini
-  kind text not null,              -- user_message, llm_response, hook_inject, tool_result
-  text_clean text not null,
-  metadata_json text not null default '{}',
-  created_at text not null
-);
-
-memory_chunks(
-  id text primary key,
-  project_id text references projects(id),
-  source_event_id text references events(id),
-  -- LLM 추출(Stop hook): decision, error, fix, command, test_result, summary, todo, code_context, note
-  -- 외부 source(ingestion): spec(notion), message(slack 단발), thread(slack thread)
-  chunk_type text not null,
-  text text not null,
-  metadata_json text not null default '{}',
-  created_at text not null,
-  pinned integer not null default 0
-);
-
--- FTS
-create virtual table events_fts using fts5(text_clean, content='events', content_rowid='rowid');
-create virtual table memory_chunks_fts using fts5(text, content='memory_chunks', content_rowid='rowid');
+create virtual table events_fts using fts5(text_clean, ..., tokenize='trigram');
+create virtual table memory_chunks_fts using fts5(text, ..., tokenize='trigram');
 ```
 
-### Hook 통합
+Phase 7a/7b 머지 후 추가 — `documents`, `chunks_v2` (이중 chunk_type + versioning), `entities` / `entity_aliases` / `chunk_entities`, `ingest_queue` (priority sorted), `summaries` / `summary_links`, `contradictions`. 자세한 컬럼 정의는 `scripts/imprint/lib/schema.sql` 참조.
 
-#### UserPromptSubmit hook (prefill)
+### Hook 통합 (초기 설계)
 
-목적: 유저 입력 직전에 관련 memory를 컨텍스트로 주입.
+핵심 컨셉:
 
-```bash
-#!/bin/bash
-# ~/.claude/imprint/hooks/user-prompt-submit.sh
-# stdin으로 유저 입력을 받고, stdout으로 추가 컨텍스트를 출력하면
-# Claude Code가 [원본 + 컨텍스트]를 LLM에 보냄.
+- **UserPromptSubmit hook (prefill)** — stdin 으로 유저 입력 + stdout 추가 컨텍스트 → Claude Code 가 [원본 + 컨텍스트] 를 LLM 에 전달. 프로젝트별 최근 `memory_chunks` 조회(FTS + 최근성) 후 `[Project memory context]` 블록 prepend.
+- **Stop hook (응답 추출)** — stdin 으로 LLM 응답 → `claude -p haiku` 로 chunk_type 별 추출 → `memory_chunks` INSERT.
 
-USER_INPUT=$(cat)
-PROJECT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
-
-# 1. 이벤트 로그에 입력 저장
-sqlite3 ~/.claude/imprint/app.sqlite "
-  insert into events (id, project_id, source, kind, text_clean, created_at)
-  values (...)
-"
-
-# 2. 프로젝트별 최근 memory_chunks 조회 (FTS + 최근성)
-RELEVANT=$(sqlite3 ~/.claude/imprint/app.sqlite "
-  select text from memory_chunks
-  where project_id = ? and chunk_type in ('decision','fix','todo')
-  order by pinned desc, created_at desc
-  limit 5
-")
-
-# 3. 모호도 판단: 단어 수, 키워드, 코드 참조 여부 등
-# 모호하면 [Memory context] 블록을 stdout으로 출력
-if [[ -n "$RELEVANT" ]]; then
-  echo "[Project memory context]"
-  echo "$RELEVANT"
-fi
-```
-
-#### Stop hook (응답 추출)
-
-목적: LLM 응답에서 chunk type별로 memory 추출 후 저장.
-
-```bash
-#!/bin/bash
-# ~/.claude/imprint/hooks/stop.sh
-# stdin으로 LLM 응답을 받고, 추출 결과를 SQLite에 저장.
-
-RESPONSE=$(cat)
-PROJECT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
-
-# 1. 이벤트 로그에 응답 저장
-# 2. 패턴 감지로 chunk 추출 (단순 grep + 사용자 정의 룰)
-# 3. 더 정교한 추출이 필요하면 claude -p로 OAuth 구독 호출
-EXTRACTED=$(echo "$RESPONSE" | claude -p "다음 응답에서 결정/오류/수정/TODO를 chunk_type과 함께 JSON 라인으로 추출해줘.")
-
-# 4. SQLite에 chunk 저장
-echo "$EXTRACTED" | while read line; do
-  sqlite3 ~/.claude/imprint/app.sqlite "insert into memory_chunks ..."
-done
-```
+실제 구현은 `scripts/imprint/{session-start,user-prompt-submit,stop}.sh` + `scripts/imprint/lib/ingestion.py` 참조. Phase 7a/7b 머지 후 동기 retrieval 경로(`QN→SC→RES→QEMB→HYB→...→CTX`) + 비동기 ingest queue (`PACK*→ENQ→DEDUPE→VRES→CONF→W1`) 가 hook 두 개 위에 얹혀 있다 — `README.md` "전체 플로우 다이어그램" 참조.
 
 ### Skill 시스템
 
@@ -363,76 +280,14 @@ hook 스크립트 오류는 Claude Code 세션을 차단할 수 있습니다.
 
 ## 설계상 병목 후보·대응 플랜
 
-README의 mermaid가 그리는 hook/ingestion 파이프라인에서 미래 병목으로 발현 가능한 3축을 사전 식별합니다. 각 축은 `IMPRINT_PROFILE=1` env-gated 계측 hook이 박혀 있고(`scripts/imprint/lib/common.sh:profile_emit`, `scripts/imprint/lib/ingestion.py:_profile_emit/_profile_span`), 활성화 시 측정값이 `~/.claude/imprint/profile.jsonl`에 JSONL로 누적됩니다. 평소 OFF — hook 추가 비용은 env 검사 1회.
+미래 병목으로 발현 가능한 3축을 사전 식별 — A) Stop hook 의 transcript JSONL 재파싱, B) 외부 fetch payload 폭주, C) 동시 백그라운드 부하. 각 축은 `IMPRINT_PROFILE=1` env-gated 계측 hook 이 박혀 있고(평소 OFF, 추가 비용 env 검사 1회), 활성화 시 측정값이 `~/.claude/imprint/profile.jsonl` 에 누적됩니다.
 
-### A. transcript JSONL 재파싱 (stage `stop.transcript_reparse`)
-
-- **위치**: `scripts/imprint/stop.sh` 의 transcript 추출 블록. 매 turn마다 JSONL 전체를 line-by-line 재파싱해 마지막 assistant text 추출.
-- **시나리오**: 세션이 길어질수록 O(n). turn마다 동기 경로에 누적 → 사용자 입력 직후 1초 보장이 깨질 수 있음.
-- **실측** (각 5회 median, 같은 머신·콜드/워밍 캐시 구분 없음):
-
-  | file size | lines | assistants | last bytes | median ms | max ms |
-  | ---: | ---: | ---: | ---: | ---: | ---: |
-  | 36.6 KB | 11 | 4 | 3,665 | 0.2 | 1.2 |
-  | 553.7 KB | 217 | 106 | 109 | 2.7 | 3.1 |
-  | 3,603.3 KB | 1,199 | 498 | 1,933 | 12.1 | 14.2 |
-
-  선형 모델 ≈ `0.2 + 0.0101 × lines` ms (≈ `3.4 ms / MB`).
-- **임계점 후보**:
-  - 동기 추가 지연 100 ms → ~10,000 lines / ~30 MB / ~4,000 assistants
-  - 동기 추가 지연 500 ms → ~50,000 lines / ~150 MB / ~20,000 assistants
-- **대안** (단순 → 복잡):
-  1. **tail-only seek**: 파일 끝에서 ~64 KB만 `f.seek`로 읽고 앞쪽 incomplete line만 버린 뒤 마지막 assistant 추출. 50 MB 세션에서도 ~3 ms.
-  2. **incremental offset 저장**: `~/.claude/imprint/transcript-offsets/<session_id>.txt`에 마지막 read offset 기록, 다음 turn은 그 위치부터 read.
-- **probe lifecycle**: env_gated (`IMPRINT_PROFILE=1`)
-
-### B. 외부 fetch payload 폭주 (stages `fetch_slack_url`, `fetch_notion_url`, `fetch_slack_keywords`, `fetch_notion_keywords`, `cmd_lazy_fetch.*`, `call_claude`)
-
-- **위치**: `scripts/imprint/lib/ingestion.py` 의 `fetch_slack_url` / `fetch_slack_keywords` / `fetch_notion_url` / `fetch_notion_keywords` + `lazy_fetch` 오케스트레이터 + `cmd_lazy_fetch` 진입점.
-- **시나리오**:
-  - 큰 Notion 페이지(H1/H2/H3 다수)는 sectioning 시 chunk 수십 개 + `claude -p haiku` 응답이 길어 `CLAUDE_TIMEOUT_FETCH=45 s` 임박.
-  - 긴 Slack thread는 reply selection이 무거움.
-  - prompt 내 URL이 4개 이상이면 처음 3개만 처리(`[:3]`)하고 silent skip — 사용자 모르게 누락.
-  - dedup이 `metadata_json.url` 기준이라 같은 URL의 원본 갱신은 영구 stale, 명시적 `/memory refresh`로만 새로고침.
-- **실측**: 운영 환경 OAuth + MCP 의존이라 격리 측정 불가. `IMPRINT_PROFILE=1` 시 다음이 자동 수집됨 — 각 fetch stage의 `dur_ms` + `payload_bytes` + `chunks`, `call_claude`의 `dur_ms` + `rc` + `stdout_bytes` + `timeout`.
-- **임계점 후보** (코드 분석 기반, 실측으로 갱신 예정):
-  - 단일 fetch payload > 50 KB → `claude -p haiku` 응답에 담기 어려움, sectioning 실패율 ↑
-  - 단일 `fetch_*_url` wall clock > 30 s → 45 s 타임아웃의 67%, 다음 turn에 chunk 비노출 위험
-  - prompt 내 URL > 3 → 현 구현에서 silent skip 발생
-  - chunk `fetched_at` age > 14 d → stale 위험, refresh 권유 대상
-- **대안**:
-  1. URL 개수 cap을 silent 대신 `plugin.log` warn으로 노출.
-  2. `fetched_at` TTL: N일 지난 url-dedup chunk는 stale flag로 마킹, `/memory list`/`show`가 표시.
-  3. 큰 Notion 페이지의 chunking을 H1 단위로 단순화하고 H2·H3는 본문에 inline — chunk 수 절감.
-- **probe lifecycle**: env_gated
-
-### C. 동시 백그라운드 부하 (stages `ups.spawn`, `cmd_lazy_fetch.enter|exit`, `stop.spawn`, `cmd_extract.enter|exit`, `call_claude`)
-
-- **위치**: `scripts/imprint/user-prompt-submit.sh` 의 백그라운드 spawn 블록 + `scripts/imprint/stop.sh` 의 extract spawn 블록 + ingestion.py `cmd_lazy_fetch` / `cmd_extract`.
-- **시나리오**:
-  - 빠른 turn cycle에서 turn N의 `cmd_extract`와 turn N+1의 `cmd_lazy_fetch`가 동시 실행 → `claude -p haiku` 프로세스 2개 + OAuth refresh + SQLite write 두 군데.
-  - 단일 `cmd_lazy_fetch`가 외부 fetch까지 가면 최대 45 s. 그 시간 안에 turn N+2가 시작되면 spawn 누적.
-  - 노트북 슬립/재개 시 좀비 spawn — `enter`만 남고 `exit` 없는 상태로 profile에 누적.
-- **이미 있는 보호**: `schema.sql` 의 `PRAGMA journal_mode = WAL` + `PRAGMA busy_timeout = 5000`, `IMPRINT_BYPASS_HOOKS=1` 재귀 가드, `IMPRINT_DISABLE_EXTRACT=1` escape hatch.
-- **실측**: 운영 환경 의존. `IMPRINT_PROFILE=1` 시 위 stage들이 PID·timestamp와 함께 자동 수집되어 enter↔exit 짝짓기로 동시성 + 좀비 분석 가능.
-- **임계점 후보**:
-  - 5분 윈도에서 enter(exit 미도달) > 2건 → CPU·OAuth 부하 알림
-  - `call_claude` 동시성 > 2 → API 큐잉 대기
-  - profile.jsonl 의 enter ↔ exit 짝이 30 s 초과 미매칭 → 좀비 후보
-- **대안**:
-  1. lazy-fetch 단일 실행 lockfile(`~/.claude/imprint/locks/lazy-fetch.lock`) — 이미 도는 spawn 있으면 skip.
-  2. 좀비 detection: `/memory stats`가 profile.jsonl 을 분석해 "stale spawn N건" 노출.
-  3. SQLite write 단일 writer 큐로 직렬화 — WAL + busy_timeout 으로 부족할 때만. 우선 측정 후 결정.
-- **probe lifecycle**: env_gated
-
-### 측정 활성화
+각 축의 무엇/왜/임계점/대안/다음 액션은 `HANDOFF.md` "성능 병목 진단 — 3축" 참조. Phase 7a/7b 의 single-writer ingest queue 가 C축 #3 (단일 writer 큐) 를 자연 흡수해 retrieval ingestion path 는 이미 직렬 commit, 기존 `memory_chunks` 직접 INSERT path 만 진단 대상으로 남음.
 
 ```bash
+# 측정 활성화
 export IMPRINT_PROFILE=1
-# Claude Code 세션을 평소처럼 사용 → 측정값이 ~/.claude/imprint/profile.jsonl 에 누적
 ```
-
-기본 OFF. 비활성 시 hook 추가 비용 = env 검사 1회. 활성 시 stage당 file append 1줄 (sub-ms). 모든 probe는 env_gated 라이프사이클이며, 영구 fix는 별도 사이클로 분리합니다.
 
 ## 우선순위 — 남은 단계
 

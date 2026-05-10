@@ -14,6 +14,19 @@ claude plugin install imprint@imprint
 
 설치 후 Claude Code 세션을 새로 열면 `SessionStart` hook이 SQLite 스키마를 idempotent하게 생성합니다.
 
+### 사전 조건
+
+기본 동작은 `python3` + `sqlite3` + `claude` CLI 만 있으면 됩니다 (macOS 기본 포함 + Claude Code 설치 시 자동). 추가 의존성 없이도 FTS5 trigram 검색 + claude CLI LLM judge fallback 으로 retrieval / contradiction 모두 동작합니다.
+
+선택 의존성 (정확도 향상):
+
+```bash
+pip install -r requirements-optional.txt
+# sqlite-vec (벡터 검색 가속) + sentence-transformers (BGE-M3 임베딩 + cross-encoder rerank) + transformers (NLI 동기 경로)
+```
+
+미설치 시 자동으로 fallback path 사용. 외부 소스(Slack / Notion) lazy-fetch 는 별도 MCP 등록이 필요합니다 ([`INSTALL.md`](INSTALL.md) "선택: ML 의존성" 참조).
+
 ## 무엇을 하는가
 
 | 영역 | 역할 |
@@ -26,7 +39,7 @@ claude plugin install imprint@imprint
 
 ## 어떻게 동작하는가
 
-매 turn마다 두 개의 hook이 **동기·비동기 두 경로**로 작동합니다. 동기 경로는 사용자 turn을 막지 않도록 ≈1초 안에 끝나고, LLM 호출(`claude -p haiku`)·외부 fetch·chunk 추출 같은 무거운 작업은 전부 백그라운드로 분리됩니다.
+매 turn마다 두 개의 hook이 **동기·비동기 두 경로**로 작동합니다. 동기 경로(retrieval + context prepend)는 사용자 turn을 막지 않도록 < 330 ms 안에 끝나고, LLM 호출(`claude -p haiku`)·외부 fetch·chunk 추출 같은 무거운 작업은 전부 백그라운드로 분리됩니다.
 
 ### 전체 플로우
 
@@ -128,7 +141,7 @@ claude plugin install imprint@imprint
 }
 ```
 
-sectioning 룰 · dedup · TTL · graceful degradation 명세는 [`flow.md`](flow.md) "외부 소스 lazy-fetch 처리 룰" 참조. 시스템 도구·운영 환경 변수·실패 모드 매핑도 같은 문서. 동기 경로의 미래 병목 후보(transcript 재파싱·외부 fetch payload·동시 백그라운드 부하) 와 단계적 대응 플랜은 [`HANDOFF.md`](HANDOFF.md) "성능 병목 진단 — 3축" 참조.
+sectioning 룰 · dedup · TTL · graceful degradation 명세는 [`flow.md`](flow.md) "외부 소스 lazy-fetch 처리 룰" 참조. 시스템 도구·운영 환경 변수·실패 모드 매핑도 같은 문서.
 
 ## 전체 플로우 다이어그램
 
