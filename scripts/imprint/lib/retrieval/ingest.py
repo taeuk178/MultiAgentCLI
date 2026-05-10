@@ -34,6 +34,7 @@ class IngestStats:
     document_inserted: bool
     document_updated: bool
     chunks_inserted: int
+    chunks_updated: int
     chunks_skipped: int
     embedding_used: bool
 
@@ -177,10 +178,9 @@ def ingest_document(
             conn=conn,
         )
         if not inserted and not updated:
-            return IngestStats(False, False, 0, 0, False)
+            return IngestStats(False, False, 0, 0, 0, False)
 
-        # update 인 경우 기존 청크는 일단 그대로 두고, 새 청크는 chunk_index 충돌 시 무시.
-        # 정확한 versioning 은 호출자가 명시적으로 mark_superseded 로 처리.
+        write_ts = now_iso()
         chunks = list(split_document(raw_text, chunk_config))
         retrieval_texts: list[str] = []
         for spec in chunks:
@@ -206,10 +206,57 @@ def ingest_document(
         normalized_type = normalize_chunk_type(raw_chunk_type)
 
         inserted_count = 0
+        updated_count = 0
         skipped = 0
+        seen_indexes: set[int] = set()
         for i, spec in enumerate(chunks):
+            seen_indexes.add(spec.chunk_index)
             cid = new_id()
             blob = embeddings[i] if embeddings else None
+            existing = conn.execute(
+                """
+                SELECT id, chunk_text, retrieval_text FROM chunks_v2
+                WHERE document_id = ? AND chunk_index = ?
+                """,
+                (document_id, spec.chunk_index),
+            ).fetchone()
+            if existing:
+                changed = (
+                    existing["chunk_text"] != spec.chunk_text
+                    or existing["retrieval_text"] != spec.extra.get("retrieval_text")
+                )
+                conn.execute(
+                    """
+                    UPDATE chunks_v2
+                    SET section_path = ?,
+                        chunk_text = ?,
+                        context_prefix = ?,
+                        retrieval_text = ?,
+                        embedding = ?,
+                        raw_chunk_type = ?,
+                        normalized_chunk_type = ?,
+                        source_created_at = ?,
+                        source_updated_at = ?,
+                        valid_from = CASE WHEN ? THEN ? ELSE valid_from END,
+                        valid_to = NULL,
+                        is_current = 1,
+                        supersedes_chunk_id = NULL
+                    WHERE id = ?
+                    """,
+                    (
+                        spec.section_path,
+                        spec.chunk_text,
+                        spec.extra.get("context_prefix"),
+                        spec.extra.get("retrieval_text"),
+                        blob,
+                        raw_chunk_type, normalized_type,
+                        source_created_at, source_updated_at,
+                        1 if changed else 0, write_ts,
+                        existing["id"],
+                    ),
+                )
+                updated_count += 1 if changed else 0
+                continue
             try:
                 conn.execute(
                     """
@@ -235,10 +282,35 @@ def ingest_document(
                 inserted_count += 1
             except sqlite3.IntegrityError:
                 skipped += 1
+
+        if updated:
+            # 새 문서에는 더 이상 존재하지 않는 꼬리 청크는 검색 기본 경로에서 제외한다.
+            if seen_indexes:
+                placeholders = ",".join("?" for _ in seen_indexes)
+                conn.execute(
+                    f"""
+                    UPDATE chunks_v2
+                    SET is_current = 0, valid_to = ?
+                    WHERE document_id = ?
+                      AND chunk_index NOT IN ({placeholders})
+                      AND is_current = 1
+                    """,
+                    (write_ts, document_id, *sorted(seen_indexes)),
+                )
+            else:
+                conn.execute(
+                    """
+                    UPDATE chunks_v2
+                    SET is_current = 0, valid_to = ?
+                    WHERE document_id = ? AND is_current = 1
+                    """,
+                    (write_ts, document_id),
+                )
         return IngestStats(
             document_inserted=inserted,
             document_updated=updated,
             chunks_inserted=inserted_count,
+            chunks_updated=updated_count,
             chunks_skipped=skipped,
             embedding_used=embedding_used,
         )

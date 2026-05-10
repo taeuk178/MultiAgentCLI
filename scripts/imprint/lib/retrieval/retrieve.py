@@ -14,7 +14,7 @@ from . import embedding as emb_mod
 from . import rerank as rerank_mod
 from ._common import Span, db_connect, profile_emit
 from .entity import resolve_in_query
-from .normalize import normalize_query
+from .normalize import normalize_alias, normalize_query
 
 # Hybrid search defaults — 명세 권장 값.
 VECTOR_TOPN = 100
@@ -100,6 +100,7 @@ def _fts_search(conn: sqlite3.Connection, project_id: str, query: str, top_n: in
         JOIN documents d ON d.id = c.document_id
         WHERE chunks_v2_fts MATCH ?
           AND c.project_id = ?
+          AND c.is_current = 1
         ORDER BY bm25_score
         LIMIT ?
         """,
@@ -123,7 +124,7 @@ def _vector_search(
                c.embedding, d.source_type
         FROM chunks_v2 c
         JOIN documents d ON d.id = c.document_id
-        WHERE c.project_id = ? AND c.embedding IS NOT NULL
+        WHERE c.project_id = ? AND c.is_current = 1 AND c.embedding IS NOT NULL
         """,
         (project_id,),
     )
@@ -216,16 +217,27 @@ def retrieve(
 
             # BOOST
             with Span("BOOST"):
-                resolved_canonicals = {h["canonical_name"] for h in resolved}
+                resolved_terms = {
+                    normalize_alias(term)
+                    for hit in resolved
+                    for term in (hit.get("canonical_name"), hit.get("matched_alias"))
+                    if term
+                }
                 for cand in merged.values():
                     boost = 0.0
                     if cand.is_current:
                         boost += BOOST_CURRENT
-                    if cand.normalized_chunk_type and resolved_canonicals:
-                        # entity 매칭은 chunk_entities 까지 join 해야 정확하지만,
-                        # 간이 신호로 retrieval_text 안에 canonical_name 등장 여부.
-                        for cn in resolved_canonicals:
-                            if cn and cn in cand.retrieval_text:
+                    if cand.normalized_chunk_type and resolved_terms:
+                        normalized_text = normalize_alias(cand.retrieval_text)
+                        # Phase 7a v1 은 chunk_entities 자동 채움 전 단계라 alias/canonical
+                        # 본문 매칭을 간이 entity coverage 신호로 사용한다.
+                        for hit in resolved:
+                            cn = hit["canonical_name"]
+                            terms = (
+                                normalize_alias(cn),
+                                normalize_alias(hit.get("matched_alias") or ""),
+                            )
+                            if any(term and term in normalized_text for term in terms):
                                 boost += BOOST_ENTITY
                                 cand.matched_entities.append(cn)
                                 break
