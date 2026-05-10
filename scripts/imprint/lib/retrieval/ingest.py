@@ -328,5 +328,6 @@ def ingest_document(
             decision_chunk_inserted=(normalized_type == "decision" and stats.chunks_inserted > 0),
             entity_link_changed=False,
             supersede_changed=False,
+            new_chunk_inserted=stats.chunks_inserted > 0,
         ))
     return stats

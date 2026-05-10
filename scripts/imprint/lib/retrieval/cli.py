@@ -195,6 +195,99 @@ def cmd_contradiction_scan(argv: list[str]) -> int:
     return 0
 
 
+def cmd_extract_entities(argv: list[str]) -> int:
+    """청크 → entity mention 추출 + alias 자동 등록 (review queue)."""
+    if not argv:
+        print("usage: extract-entities <project_id> [document_id]", file=sys.stderr)
+        return 2
+    from . import ner as ner_mod
+    project_id = argv[0]
+    if len(argv) > 1:
+        stats = ner_mod.extract_for_document(project_id, argv[1])
+    else:
+        # project 전체 — 모든 current document 순회.
+        from ._common import db_connect
+        conn = db_connect()
+        try:
+            doc_ids = [r["id"] for r in conn.execute(
+                "SELECT id FROM documents WHERE project_id = ? AND is_deleted = 0",
+                (project_id,),
+            ).fetchall()]
+        finally:
+            conn.close()
+        agg = ner_mod.NerStats()
+        for did in doc_ids:
+            s = ner_mod.extract_for_document(project_id, did)
+            agg.chunks_examined += s.chunks_examined
+            agg.chunks_skipped += s.chunks_skipped
+            agg.mentions_extracted += s.mentions_extracted
+            agg.entities_created += s.entities_created
+            agg.aliases_added += s.aliases_added
+            agg.aliases_auto_confirmed += s.aliases_auto_confirmed
+        stats = agg
+    promoted = ner_mod.refresh_aliases(project_id)
+    out = stats.__dict__ | {"aliases_promoted": promoted}
+    print(json.dumps(out, ensure_ascii=False))
+    return 0
+
+
+def cmd_entities(argv: list[str]) -> int:
+    """`/memory entities` 류 review queue UI 의 텍스트 백엔드.
+
+    sub: list-pending | confirm <alias_id> | reject <alias_id>
+    """
+    if not argv:
+        print("usage: entities <list-pending|confirm|reject> [args]", file=sys.stderr)
+        return 2
+    from .entity import confirm_alias, reject_alias
+    from ._common import db_connect
+
+    sub = argv[0]
+    if sub == "list-pending":
+        if len(argv) < 2:
+            print("usage: entities list-pending <project_id>", file=sys.stderr)
+            return 2
+        project_id = argv[1]
+        conn = db_connect()
+        try:
+            cur = conn.execute(
+                """
+                SELECT a.id, a.alias, a.confidence, a.created_at,
+                       e.canonical_name, e.entity_type, e.display_name
+                FROM entity_aliases a
+                JOIN entities e ON e.id = a.entity_id
+                WHERE e.project_id = ? AND a.status = 'pending'
+                ORDER BY a.created_at DESC
+                """,
+                (project_id,),
+            )
+            rows = [{
+                "alias_id": r["id"], "alias": r["alias"], "confidence": r["confidence"],
+                "canonical_name": r["canonical_name"], "entity_type": r["entity_type"],
+                "display_name": r["display_name"], "created_at": r["created_at"],
+            } for r in cur.fetchall()]
+        finally:
+            conn.close()
+        print(json.dumps(rows, ensure_ascii=False))
+        return 0
+    if sub == "confirm":
+        if len(argv) < 2:
+            print("usage: entities confirm <alias_id>", file=sys.stderr)
+            return 2
+        confirm_alias(argv[1])
+        print(json.dumps({"alias_id": argv[1], "status": "confirmed"}))
+        return 0
+    if sub == "reject":
+        if len(argv) < 2:
+            print("usage: entities reject <alias_id>", file=sys.stderr)
+            return 2
+        reject_alias(argv[1])
+        print(json.dumps({"alias_id": argv[1], "status": "rejected"}))
+        return 0
+    print(f"unknown sub: {sub}", file=sys.stderr)
+    return 2
+
+
 def cmd_supersede(argv: list[str]) -> int:
     if len(argv) < 2:
         print("usage: supersede <project_id> <new_chunk_text> [section_path]", file=sys.stderr)
@@ -227,6 +320,8 @@ COMMANDS = {
     "classify": cmd_classify,
     "summarize": cmd_summarize,
     "contradiction-scan": cmd_contradiction_scan,
+    "extract-entities": cmd_extract_entities,
+    "entities": cmd_entities,
 }
 
 

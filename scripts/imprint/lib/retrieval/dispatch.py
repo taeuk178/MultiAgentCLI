@@ -28,6 +28,7 @@ class CommitChangeSet:
     decision_chunk_inserted: bool        # normalized_chunk_type='decision' 새 row
     entity_link_changed: bool            # chunk_entities 변화 (alias merge / split)
     supersede_changed: bool              # supersedes_chunk_id 또는 is_current flip
+    new_chunk_inserted: bool = False     # NER 트리거 — 새 chunk 가 INSERT 됐을 때
 
 
 def dispatch_commit(change: CommitChangeSet) -> dict[str, list[str]]:
@@ -65,9 +66,19 @@ def dispatch_commit(change: CommitChangeSet) -> dict[str, list[str]]:
         )
         contradiction_jobs.append(qid)
 
-    if not summary_jobs and not contradiction_jobs:
+    ner_jobs: list[str] = []
+    if change.new_chunk_inserted and change.changed_document_ids:
+        for doc_id in change.changed_document_ids:
+            qid = queue_mod.enqueue(
+                change.project_id,
+                {"kind": "ner_extract", "project_id": change.project_id, "document_id": doc_id},
+                priority=queue_mod.PRIORITY_J4_ENTITY,
+            )
+            ner_jobs.append(qid)
+
+    if not summary_jobs and not contradiction_jobs and not ner_jobs:
         log("INFO", f"dispatch_commit: no jobs for project={change.project_id}")
-    return {"summary": summary_jobs, "contradiction": contradiction_jobs}
+    return {"summary": summary_jobs, "contradiction": contradiction_jobs, "ner": ner_jobs}
 
 
 def handle_payload(payload: dict[str, Any]) -> None:
@@ -110,5 +121,14 @@ def handle_payload(payload: dict[str, Any]) -> None:
         if not project_id:
             raise ValueError("contradiction_scan: project_id required")
         cd_mod.scan_and_store(project_id)
+        return
+    if kind == "ner_extract":
+        from . import ner as ner_mod
+        project_id = payload.get("project_id")
+        document_id = payload.get("document_id")
+        if not project_id or not document_id:
+            raise ValueError("ner_extract: project_id and document_id required")
+        ner_mod.extract_for_document(project_id, document_id)
+        ner_mod.refresh_aliases(project_id)
         return
     raise ValueError(f"unknown queue payload kind={kind!r}")
