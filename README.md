@@ -39,7 +39,7 @@ pip install -r requirements-optional.txt
 
 ## 어떻게 동작하는가
 
-매 turn마다 두 개의 hook이 **동기·비동기 두 경로**로 작동합니다. 동기 경로(retrieval + context prepend)는 사용자 turn을 막지 않도록 < 330 ms 안에 끝나고, LLM 호출(`claude -p haiku`)·외부 fetch·chunk 추출 같은 무거운 작업은 전부 백그라운드로 분리됩니다.
+매 turn마다 turn 사이클 hook 2개(`UserPromptSubmit` · `Stop`)가 **동기·비동기 두 경로**로 작동합니다(세션 진입 시점에는 별도로 `SessionStart` 가 1회 발동 — 스키마 적용 + soul.md prepend). 동기 경로(retrieval + context prepend)는 사용자 turn을 막지 않도록 < 330 ms 안에 끝나고, LLM 호출(`claude -p haiku`)·외부 fetch·chunk 추출 같은 무거운 작업은 전부 백그라운드로 분리됩니다.
 
 ### 전체 플로우
 
@@ -122,11 +122,13 @@ pip install -r requirements-optional.txt
 
 ## hook
 
+세션 라이프사이클 hook 1개 (`SessionStart`) + turn 사이클 hook 2개 (`UserPromptSubmit`, `Stop`) 의 총 3개로 구성. 정의는 `hooks/hooks.json`.
 
-| hook | 시점 | 동기 경로 | 비동기 경로 |
-|---|---|---|---|
-| **UserPromptSubmit** | 프롬프트 진입 직전 | `events.user_message` 기록 → 기존 chunk FTS 검색 → `[Project memory context]` 블록 prepend (≈1 초) | `claude -p haiku` 로 키워드·모호도 추출 → prompt 의 Notion/Slack URL 또는 `sources.json` 기반 lazy-fetch → 외부 chunk INSERT (≈30~60 초) |
-| **Stop** | 응답 종료 직후 | `events.llm_response` 로 응답 텍스트 archive | `claude -p haiku` 가 응답을 9 가지 `chunk_type` (`decision` · `error` · `fix` · `command` · `test_result` · `summary` · `todo` · `code_context` · `note`) 로 분류해 `memory_chunks` 에 누적. 외부 source (Slack · Notion) 는 ingestion 경로에서 `spec` · `message` · `thread` 로 직접 INSERT |
+| hook | matcher | 시점 | 동기 경로 | 비동기 경로 |
+|---|---|---|---|---|
+| **SessionStart** | `startup\|resume\|clear\|compact` | 세션 진입 / 재개 / clear / compact 직후 | SQLite 스키마 idempotent 적용 + 현재 프로젝트 row upsert + `<project>/.imprint/soul.md` 컨텍스트 prepend (timeout 5 s) | — |
+| **UserPromptSubmit** | `*` | 프롬프트 진입 직전 (매 turn) | `events.user_message` 기록 → 기존 chunk FTS 검색 → `[Project memory context]` 블록 prepend (retrieval < 330 ms) | `claude -p haiku` 로 키워드·모호도 추출 → prompt 의 Notion/Slack URL 또는 `sources.json` 기반 lazy-fetch → 외부 chunk INSERT (≈30~60 초, timeout 30 s) |
+| **Stop** | `*` | 응답 종료 직후 (매 turn) | `events.llm_response` 로 응답 텍스트 archive | `claude -p haiku` 가 응답을 9 가지 `chunk_type` (`decision` · `error` · `fix` · `command` · `test_result` · `summary` · `todo` · `code_context` · `note`) 로 분류해 `memory_chunks` 에 누적. 외부 source (Slack · Notion) 는 ingestion 경로에서 `spec` · `message` · `thread` 로 직접 INSERT (timeout 30 s) |
 
 서브프로세스가 다시 hook 을 타며 자기 자신을 spawn 하는 무한 재귀는 `IMPRINT_BYPASS_HOOKS=1` 을 환경에 박아 차단합니다.
 

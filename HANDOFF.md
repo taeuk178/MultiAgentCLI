@@ -17,7 +17,7 @@
 - 2026-05-10 Phase 7b 후속 결정 4건 락인 (mDeBERTa-v3 / rule-based scope / 즉시 sync / 0.8·0.4 임계)
 - 2026-05-10 Phase 7b 우선순위 11 완료 (NLI primary + LLM judge fallback chain)
 
-스키마는 `scripts/imprint/lib/schema.sql` 한 파일 안에 모두 idempotent. `SessionStart` hook 이 매 세션마다 적용 + `migrations.sh` 가 기존 DB 의 누락 컬럼(예: `ingest_queue.priority`) 을 ALTER 로 보강.
+스키마는 `scripts/imprint/lib/schema.sql` 한 파일 안에 모두 idempotent. `SessionStart` hook 이 매 세션마다 적용.
 
 ML 의존성(transformers / sentence-transformers / sqlite-vec) 은 모두 lazy 로더 + opt-in. 미설치 시 `claude -p haiku` LLM judge / FTS-only 검색으로 안전 fallback. 자세한 설치는 `INSTALL.md` "선택: ML 의존성" 참조.
 

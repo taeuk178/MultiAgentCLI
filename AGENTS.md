@@ -63,7 +63,6 @@ imprint/
 │   ├── lib/
 │   │   ├── common.sh        DB·project·redact·로그 헬퍼
 │   │   ├── ingestion.py     prefill 분석·Slack/Notion lazy fetch·Stop 추출·refresh
-│   │   ├── migrations.sh    schema migration · backfill
 │   │   ├── redact-rules.default.json  플러그인 default redact 룰셋
 │   │   └── schema.sql       SQLite 스키마 (idempotent)
 │   ├── session-start.sh     SessionStart hook
