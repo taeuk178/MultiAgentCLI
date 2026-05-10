@@ -916,6 +916,21 @@ summary 우선 retrieval 로 전환. **depth limit: feature summary 최대 5개 
 
 GraphRAG 의 global summary retrieval 패턴처럼, global question 은 상위 summary 에서 먼저 답의 구조를 잡는 방식.
 
+### 동기 경로 latency 관리 (7a budget 대비)
+
+7b 는 동기 경로에 `SC` · `SCOPE` 분기 · `GROUND` · `CCHECK` 4 단계가 추가됩니다. 모두 가벼운 조회·분류·판정 로직이라 추가 지연은 **10~30 ms** 이내로 예상됩니다. 따라서 7a 의 latency budget (rerank skip < 100 ms / 발동 < 300 ms) 위에 30 ms 만 더 잡으면 됩니다.
+
+| 7a 케이스 | 7a budget | + 7b 4 단계 | 7b 합계 budget |
+|---|---|---|---|
+| RG = no (skip) | < 100 ms | + 10~30 ms | **< 130 ms** |
+| RG = yes (발동) | < 300 ms | + 10~30 ms | **< 330 ms** |
+
+다만 `HYB2` / `HYB3` 의 summary retrieval 정확도는 summary embedding 품질에 직결되므로 — chunk embedding 보다 신중하게 생성. 자세한 생성 규칙은 위 "feature / document / project summary 생성 규칙" 참조.
+
+**위반 감지·대응**
+
+7a 의 "동기 경로 latency budget" 섹션 룰을 그대로 적용합니다 (5분 윈도 3회 위반 → daemon backend 분리). 다만 7b 진입 후 30 ms 헤드룸이 SC · GROUND · CCHECK 추가로 사라진 상태라, 위반이 한 번이라도 보이면 즉시 daemon 단계로 가는 것이 안전합니다 — 7a 보다 보수적으로 운영.
+
 ### Contradiction Detection 플로우
 
 "후보 생성 → 정밀 판정 → 캐시 → 노출" 4단계 구조.
