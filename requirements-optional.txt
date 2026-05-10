@@ -1,0 +1,28 @@
+# imprint 선택 의존성 — 설치하지 않아도 plugin 은 FTS-only / rule fallback 으로
+# 동작합니다. retrieval 정확도가 부족하다고 느낄 때 필요한 항목만 설치하세요.
+#
+# 권장 설치 순서:
+#   1) sqlite-vec — sqlite 벡터 검색 extension (가장 가볍고 효과 큼)
+#   2) sentence-transformers — BGE-M3 임베딩 + cross-encoder rerank
+#   3) transformers — NLI (mDeBERTa-v3) 동기 경로 contradiction 판정
+#
+# 모델 캐시 위치는 IMPRINT_MODEL_CACHE_DIR 환경 변수로 제어. 기본은 ~/.cache/huggingface.
+#
+# 설치 예시:
+#   pip install -r requirements-optional.txt
+# 또는 일부만:
+#   pip install sqlite-vec sentence-transformers
+
+# 벡터 검색 — chunks_v2 / summaries 의 ANN 가속.
+# 미설치 시 retrieve 가 Python cosine fallback 으로 동작 (수십~수백 row 까지는 충분).
+sqlite-vec>=0.1.6
+
+# 임베딩 (BGE-M3) + cross-encoder rerank.
+# 미설치 시 retrieve 가 FTS5-only 로 동작.
+sentence-transformers>=3.0
+
+# NLI zero-shot 분류 — contradiction 판정 동기 경로.
+# 미설치 시 LLM judge (claude CLI) 가 fallback. 다만 NLI 가 더 빠름 (500ms vs 11~28s).
+transformers>=4.40
+
+# 위 패키지의 transitive deps (torch, tokenizers 등) 는 자동 설치.

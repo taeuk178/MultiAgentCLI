@@ -61,8 +61,39 @@ Hook이 동작하면 `~/.claude/imprint/app.sqlite`가 생성되고, `~/.claude/
 
 ```
 ~/.claude/imprint/
-  app.sqlite        # 이벤트 로그 + memory chunks (FTS5 포함)
+  app.sqlite        # 이벤트 로그 + memory chunks + retrieval 데이터 (FTS5 포함)
   plugin.log        # hook/skill 디버그 로그
+  profile.jsonl     # IMPRINT_PROFILE=1 활성 시 latency 측정 (생성됨)
+```
+
+## 선택: ML 의존성 (retrieval 정확도 향상)
+
+기본 설치만으로 plugin 은 FTS5 trigram 검색 + claude CLI LLM judge 로 동작합니다.
+임베딩 / cross-encoder rerank / 동기 NLI 정밀 판정을 켜고 싶다면 다음을 설치:
+
+```bash
+pip install -r requirements-optional.txt
+# 또는 일부만:
+pip install sqlite-vec sentence-transformers transformers
+```
+
+설치하면 자동으로 활성화됩니다 (lazy 로더가 import 가능 여부 감지).
+
+**모델 캐시 위치**: 기본은 `~/.cache/huggingface`. 다른 위치에 두려면:
+
+```bash
+export IMPRINT_MODEL_CACHE_DIR=/path/to/cache
+```
+
+**선택적 비활성화** (예: CI 환경):
+
+```bash
+export IMPRINT_DISABLE_EMBEDDING=1
+export IMPRINT_DISABLE_RERANK=1
+export IMPRINT_DISABLE_NLI=1
+export IMPRINT_DISABLE_LLM_JUDGE=1   # claude CLI 호출도 끄려면
+export IMPRINT_DISABLE_NER_LLM=1
+export IMPRINT_DISABLE_SQLITE_VEC=1
 ```
 
 ## 제거

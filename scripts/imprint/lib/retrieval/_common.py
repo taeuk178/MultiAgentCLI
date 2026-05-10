@@ -33,13 +33,40 @@ def log(level: str, msg: str) -> None:
         pass
 
 
-def db_connect() -> sqlite3.Connection:
+_VEC_LOAD_FAILED = False
+
+
+def _try_load_sqlite_vec(conn: sqlite3.Connection) -> bool:
+    """sqlite-vec extension 로드. 가용하면 retrieve 가 vec0 virtual table 사용 가능.
+
+    미설치 시 retrieve 가 Python cosine fallback. extension 로딩이 OS/SQLite 빌드별로
+    실패할 수 있어 한 번 실패한 프로세스에서는 다시 시도하지 않음 (전역 플래그).
+    """
+    global _VEC_LOAD_FAILED
+    if _VEC_LOAD_FAILED or os.environ.get("IMPRINT_DISABLE_SQLITE_VEC") == "1":
+        return False
+    try:
+        import sqlite_vec  # type: ignore
+
+        conn.enable_load_extension(True)
+        sqlite_vec.load(conn)
+        conn.enable_load_extension(False)
+        return True
+    except Exception as exc:
+        _VEC_LOAD_FAILED = True
+        log("WARN", f"sqlite-vec load failed: {exc!r} — using Python cosine fallback")
+        return False
+
+
+def db_connect(*, load_vec: bool = False) -> sqlite3.Connection:
     IMPRINT_HOME.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(IMPRINT_DB), isolation_level=None)
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA busy_timeout = 5000")
     conn.execute("PRAGMA foreign_keys = ON")
     conn.row_factory = sqlite3.Row
+    if load_vec:
+        _try_load_sqlite_vec(conn)
     return conn
 
 

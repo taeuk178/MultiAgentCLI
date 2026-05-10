@@ -69,14 +69,17 @@ def _try_load_pipeline():
         try:
             from transformers import pipeline  # type: ignore
 
-            log("INFO", f"loading NLI pipeline {NLI_MODEL_NAME} (cold-load)")
+            cache_dir = os.environ.get("IMPRINT_MODEL_CACHE_DIR")
+            log("INFO", f"loading NLI pipeline {NLI_MODEL_NAME} (cold-load) cache={cache_dir or 'default'}")
+            kwargs = {"model_kwargs": {"cache_dir": cache_dir}} if cache_dir else {}
             _pipeline = pipeline(
                 "zero-shot-classification",
                 model=NLI_MODEL_NAME,
+                **kwargs,
             )
         except Exception as exc:
             _load_failed = True
-            log("WARN", f"NLI pipeline load failed: {exc!r} — falling back to candidate-only")
+            log("WARN", f"NLI pipeline load failed: {exc!r} — falling back to LLM judge / rule")
             _pipeline = None
     return _pipeline
 

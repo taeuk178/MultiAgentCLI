@@ -33,8 +33,9 @@ def _try_load_model():
         try:
             from sentence_transformers import SentenceTransformer  # type: ignore
 
-            log("INFO", f"loading embedding model {MODEL_NAME} (cold-load)")
-            _model = SentenceTransformer(MODEL_NAME)
+            cache_dir = os.environ.get("IMPRINT_MODEL_CACHE_DIR")
+            log("INFO", f"loading embedding model {MODEL_NAME} (cold-load) cache={cache_dir or 'default'}")
+            _model = SentenceTransformer(MODEL_NAME, cache_folder=cache_dir)
         except Exception as exc:
             _load_failed = True
             log("WARN", f"embedding model load failed: {exc!r} — falling back to FTS-only")

@@ -1154,10 +1154,98 @@ leaf 변경이 상위 summary 로 전파되는 방식. 다이어그램의 `J5 �
 
 - (완료, 2026-05-10) Phase 7a 안정 운용 — `refactor/phase_7a` 브런치에 schema v1 + retrieval 패키지 머지
 - (완료, 2026-05-10) 후속 결정 7b-1~4 락인 (mDeBERTa-v3-base-mnli-xnli / rule-based scope classifier / 즉시 sync 갱신 / 0.8·0.4 임계) — `HISTORY.md` 2026-05-10 참조
-- (완료, 2026-05-10) **현재 브런치 `refactor/phase_7b`** — 13개 우선순위 모두 완료. NLI(우선순위 11) 는 transformers 가용 시 사용, 미가용 시 LLM judge (claude CLI haiku) 가 fallback. 둘 다 미가용 시 rule 약 신호 + needs_retry 로 status=candidate 보존. 결정적 path 는 ingest → dispatch → drain → feature/document/project summary → routed retrieve → assembly 까지 동작. LLM judge 실측 검증 완료 (충돌/같은방향/무관 3개 시나리오 모두 정확).
-- **(다음 PR)** ML 의존성 통합 — `transformers` 실제 설치 + NLI mDeBERTa-v3 모델 캐시 위치 결정 (`sentence-transformers`/sqlite-vec 도 같은 결정 라운드).
-- **(그 다음 PR)** chunk_entities 자동 채우기 — 별도 skill (LLM-driven NER) 가 ingest 결과를 받아 entity link 를 채우면 contradiction 후보 생성이 단일 section 의존을 벗어남.
-- **(후속)** README 의 Phase 7b 다이어그램 (`SC` / `HYB2` / `HYB3` / `GROUND` / `CCHECK` / `J5` / `J6`) 과 실제 구현 노드 매핑 검증.
+- (완료, 2026-05-10) **현재 브런치 `refactor/phase_7b`** — 13개 우선순위 모두 완료. NLI(우선순위 11) 는 transformers 가용 시 사용, 미가용 시 LLM judge (claude CLI haiku) 가 fallback. 둘 다 미가용 시 rule 약 신호 + needs_retry 로 status=candidate 보존.
+- (완료, 2026-05-10) ML 의존성 opt-in — `requirements-optional.txt` 도입, `IMPRINT_MODEL_CACHE_DIR` 환경 변수, `INSTALL.md` 가이드. embedding/rerank/NLI 가 모두 lazy 로더로 미설치 환경에서도 안전 fallback.
+- (완료, 2026-05-10) chunk_entities 자동 NER skill — `retrieval/ner.py` 가 청크에서 entity mention 추출, `entity_aliases` 에 status=pending 적재, conf ≥ 0.9 는 자동 confirm. dispatch 가 ingest 후 J4 priority 9 로 자동 enqueue. `entities list-pending / confirm / reject` CLI 추가.
+- (완료, 2026-05-10) README 다이어그램 노드 ↔ 코드 매핑 — 본 섹션 "다이어그램 노드 ↔ 구현 매핑" 표 참조. 미구현 노드 0개.
+
+### 다이어그램 노드 ↔ 구현 매핑
+
+README 의 Phase 7a/7b mermaid 다이어그램의 노드와 실제 구현 위치를 정리.
+
+**동기 경로 (User Prompt → Claude 응답):**
+
+| 노드 | 의미 | 구현 |
+|---|---|---|
+| `LOG` | events.user_message 기록 | 기존 `scripts/imprint/user-prompt-submit.sh` |
+| `QN` | query normalize | `retrieval/normalize.py::normalize_query` |
+| `SC` | scope classifier (7b) | `retrieval/scope.py::classify` |
+| `RES` | entity alias resolve | `retrieval/entity.py::resolve_in_query` |
+| `QEMB` | query embedding | `retrieval/embedding.py::embed_text` |
+| `SCOPE` | scope 분기 (7b) | `retrieval/routing.py::routed_retrieve` |
+| `HYB` / `HYB1` | chunk hybrid retrieval | `retrieval/retrieve.py::_fts_search` + `_vector_search` |
+| `HYB2` | feature summary retrieval (7b) | `retrieval/routing.py::_retrieve_summaries(level='feature')` |
+| `HYB3` | project/document summary (7b) | `retrieval/routing.py::_retrieve_summaries(level=...)` |
+| `RRF` / `RRF1/2/3` | RRF fusion | `retrieval/retrieve.py::retrieve` (RRF 단계) + `routing.py::_retrieve_summaries` |
+| `BOOST` | is_current + recency + entity coverage | `retrieval/retrieve.py::retrieve` (BOOST 단계) |
+| `RG` | rerank 게이트 | `retrieval/retrieve.py::retrieve` (RG 게이트) |
+| `RR` | cross-encoder rerank | `retrieval/rerank.py::rerank` |
+| `RROK` | rerank timeout 분기 | `retrieval/rerank.py::rerank` (200ms watcher) |
+| `GROUND` | summary_links drill-down (7b) | `retrieval/routing.py::_ground_drilldown` |
+| `CCHECK` | confirmed contradiction read-only (7b) | `retrieval/routing.py::_ccheck` |
+| `CTX` | 구조화 context prepend | `retrieval/assembly.py::format_for_claude` / `format_routed_for_claude` |
+
+**비동기 ingestion (BG side):**
+
+| 노드 | 의미 | 구현 |
+|---|---|---|
+| `J1` | lazy fetch (Slack/Notion) | 기존 `scripts/imprint/lib/ingestion.py` (Phase 1~3) |
+| `J2` | response extract | 기존 `scripts/imprint/lib/ingestion.py` |
+| `J3` | retrieval warm cache | `retrieval/embedding.py::_try_load_model` lazy spawn |
+| `J4` | entity candidate refresh (7a) | `retrieval/ner.py::extract_for_document` + `refresh_aliases` |
+| `J5` | summary rebuild (7b) | `retrieval/dispatch.py::handle_payload(kind=summary_regen)` → `summary.regenerate_for_document` |
+| `J6` | contradiction detection (7b) | `retrieval/dispatch.py::handle_payload(kind=contradiction_scan)` → `contradiction.scan_and_store` |
+| `WC` | warm cache manager | `retrieval/embedding.py::_try_load_model` (process-wide 싱글톤) |
+| `ANL` / `EX` | claude haiku 분류 | 기존 `lib/ingestion.py` |
+| `URL` / `FETCH` / `KW` | URL 추출 → MCP fetch / 키워드 검색 | 기존 `lib/ingestion.py` |
+| `SPL1` / `SPL2` | chunk split | `retrieval/chunking.py::split_document` |
+| `CP1` / `CP2` | context_prefix 생성 | `retrieval/ingest.py::_generate_context_prefix` |
+| `EMB1` / `EMB2` | chunk embedding | `retrieval/embedding.py::embed_texts` |
+| `ENT1` / `ENT2` | chunk → entity mention | `retrieval/ner.py::extract_for_chunk` |
+| `EA` | alias candidate mining | `retrieval/ner.py::refresh_aliases` (J4 의 일부) |
+| `PACK1` / `PACK2` | ingest payload (chunk) | `retrieval/ingest.py::ingest_document` (직접 INSERT — 큐 우회 가능 path) |
+| `PACK3` | entity candidate payload | `retrieval/ner.py::extract_for_chunk` (entity_aliases status=pending INSERT) |
+| `PACK4` | summary payload (7b) | `retrieval/summary.py::_upsert_summary` |
+| `PACK5_CAND` / `PACK5_NEUT` | contradiction payload (7b) | `retrieval/contradiction.py::scan_and_store` (status 분기 INSERT) |
+| `ENQ` | ingest queue | `retrieval/ingest_queue.py::enqueue` (priority 별) |
+
+**single-writer commit chain:**
+
+| 노드 | 의미 | 구현 |
+|---|---|---|
+| `DEDUPE` | hash dedupe | `retrieval/ingest.py::upsert_document` (checksum 비교) |
+| `VRES` | version resolver | `retrieval/version.py::find_supersede_candidates` + `mark_superseded` |
+| `RTYPE` (7b) | record type 분기 | `retrieval/dispatch.py::handle_payload` (kind 별 라우팅) |
+| `CONF` | entity confidence 분기 | `retrieval/ner.py::extract_for_chunk` (`AUTO_CONFIRM_THRESHOLD=0.9`) |
+| `W1` | single writer commit | `retrieval/ingest_queue.py::drain` + `dispatch.py::handle_payload` |
+| `W2` | entity review queue | `retrieval/entity.py::add_alias` (status='pending') |
+| `ENTS` | `/memory entities` skill | `retrieval/cli.py::cmd_entities` (list-pending / confirm / reject) |
+
+**판정 노드 (7b contradiction):**
+
+| 노드 | 의미 | 구현 |
+|---|---|---|
+| `CDCAND` | contradiction candidate 생성 | `retrieval/contradiction.py::candidate_pairs_for_project` |
+| `CDJUDGE` | NLI / LLM judge | `retrieval/contradiction.py::_judge_pair` (NLI primary → LLM fallback → rule retry) |
+| `CDCONF` | score 3구간 분기 | `retrieval/contradiction.py::_classify_status` |
+
+**환경 변수 (lifecycle 라벨):**
+
+| 라벨 | 노드 | 비활성화 환경변수 |
+|---|---|---|
+| `(sync)` 가벼움 | `QN` · `SC` · `RES` · `RRF` · `BOOST` · `GROUND` · `CCHECK` · `CTX` | (항상 ON) |
+| `(sync/daemon-ready)` | `QEMB` · `HYB*` · `RR` | `IMPRINT_DISABLE_EMBEDDING=1` · `IMPRINT_DISABLE_RERANK=1` |
+| `(async)` BG | `J1`~`J6` 와 그 하위 노드 | inline 모드는 ingest_queue drain 으로 처리 |
+| `(async/single-writer)` | `DEDUPE` · `VRES` · `W1` | (항상 ON, single-writer 직렬 commit) |
+| ML 옵션 | `QEMB` (BGE-M3) · `RR` (cross-encoder) · `CDJUDGE` (NLI) · `CDJUDGE` (LLM) · `ENT*` (LLM NER) | `IMPRINT_DISABLE_EMBEDDING/RERANK/NLI/LLM_JUDGE/NER_LLM/SQLITE_VEC=1` |
+
+미구현 노드: 0개 (모든 다이어그램 노드가 코드에 매핑됨).
+
+### 다음 단계 (선택적)
+
+- chunk_entities 자동 link 가 안정화되면 contradiction 후보 그룹화가 entity 기준으로 정확해짐 — 측정 후 `_classify_status` 임계 (현 0.8/0.4) 캘리브레이션.
+- entity merge / split UI — 현재 `entities` CLI 는 confirm/reject 만. canonical 합치기는 별도 명령 필요.
+- summary LLM 정밀도 — 현재 deterministic fallback 으로 첫 문장 concat. claude haiku 호출이 가용한 환경에서 4~8 문장 생성 결과 비교.
 
 ## 성능 병목 진단 — 3축 (2026-05-09)
 
