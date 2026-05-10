@@ -9,6 +9,20 @@
 
 기록 순서는 **최신이 위**. 항목당 한 단락 안에 변경/사유/대안 폐기 근거를 묶는다.
 
+## 2026-05-10 — Phase 7b 우선순위 11 완료: NLI primary + LLM judge fallback chain
+
+**무엇:** Phase 7b 명세 우선순위 11번 (NLI / LLM judge 연결 + timeout 500 ms + 3구간 분기) 의 결정적 부분을 채움. 판정 파이프라인을 `_judge_pair(a_text, b_text)` 단일 진입점으로 통일하고 fallback chain 명시: (1) NLI 시도 (transformers 가용 시, 500 ms timeout). (2) NLI high confidence(≥0.8 또는 <0.4 — 양 극단) 면 그대로 채택. (3) NLI mid 영역(0.4~0.6) 또는 NLI 미가용/timeout 이면 LLM judge (claude CLI haiku, 30 s timeout) 호출. (4) NLI/LLM 둘 다 실패하면 rule 약 신호(score=0.5) + `needs_retry=True` 로 status=candidate 강제 — 다음 scan 배치가 가용 환경에서 재판정. confirmed/dismissed 가 이미 있는 chunk pair 는 사용자 결정 보호로 덮지 않음.
+
+**왜:** 명세는 "NLI primary, 실패/low confidence 시 LLM judge fallback, 둘 다 timeout 시 status=candidate 재시도" 라는 3계층을 그렸는데, 구현 초안은 NLI 미가용 시 곧장 rule 로 떨어져 LLM judge 가 빠진 상태였음. 그래서 transformers 미설치 환경에서도 사실상 결정 품질이 작동해야 한다 — claude OAuth 구독은 항상 가용한 자원이므로 LLM judge 가 NLI 빈자리를 메우는 것이 정체성("로컬 단일 파일 + OAuth 친화") 과 정합. 실측 RTT 측정 결과 claude haiku 가 11~28 s 라 LLM_JUDGE_TIMEOUT_MS 기본값을 30 s 로 설정 (NLI 의 500 ms 와 분리 — NLI 는 동기 경로 가능, LLM 은 BG side 전제). LLM judge 응답이 verdict / score / reason 의 JSON 한 줄을 반환하도록 명시 프롬프트 + verdict-score 정합성 클램프 (모델이 "neutral" 라며 0.9 주는 등 모순 시 verdict 우선) 로 안정화.
+
+**폐기한 대안:**
+- **LLM judge 를 sonnet/opus** — RTT 가 30 s 를 넘겨 BG queue 처리 시간 폭주. haiku 가 한국어 짧은 결정문 판정에 충분.
+- **rule fallback 시 status=neutral 그대로 저장** — 이게 명세 위반. NLI/LLM 가용 환경에서 재판정 트리거가 안 일어나 영구 미판정 상태로 굳어짐. needs_retry=True → status=candidate 가 명세의 "다음 배치에서 재시도" 의 정확한 구현.
+- **mid 영역 LLM 보강 생략** — NLI 결과를 그대로 쓰면 mid 영역(0.4~0.6) 이 모두 neutral 로 떨어져 false negative 가 누적. LLM 정밀 판정으로 그 구간을 분리.
+- **LLM_REFINE 범위를 0.3~0.7 로 넓히기** — LLM 호출 빈도가 늘어 BG queue 부담. 0.4~0.6 이 NLI 가 "애매"한 진짜 mid 구간으로 충분.
+
+**참고 매핑:** 다이어그램 `J6 → CDCAND → CDJUDGE → CDCONF` 의 CDJUDGE 가 `_judge_pair` 에 해당. CDCONF score 3구간 분기는 `_classify_status` 가 high → candidate, mid·low → neutral 로 처리 (자동 dismiss 금지 원칙 유지). 실측 검증: 충돌(0.95→candidate), 같은 방향(0.1→neutral), 무관(0.5→neutral) 3 시나리오 모두 정확.
+
 ## 2026-05-10 — Phase 7b 후속 결정 4건 락인 (NLI 모델 · scope classifier · summary 갱신 빈도 · contradiction 임계)
 
 **무엇:** Phase 7b (계층 요약 + 충돌 감지) 진입 직전, HANDOFF.md 후속 결정 4건을 한 라운드에 확정. (7b-1) NLI = **mDeBERTa-v3-base-mnli-xnli** (다국어, 한국어 포함, 약 280M 파라미터) — `xlm-roberta-large-xnli` 는 더 무겁고 한국어 fine-tune 차이 크지 않음, `klue/roberta-base` 는 NLI head 없어 전이학습 부담. (7b-2) Scope classifier = **rule-based 우선** + 명세 시드 그대로: `전체|전반|프로젝트|정리|흐름 전체` → global, `기능|플로우|과정|UX|시나리오` → feature, 그 외 + entity 매칭 + ≤ 30 자 → local. fallback 순서 local→feature→global. (7b-3) Summary 갱신 빈도 = **즉시 sync(commit-trigger 기반 incremental)** + 명시 호출 가능. 매 turn 재생성 X — `J5` 가 W1 commit 분석 결과 변경 감지 시에만 enqueue. (7b-4) Contradiction 3구간 임계 = 명세 예시값 그대로 시작 — `≥ 0.8 → candidate`, `0.4~0.8 → neutral`, `< 0.4 → neutral`. 자동 dismiss 금지 (false negative 영구 손실 방지). 임계는 NLI 모델 첫 100~200 쌍 측정 후 캘리브레이션.

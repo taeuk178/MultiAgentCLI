@@ -1154,9 +1154,9 @@ leaf 변경이 상위 summary 로 전파되는 방식. 다이어그램의 `J5 �
 
 - (완료, 2026-05-10) Phase 7a 안정 운용 — `refactor/phase_7a` 브런치에 schema v1 + retrieval 패키지 머지
 - (완료, 2026-05-10) 후속 결정 7b-1~4 락인 (mDeBERTa-v3-base-mnli-xnli / rule-based scope classifier / 즉시 sync 갱신 / 0.8·0.4 임계) — `HISTORY.md` 2026-05-10 참조
-- (완료, 2026-05-10) **현재 브런치 `refactor/phase_7b`** — 13개 우선순위 중 1·2·3·4·5·6·7·8·9·10·12·13 완료, 11(NLI 정밀 판정) 은 lazy skeleton. 결정적 path 는 ingest → dispatch → drain → feature/document/project summary → routed retrieve → assembly 까지 동작.
-- **(다음 PR)** ML 의존성 통합 — `transformers` (NLI), `sentence-transformers` (BGE-M3 + cross-encoder), `sqlite-vec` extension 의 모델 캐시·로딩 정책 결정.
-- **(그 다음 PR)** chunk_entities 자동 채우기 — 별도 skill (LLM-driven NER) 가 ingest 결과를 받아 entity link 를 채우면 contradiction 후보 생성이 의미 있어짐.
+- (완료, 2026-05-10) **현재 브런치 `refactor/phase_7b`** — 13개 우선순위 모두 완료. NLI(우선순위 11) 는 transformers 가용 시 사용, 미가용 시 LLM judge (claude CLI haiku) 가 fallback. 둘 다 미가용 시 rule 약 신호 + needs_retry 로 status=candidate 보존. 결정적 path 는 ingest → dispatch → drain → feature/document/project summary → routed retrieve → assembly 까지 동작. LLM judge 실측 검증 완료 (충돌/같은방향/무관 3개 시나리오 모두 정확).
+- **(다음 PR)** ML 의존성 통합 — `transformers` 실제 설치 + NLI mDeBERTa-v3 모델 캐시 위치 결정 (`sentence-transformers`/sqlite-vec 도 같은 결정 라운드).
+- **(그 다음 PR)** chunk_entities 자동 채우기 — 별도 skill (LLM-driven NER) 가 ingest 결과를 받아 entity link 를 채우면 contradiction 후보 생성이 단일 section 의존을 벗어남.
 - **(후속)** README 의 Phase 7b 다이어그램 (`SC` / `HYB2` / `HYB3` / `GROUND` / `CCHECK` / `J5` / `J6`) 과 실제 구현 노드 매핑 검증.
 
 ## 성능 병목 진단 — 3축 (2026-05-09)
