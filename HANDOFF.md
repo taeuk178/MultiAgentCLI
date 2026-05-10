@@ -6,7 +6,1021 @@
 - **결정 사유 로그**(왜 그렇게 바꿨는지)는 `HISTORY.md` 참조.
 - 구현 완료된 Phase 1·2·3·4.5·HUD·플러그인 설치의 사용·구조·데이터 위치는 `README.md` 참조.
 
-최종 업데이트: 2026-05-09.
+최종 업데이트: 2026-05-10.
+
+## Phase 7a — 청크 + 의미 검색 + 엔티티 정규화 + 버전 (1단계 명세) — 2026-05-10
+
+이 섹션은 시스템 디자인 1단계 — chunk pipeline + hybrid retrieval + entity normalization + versioning — 의 명세입니다. LoadMap.md 의 Phase 7 을 **7a (chunk-level)** / **7b (project-level graph: hierarchical summary, contradiction detection, graph memory)** 로 분리한 첫 단계에 해당합니다. 명세 진입 전에 아래 7개 결정 사항을 합의해야 하며, 합의 결과는 `HISTORY.md` 의 결정 사유 로그로 남깁니다.
+
+### 결정 사항 (2026-05-10 확정)
+
+7개 결정의 공통 축은 "**로컬 단일 파일 + OAuth 친화 + 점진 진화**" 라는 imprint 정체성 유지입니다. 결정 사유 로그는 `HISTORY.md` 2026-05-10 항목 참조.
+
+| # | 항목 | 결정 | 핵심 사유 |
+|---|---|---|---|
+| 1 | 스토리지 스택 | **SQLite + FTS5 + sqlite-vec** | 로컬 단일 파일 정체성과 정합. 한 파일에 문서·FTS·벡터 동거. 한계 보일 때 PostgreSQL migration path 만 열어둠. |
+| 2 | 임베딩 공급자 | **로컬 multilingual (multilingual-e5 또는 BGE 계열) 우선** | claude OAuth 구독에 임베딩 API 없음 + 외부 API key 의존 회피. 한국어 PRD·Slack 대응. 차원은 모델 결정 후 확정. |
+| 3 | chunk_type | **기존 9+3 유지 + normalized 4-category 컬럼 이중 계층** | 기존 데이터 호환 + 검색 단순화 양립. `raw_chunk_type` / `normalized_chunk_type` 두 컬럼. |
+| 4 | entity_aliases 자동화 | **자동 추출 + review queue** | 완전 자동은 오탐이 retrieval 전체를 오염. 프로젝트별 용어 사전을 점진 학습. |
+| 5 | supersedes 결정 | **사용자 명시 기본 + 자동 제안 보조** | 보완 설명을 폐기로 오인할 위험. 자동 supersede 는 contradiction detection 영역이라 Phase 7b. |
+| 6 | Retrieval API 호스팅 | **inline-first + daemon-ready abstraction** | 현 hook/skill 구조 유지. `retrieve(query)` 시그니처만 추상화해 두고 배포 형태는 늦게 결정. |
+| 7 | rerank 모델 | **로컬 cross-encoder first + Cohere 옵션 + Claude judge 실험** | OAuth 친화 + 비용 통제. 핵심 파이프라인을 외부 의존에 묶지 않음. |
+
+#### 남은 후속 결정 (구현 진입 전 좁혀야 할 세부)
+
+- **2-1**: multilingual-e5 vs BGE 계열 정확한 모델명 + 차원 (multilingual-e5-large = 1024 / BGE-M3 = 1024 / BGE-ko-small = 384 등) — schema `embedding vector(N)` 확정
+- **3-1**: `normalized_chunk_type` 의 9+3 → 4 매핑 룰 — `decision / fix / todo / error / command / test_result / summary / code_context / note + spec / message / thread` → `requirement / decision / discussion / code_note` 결정표
+- **5-1**: supersedes 자동 제안의 패턴 트리거 — 정규식("변경한다 / 대체한다 / 폐기" 등) vs LLM 분류기 — Phase 7a 안에서 결정
+- **6-1**: inline backend / daemon backend 의 공통 함수 시그니처 — Python module / shell command / RPC 중 어느 인터페이스를 표준으로
+
+> **명세 본문 주의**: 아래 명세 일부는 PostgreSQL 기준으로 작성되어 있습니다 (시스템 구성·테이블 설계 SQL·`vector(1536)` 등). 결정 #1 (SQLite + FTS5 + sqlite-vec) 에 따라 첫 구현 PR 에서 SQLite 스키마로 재작성합니다 — 본문은 설계 의도와 컬럼 단위 의미를 보존하기 위한 참고로 유지합니다.
+
+### 목표
+
+이 단계의 목표는 사용자의 짧고 모호한 질문을 받아도, 프로젝트 내부 문서·슬랙·노션에 흩어진 정보를 같은 엔티티 기준으로 묶고, 최신 결정 기준으로 검색해서 Claude 에 안정적으로 넘기는 것입니다.
+
+검색 파이프라인은 "문자열 일치"가 아니라 **문맥 보강된 청크 + 의미 검색 + 키워드 검색 + 엔티티 정규화 + 버전 필터링** 으로 동작해야 합니다.
+
+### 범위
+
+이번 1단계 (Phase 7a) 에 포함되는 것:
+
+- 데이터 수집: Notion, Slack, PRD, 회의록, 이슈
+- 청킹: 문서별 chunk 생성
+- contextual prefix 생성
+- embedding 생성 및 저장
+- BM25 / FTS 인덱스 생성
+- entity alias 추출 및 canonicalization
+- versioning 필드 저장
+- query 시 hybrid retrieval + reranking + context assembly
+
+이번 단계에서 **제외**하는 것 (Phase 7b 로 이월):
+
+- hierarchical summary (RAPTOR 류 — feature / document / project 계층 요약)
+- contradiction detection (NLI 기반 후보 + 정밀 판정)
+- query scope classifier 와 retrieval routing (local / feature / global)
+
+영구 deferred (Phase 7b 에서도 도입 안 함):
+
+- full knowledge graph DB 도입 (GraphRAG / HippoRAG 풀스택)
+- community detection 기반 preprocessing
+- graph traversal 기반 multi-hop reasoning
+- 자동 belief revision 엔진 / 완전 자동 supersede 확정
+
+### 시스템 구성
+
+스택 결정 #1 에 따라 **SQLite + FTS5 + sqlite-vec** (단일 파일) 로 확정. 하나의 DB 에서 벡터 검색과 키워드 검색을 같이 돌리고 RRF 로 점수 융합하는 방식은 동일 — sqlite-vec 가 `vec_distance_cosine` / `MATCH` 결과를 같은 SQL 쿼리에서 join 가능합니다. 아래 PostgreSQL 표기는 컬럼 의미·인덱스 의도 보존을 위한 참고로 유지하고, SQLite 스키마는 첫 구현 PR 에서 다시 작성합니다.
+
+구성 요소:
+
+- **Ingestion Worker** — Notion / Slack / 문서 수집
+- **Chunking Worker** — 문서 분리 및 메타데이터 부착
+- **Context Builder** — 각 chunk 에 `context_prefix` 생성
+- **Embedding Worker** — contextualized text 임베딩 생성
+- **Entity Resolver** — alias 추출, canonical entity 연결
+- **Retrieval API** — query 전처리, hybrid search, rerank, context 조립
+- **Claude Adapter** — 최종 prompt 구성 후 Claude 호출
+
+### 테이블 설계
+
+핵심은 **원문, 검색용 텍스트, 엔티티, 버전 정보를 분리**하는 것입니다.
+
+```sql
+-- 프로젝트
+create table projects (
+  id uuid primary key,
+  name text not null,
+  created_at timestamptz not null default now()
+);
+
+-- 원문 문서
+create table documents (
+  id uuid primary key,
+  project_id uuid not null references projects(id),
+  source_type text not null,              -- notion, slack, prd, meeting, jira
+  source_ref text not null,               -- notion page id, slack ts/channel, file path
+  title text,
+  author text,
+  created_at timestamptz,
+  updated_at timestamptz,
+  raw_text text not null,
+  checksum text not null,
+  is_deleted boolean not null default false
+);
+
+-- 청크
+create table chunks (
+  id uuid primary key,
+  project_id uuid not null references projects(id),
+  document_id uuid not null references documents(id),
+  chunk_index int not null,
+  section_path text,                      -- 예: 결제 > 테스트모드 > 버튼동작
+  chunk_text text not null,               -- 원본 청크
+  context_prefix text,                    -- LLM 생성 문맥 설명
+  retrieval_text text not null,           -- context_prefix + '\n' + chunk_text
+  embedding vector(1536),                 -- 결정 #2 후속(2-1) 에서 모델 확정 — multilingual-e5-large 1024 / BGE-M3 1024 / BGE-ko-small 384 등
+  tsv tsvector,                           -- SQLite 재작성 시 FTS5 virtual table 로
+  raw_chunk_type text,                    -- 결정 #3: 기존 9+3 (decision / fix / todo / error / command / test_result / summary / code_context / note / spec / message / thread)
+  normalized_chunk_type text,             -- 결정 #3: 4-category (requirement / decision / discussion / code_note) — 매핑 룰은 후속 결정 3-1
+  source_created_at timestamptz,
+  source_updated_at timestamptz,
+  valid_from timestamptz,
+  valid_to timestamptz,
+  is_current boolean not null default true,
+  supersedes_chunk_id uuid null references chunks(id),
+  created_at timestamptz not null default now()
+);
+
+-- 엔티티 canonical
+create table entities (
+  id uuid primary key,
+  project_id uuid not null references projects(id),
+  entity_type text not null,              -- ui_element, screen, api, feature_flag
+  canonical_name text not null,           -- 예: test_button
+  display_name text not null,             -- 예: Test 버튼
+  created_at timestamptz not null default now()
+);
+
+-- 엔티티 alias
+create table entity_aliases (
+  id uuid primary key,
+  entity_id uuid not null references entities(id),
+  alias text not null,                    -- 예: 테스트 모드 진입 버튼, 디버그 토글
+  normalized_alias text not null,
+  created_at timestamptz not null default now()
+);
+
+-- 청크와 엔티티 연결
+create table chunk_entities (
+  chunk_id uuid not null references chunks(id),
+  entity_id uuid not null references entities(id),
+  mention text not null,
+  confidence numeric(4,3) not null,
+  primary key (chunk_id, entity_id, mention)
+);
+```
+
+검색 성능 인덱스:
+
+```sql
+create index idx_chunks_project_doc on chunks(project_id, document_id);
+create index idx_chunks_current on chunks(project_id, is_current);
+create index idx_chunks_valid_time on chunks(project_id, valid_from, valid_to);
+create index idx_chunks_section on chunks(project_id, section_path);
+create index idx_entity_aliases_norm on entity_aliases(normalized_alias);
+create index idx_chunks_tsv on chunks using gin(tsv);
+-- pgvector index 는 환경에 맞춰 ivfflat 또는 hnsw 사용
+```
+
+### 저장 규칙
+
+청크 저장 시 핵심 규칙:
+
+- `chunk_text` — 원문 그대로 저장
+- `context_prefix` — 문서 전체 맥락 속에서 이 청크가 무엇인지 설명하는 1~2 문장
+- `retrieval_text` — `context_prefix + "\n" + chunk_text`
+- `embedding` — `retrieval_text` 기준으로 생성
+- `tsv` — `retrieval_text` 기준으로 생성
+- Claude 최종 답변에 넣을 때는 우선 `chunk_text` 중심으로 사용하고, 필요시 `context_prefix` 를 보조 정보로 사용
+
+즉 단순히 "A 버튼 동작" 만 저장하는 것이 아니라 **검색용 표현을 하나 더 만든다** 고 보면 됩니다.
+
+### Ingestion 플로우
+
+문서 수집부터 저장까지의 표준 플로우:
+
+1. 외부 소스에서 문서 수집
+2. 문서 checksum 비교로 변경 여부 확인
+3. 변경된 문서만 청킹 수행
+4. 각 청크마다 `context_prefix` 생성
+5. `retrieval_text` 생성
+6. embedding 생성
+7. 엔티티 추출 및 alias 연결
+8. 기존 chunk 와 비교해 versioning 처리
+9. DB upsert
+
+### 청킹 기준
+
+초기에는 너무 복잡하게 가지 말고 아래 기준을 권장:
+
+- 문단 / 섹션 기반 우선
+- 300~800 tokens 정도
+- overlap 10~15%
+- section title, heading path, source metadata 같이 보존
+- 슬랙은 thread 단위 또는 대화 window 단위
+- 회의록은 agenda / subtopic 단위
+
+### context_prefix 생성 규칙
+
+LLM 에 각 chunk 의 상위 문맥을 설명하게 합니다. **Anthropic 의 contextual retrieval** 방식과 같은 방향입니다.
+
+**입력**
+
+- 문서 제목
+- 문서 메타데이터
+- 문서 전체 요약 또는 상위 섹션
+- 현재 chunk 원문
+
+**출력 규칙**
+
+- 1~2 문장
+- 사실만, 추론 최소화
+- 문서 내부 위치와 기능적 의미를 설명
+- "이 내용은 …에 관한 것이다" 스타일 허용
+- 장황한 요약 금지
+
+**예시 프롬프트**
+
+```text
+You are generating retrieval context for a chunk.
+
+Given:
+- project name
+- document title
+- source type
+- section path
+- surrounding section summary
+- chunk text
+
+Write 1-2 sentences that explain what this chunk is about in the context of the whole project.
+Be concrete and factual.
+Mention the feature/screen/component if identifiable.
+Do not repeat the chunk verbatim unless needed.
+Output only the context text.
+```
+
+**예시 결과**
+
+원문:
+
+```text
+A 버튼 클릭 시 테스트 모드로 진입한다.
+```
+
+`context_prefix`:
+
+```text
+iOS 앱 A 화면의 우상단 테스트 진입 버튼 동작을 설명하는 요구사항이다. 테스트 모드 진입 UX 와 관련된 기능 정의이다.
+```
+
+`retrieval_text`:
+
+```text
+iOS 앱 A 화면의 우상단 테스트 진입 버튼 동작을 설명하는 요구사항이다. 테스트 모드 진입 UX 와 관련된 기능 정의이다.
+A 버튼 클릭 시 테스트 모드로 진입한다.
+```
+
+### Entity Alias 설계
+
+이 단계에서 entity 는 완전 자동 지식 그래프 수준까지 갈 필요는 없습니다. canonical entity + alias 사전 정도면 충분합니다.
+
+**권장 엔티티 타입**
+
+- `ui_element`
+- `screen`
+- `feature`
+- `api`
+- `state`
+- `experiment_flag`
+
+**처리 규칙**
+
+- chunk ingest 시 mention 후보 추출
+- 정규화: 공백 제거, lowercasing, 특수문자 단순화
+- 기존 alias 사전에 있으면 기존 entity 연결
+- 없으면 후보 entity 생성 또는 review queue 적재
+- alias confidence 낮으면 auto-link 하지 않고 human review
+
+**예시**
+
+```text
+canonical entity: test_button
+display_name: Test 버튼
+
+aliases:
+- test 버튼
+- 테스트 버튼
+- 테스트 모드 진입 버튼
+- 디버그 토글
+- debug toggle
+```
+
+이렇게 해두면 사용자가 "디버그 토글 뭐야" 라고 물어도 같은 엔티티 관련 chunk 를 확장 검색할 수 있습니다.
+
+### Versioning 규칙
+
+1단계의 versioning 은 단순하고 명확하게:
+
+**최소 필드**
+
+- `valid_from`
+- `valid_to`
+- `is_current`
+- `supersedes_chunk_id`
+
+**동작 규칙**
+
+- 새 문서 / 회의록 / 결정이 기존 요구를 대체하면 이전 chunk 의 `valid_to` 를 채우고 `is_current = false`
+- 새 chunk 는 `is_current = true`
+- 대체 관계가 명확하면 `supersedes_chunk_id` 연결
+- 불명확하면 둘 다 current 로 두되 metadata 만 남김
+
+**예시**
+
+3월:
+
+```text
+test 버튼 클릭 시 바로 테스트 모드로 진입
+```
+
+5월:
+
+```text
+test 버튼 클릭 시 확인 모달 후 테스트 모드로 진입
+```
+
+저장 결과:
+
+- 3월 chunk: `valid_to = 2026-05-01`, `is_current = false`
+- 5월 chunk: `valid_from = 2026-05-01`, `is_current = true`, `supersedes_chunk_id = <3월 chunk id>`
+
+### Retrieval API 플로우
+
+질문이 들어오면 아래 순서로 처리:
+
+1. query normalize
+2. entity alias resolve
+3. query expansion
+4. query embedding 생성
+5. vector retrieval top-N
+6. BM25 / FTS retrieval top-N
+7. RRF 기반 score fusion
+8. version filter / recency boost
+9. entity coverage boost
+10. rerank
+11. top-K context assembly
+12. Claude 호출
+
+**query normalize**
+
+- 소문자화
+- 조사 / 불용어 경량 제거
+- 버튼 / 클릭 / 탭 같은 도메인 동의어 normalization
+- 한국어는 형태소 분석기까지는 나중에, 초기엔 rule-based 로 시작
+
+**entity alias resolve**
+
+```text
+입력: "디버그 토글 누르면 뭐 돼?"
+resolve:
+- matched alias: "디버그 토글"
+- canonical entity: test_button
+```
+
+**query expansion**
+
+```text
+원본: 디버그 토글 누르면 뭐 돼?
+확장: 디버그 토글, test 버튼, 테스트 모드 진입 버튼, A 화면, 탭 동작
+```
+
+### Hybrid Search 설계
+
+Anthropic cookbook 기준처럼 semantic + BM25 결과를 각각 과다 회수한 뒤 score fusion 하는 방식.
+
+**추천 기본값**
+
+- vector topN: 100~150
+- bm25 topN: 100~150
+- final fusion candidate: 150~250
+- rerank input: top 30~50
+- final context topK: 8~15
+
+**RRF 예시**
+
+```text
+rrf_score = 0.8 * (1 / (60 + vector_rank)) + 0.2 * (1 / (60 + bm25_rank))
+```
+
+초기 가중치는 Anthropic cookbook 예시처럼 semantic 80, BM25 20 으로 시작하고 튜닝합니다.
+
+**recency / current boost**
+
+```text
+final_score = rrf_score
+  + 0.15 if is_current = true
+  + 0.10 if matched_entity = canonical entity
+  + 0.05 if source_updated_at is recent
+```
+
+정확한 수치는 로그 보고 조정.
+
+### Reranking
+
+초기 retrieval 은 recall 중심이고, reranking 은 precision 중심.
+
+**rerank 입력**
+
+- user query
+- candidate chunk 의 `retrieval_text`
+- metadata: `source_type`, `section_path`, `is_current`, entity match
+
+**rerank 목적**
+
+- 질문과 직접 관계있는 청크 상위 배치
+- 최신 정책 우선
+- 중복 청크 제거
+- 같은 의미의 여러 청크 중 대표성 높은 청크 선택
+
+### Final Context Assembly 규칙
+
+- 같은 document / section 에서 중복 청크 너무 많이 넣지 않기
+- 같은 entity 에 대한 최신 / 대표 청크 우선
+- 필요 시 최신 1개 + 과거 1개만 같이 넣기
+- Slack 잡담보다 PRD / 결정문서 가중치 높게
+
+### Claude 전달 포맷
+
+검색 결과를 그냥 붙이지 말고 구조화해서 전달:
+
+```text
+[Project]
+프로젝트명: A iOS App
+
+[User Question]
+디버그 토글 누르면 지금 어떻게 동작해?
+
+[Resolved Entity]
+canonical: test_button
+aliases matched: 디버그 토글
+
+[Retrieved Context]
+1. source=PRD, section=테스트모드>진입, current=true, updated=2026-05-01
+   test 버튼 클릭 시 확인 모달을 먼저 노출한 후 테스트 모드로 진입한다.
+
+2. source=Slack, section=QA 스레드, current=true, updated=2026-05-02
+   디버그 토글이라는 문구로 변경되었으며 기존 test 버튼과 동일한 UI 요소를 의미한다.
+
+3. source=Meeting Note, section=릴리즈 정책, current=false, updated=2026-03-10
+   test 버튼 클릭 시 바로 테스트 모드로 진입한다.
+
+[Instructions]
+- Answer based on the current decision first.
+- Mention prior behavior only if relevant.
+- If the current behavior changed from previous documents, explain the update clearly.
+```
+
+이렇게 하면 Claude 가 최신 / 과거를 덜 혼동합니다.
+
+### 실제 동작 시나리오
+
+**저장 시점**
+
+기획 문서:
+
+```text
+A 화면 우상단의 test 버튼 클릭 시 테스트 모드로 진입한다.
+```
+
+회의록:
+
+```text
+릴리즈 전 변경: test 버튼은 바로 진입하지 않고 확인 모달 이후 진입으로 바꾼다.
+```
+
+슬랙:
+
+```text
+이제 문구는 디버그 토글로 통일하자.
+```
+
+시스템 저장 결과:
+
+- entity `test_button`
+- alias: `test 버튼`, `디버그 토글`
+- old chunk: 직접 진입, `is_current = false`
+- new chunk: 확인 모달 후 진입, `is_current = true`
+
+**조회 시점**
+
+사용자 질문:
+
+```text
+디버그 토글 누르면 뭐 해?
+```
+
+파이프라인:
+
+1. "디버그 토글" alias 매칭
+2. canonical entity `test_button` resolve
+3. vector search 가 "버튼 동작", "테스트 모드 진입" 관련 청크 회수
+4. BM25 가 "디버그 토글" 정확 매칭된 슬랙 청크 회수
+5. RRF 결합
+6. `is_current = true` 청크 가중치
+7. rerank 후 최종 context 구성
+
+Claude 답변:
+
+> 현재 디버그 토글은 확인 모달을 먼저 띄운 뒤 테스트 모드로 진입합니다. 이전에는 즉시 진입 정책이 있었지만 이후 변경되었습니다.
+
+이게 1단계의 핵심 가치입니다 — **표현이 달라도 찾고, 최신 결정으로 정리해서 답하게 만드는 것**.
+
+### API 계약 예시
+
+**Ingest API**
+
+```json
+POST /v1/projects/:projectId/documents/ingest
+{
+  "sourceType": "notion",
+  "sourceRef": "page_123",
+  "title": "테스트 모드 정책",
+  "updatedAt": "2026-05-01T12:00:00Z",
+  "rawText": "..."
+}
+```
+
+**Query API**
+
+```json
+POST /v1/projects/:projectId/query
+{
+  "question": "디버그 토글 누르면 뭐 해?",
+  "topK": 10,
+  "includeHistory": true
+}
+```
+
+**Query 응답 내부 디버그 예시**
+
+```json
+{
+  "resolvedEntities": [
+    { "canonical": "test_button", "matchedAlias": "디버그 토글" }
+  ],
+  "retrievedChunks": [
+    { "chunkId": "c1", "score": 0.91, "isCurrent": true },
+    { "chunkId": "c2", "score": 0.72, "isCurrent": false }
+  ],
+  "answer": "현재는 확인 모달 후 테스트 모드로 진입합니다."
+}
+```
+
+### 구현 우선순위
+
+가장 안정적인 구현 순서:
+
+1. `documents`, `chunks` 저장 구조부터 만든다
+2. `context_prefix`, `retrieval_text`, embedding, `tsv` 생성 파이프라인을 붙인다
+3. pgvector + FTS 기반 hybrid search 를 구현한다
+4. entity alias 를 수동 seed + 반자동 추출로 붙인다
+5. versioning 필드를 붙이고 current 우선 정렬을 넣는다
+6. reranking 과 Claude prompt assembly 를 마무리한다
+
+### 완료 조건
+
+1단계가 끝났다고 볼 수 있는 기준:
+
+- 같은 의미의 다른 표현으로 물어도 관련 청크가 검색된다
+- 최신 결정이 과거 결정보다 우선적으로 선택된다
+- alias 기반으로 같은 UI 요소를 하나의 entity 로 묶을 수 있다
+- Claude 답변이 "현재 기준" 과 "이전 기준" 을 구분해 설명한다
+- retrieval debug 로그로 왜 이 청크가 선택되었는지 추적 가능하다
+
+### 다음 액션
+
+- (완료, 2026-05-10) 7개 결정 합의 — 본 섹션 "결정 사항" 표 + `HISTORY.md` 2026-05-10 참조
+- (완료, 2026-05-10) `LoadMap.md` Phase 7 → 7a / 7b 분리 갱신
+- (완료, 2026-05-10) `HISTORY.md` 결정 사유 로그 추가
+- **(다음 PR)** 후속 결정 2-1 · 3-1 좁히기 — 임베딩 모델·차원 확정 + `raw_chunk_type → normalized_chunk_type` 매핑표 작성. 짧은 결정 라운드 1회로 끝낼 수 있는 분량.
+- **(그 다음 PR)** SQLite 스키마 v1 — `documents`, `chunks`(이중 `chunk_type`), `entities`, `entity_aliases`, `chunk_entities` 를 `~/.claude/imprint/app.sqlite` 에 idempotent migration 으로 추가. FTS5 virtual table 동기화 trigger + sqlite-vec extension 로딩.
+- **(그 다음 PR 들)** 명세 "구현 우선순위" 2~6번 단계로 분해.
+
+## Phase 7b — 계층 요약 + 충돌 감지 (2단계 명세) — 2026-05-10
+
+이 섹션은 시스템 디자인 2단계 — Phase 7a retrieval 엔진 위에 **질문 해상도에 맞는 요약 계층** 과 **충돌 감지 계층** 을 얹는 단계 — 의 명세입니다. 작은 질문은 여전히 chunk 기반으로 답하되, 큰 질문은 feature / document / project summary 부터 접근하고, 서로 상충하는 결정이 있으면 명시적으로 표시해야 합니다.
+
+**진입 조건**: Phase 7a 가 안정적으로 운용된 뒤. Phase 7a 의 후속 결정 4건과 SQLite 스키마 v1 이 머지된 상태가 전제.
+
+### 한 줄 요약
+
+> Phase 7b 는 SQLite 기반 1단계 retrieval 엔진 위에 RAPTOR 형 계층 요약과 경량 contradiction awareness 를 추가해, 작은 질문은 정확하게 답하고 큰 질문은 구조적으로 설명하며, 충돌 시 이를 숨기지 않고 드러내는 단계.
+
+### 단계 정의 (1·2 단계 분리)
+
+| 단계 | 한 문장 정의 | 핵심 컴포넌트 |
+|---|---|---|
+| **1단계 (Phase 7a)** | 검색을 잘하게 만든다 | hybrid retrieval (RRF) · entity alias canonicalization · versioning · contextual prefix |
+| **2단계 (Phase 7b)** | 검색된 결과를 프로젝트 수준에서 해석하게 만든다 | feature / document / project summary · query scope classifier · contradiction candidate + 판정 · resolution-aware answer assembly |
+
+### 전제
+
+- 로컬 단일 파일 지향 (Phase 7a 결정 #1 유지)
+- SQLite + FTS5 + sqlite-vec 기반 유지
+- Claude OAuth 중심 사용
+- 1단계에서 이미 chunks · entities · entity_aliases · versioning · hybrid retrieval 이 구현되어 있음
+- 2단계에서는 대규모 GraphRAG 풀스택 대신 RAPTOR 에 가까운 **경량 계층 요약 구조** 채택
+
+즉 2단계는 "그래프 DB 도입" 이 아니라 현재 로컬 retrieval 엔진을 더 높은 해상도의 질문에 대응하게 만드는 확장.
+
+### 범위
+
+**포함**
+
+- feature / document / project 단위 summary 생성
+- summary 자체를 retrieval 대상에 포함
+- query scope classifier 도입
+- local question 과 global question 의 retrieval 경로 분기
+- contradiction candidate 생성
+- NLI 또는 LLM 기반 contradiction 판정
+- answer assembly 시 conflict 표시
+
+**제외 (영구 deferred)**
+
+- full knowledge graph 구축
+- community detection 기반 GraphRAG preprocessing
+- graph traversal 기반 multi-hop reasoning
+- 자동 belief revision 엔진
+- 완전 자동 supersede 확정
+
+### 설계 원칙
+
+1. **Local-first** — 모든 요약 / 충돌 데이터는 기존 SQLite 파일에 저장
+2. **Incremental** — 전체 재빌드보다 변경 영향 범위만 재생성
+3. **Resolution-aware** — 질문 크기에 따라 retrieval 단위를 바꿈
+4. **Grounded** — summary 만으로 답하지 않고 항상 근거 chunk 를 함께 유지
+5. **Cautious conflict handling** — contradiction 은 자동 확정이 아니라 candidate 와 confirmed 를 구분
+
+### 추가 데이터 모델
+
+#### `summaries`
+
+```sql
+create table summaries (
+  id text primary key,
+  project_id text not null,
+  level text not null,                  -- feature, document, project
+  target_key text not null,             -- feature:<key>, document:<id>, project:<id>
+  title text,
+  summary_text text not null,
+  retrieval_text text not null,
+  embedding blob,
+  tsv text,
+  source_chunk_count integer not null default 0,
+  source_summary_count integer not null default 0,
+  valid_from text,
+  valid_to text,
+  is_current integer not null default 1,
+  updated_at text not null
+);
+```
+
+- `summary_text` — 사용자에게 보여줄 요약 본문
+- `retrieval_text` — 검색용 텍스트, 필요 시 context prefix 포함
+- `level` — 질문 범위에 맞는 레벨 선택에 사용
+- `target_key` — 같은 feature / document / project 를 식별하는 키
+
+#### `summary_links`
+
+```sql
+create table summary_links (
+  parent_summary_id text not null,
+  child_kind text not null,             -- summary, chunk
+  child_id text not null,
+  rank_order integer not null default 0,
+  weight real not null default 1.0,
+  primary key (parent_summary_id, child_kind, child_id)
+);
+```
+
+summary 가 어떤 하위 summary / chunk 를 대표하는지 연결. 답변 시 drill-down 근거 추적에 사용.
+
+#### `contradictions`
+
+```sql
+create table contradictions (
+  id text primary key,
+  project_id text not null,
+  entity_id text,
+  scope_key text,                       -- feature or section scope
+  chunk_a_id text not null,
+  chunk_b_id text not null,
+  contradiction_score real not null,
+  detector text not null,               -- nli, llm
+  status text not null,                 -- candidate, confirmed, dismissed
+  reason text,
+  created_at text not null,
+  updated_at text not null
+);
+```
+
+contradiction 결과 캐시. query 시 매번 모든 chunk 쌍을 다시 비교하지 않기 위해 저장.
+
+### Summary 계층 정의
+
+3계층만 먼저 지원:
+
+#### feature summary
+
+생성 기준: 같은 entity / 같은 feature key / 같은 `section_path` / 같은 `normalized_chunk_type` 집합
+
+예: `feature:test_mode_entry`, `feature:payment_auth_flow`, `feature:debug_toggle_behavior`
+
+실무에서 가장 자주 쓰이는 해상도.
+
+#### document summary
+
+생성 기준: 동일 document 하위 chunk / feature summary 집합
+
+예: `document:notion_prd_123`, `document:meeting_2026_05_01`
+
+#### project summary
+
+생성 기준: 동일 project 의 최신 document summary 집합
+
+예: `project:ios_app_alpha`
+
+RAPTOR 처럼 하위 정보를 재귀적으로 요약해서 상위 요약을 만든다는 점이 핵심.
+
+### Summary 생성 플로우
+
+문서 변경 또는 chunk 변경이 발생했을 때:
+
+1. 변경된 document / chunk 식별
+2. 영향받는 feature key 집합 계산
+3. 각 feature 별 최신 current chunk 수집
+4. feature summary 재생성
+5. 영향받는 document summary 재생성
+6. 영향받는 project summary 재생성
+7. 각 summary 에 embedding / FTS 인덱싱 업데이트
+
+#### feature summary 생성 입력
+
+- feature 에 연결된 최신 chunk 목록
+- 관련 entity 이름과 alias
+- source metadata
+- current / obsolete 정보
+- 필요 시 직전 summary
+
+#### feature summary 생성 규칙
+
+- 4~8 문장 이내
+- "현재 기준 동작" 우선
+- 과거 변경은 1~2 문장만 언급
+- source 간 합의 / 불일치 여부 표시
+- 구현 세부보다 기능 의미 중심
+
+예시:
+
+```text
+테스트 모드 진입 기능은 A 화면 우상단의 디버그 토글을 통해 시작된다. 현재 정책상 버튼 탭 시 즉시 진입하지 않고 확인 모달을 먼저 노출한다. 이후 사용자 확인 시 테스트 모드 화면으로 이동한다. 과거 문서에는 즉시 진입으로 기록된 내용이 있으나 최신 회의록과 PRD 기준으로 모달 방식이 현재 유효하다.
+```
+
+#### document summary 생성 규칙
+
+- 문서 목적과 핵심 결정 위주
+- feature summary 들의 공통 흐름을 묶음
+- 회의록이면 "결정 / 변경사항" 중심
+- PRD 면 "기능 정의 / 예외 / 조건" 중심
+
+#### project summary 생성 규칙
+
+- 전체 프로젝트의 주요 기능 축 요약
+- 현재 유효한 정책 중심
+- 문서 간 변경 흐름이 있으면 간단히 언급
+- 너무 자세한 구현 설명 금지
+
+### Query Scope Classifier
+
+2단계 핵심은 질문 해상도를 먼저 구분하는 것.
+
+| 분류 | 정의 | 예시 |
+|---|---|---|
+| **local** | 특정 버튼 / 화면 / API / 문장 의미 질문 | "디버그 토글 누르면 뭐 돼?" |
+| **feature** | 하나의 기능 흐름 전체를 묻는 질문 | "테스트 모드 진입 UX 전체 설명해줘" |
+| **global** | 프로젝트 전체 정책 / 구조 / 주제 요약 질문 | "이 프로젝트의 테스트 관련 정책 전체 정리해줘" |
+
+#### 구현 방식
+
+초기에는 LLM 분류보다 **rule-based classifier 우선**:
+
+- "전체", "전반", "프로젝트", "정리", "흐름 전체" → global
+- "기능", "플로우", "과정", "UX", "시나리오" → feature
+- 엔티티 직접 언급 + 짧은 질문 → local
+
+애매한 경우 local → feature 순으로 fallback.
+
+### Retrieval 라우팅
+
+#### local 질문
+
+1단계 경로를 그대로 우선 사용:
+
+1. entity alias resolve
+2. chunk hybrid retrieval
+3. current / recency boost
+4. rerank
+5. answer assembly
+
+필요 시 feature summary 1개만 보조로 붙임.
+
+#### feature 질문
+
+summary 우선 retrieval 로 전환:
+
+1. entity / feature key resolve
+2. feature summary retrieval
+3. 관련 하위 chunk 3~5개 회수
+4. contradiction check
+5. answer assembly
+
+#### global 질문
+
+상위 summary 부터 시작:
+
+1. project summary retrieval
+2. 관련 document summary retrieval
+3. 필요 시 feature summary drill-down
+4. 대표 chunk 근거 회수
+5. contradiction check
+6. map-reduce 식 answer assembly
+
+GraphRAG 의 global summary retrieval 패턴처럼, global question 은 상위 summary 에서 먼저 답의 구조를 잡는 방식.
+
+### Contradiction Detection 플로우
+
+"후보 생성 → 정밀 판정 → 캐시 → 노출" 4단계 구조.
+
+#### 1. 후보 생성
+
+비교 대상 축소 규칙 (모든 chunk 쌍 비교는 비용 과다):
+
+- 같은 `entity_id`
+- 같은 `normalized_chunk_type = decision`
+- 같은 `scope_key` 또는 `section_path`
+- 둘 다 `is_current = true` 이거나 current 와 직전 버전 관계
+- 시간상 충돌 가능성이 있는 쌍만 선택
+
+이 단계는 **규칙 기반**.
+
+#### 2. 정밀 판정
+
+우선순위:
+
+- 로컬 NLI 모델
+- 실패 또는 low confidence 시 LLM judge fallback
+
+입력: chunk A · chunk B · entity / context metadata
+출력: entailment / contradiction / neutral · confidence · 짧은 이유
+
+#### 3. 저장
+
+`contradictions` 에 저장:
+
+- `candidate` — 자동 검출 직후
+- `confirmed` — 임계치 이상 또는 사용자 확인
+- `dismissed` — false positive
+
+#### 4. query 시 활용
+
+질문과 연관된 entity / feature 에 confirmed contradiction 이 있으면 답변 생성 시 표시:
+
+```text
+현재 기준으로는 확인 모달 후 진입이 맞습니다. 다만 과거 문서에는 즉시 진입으로 기록된 결정이 있으며, 기능 정의가 변경된 이력이 있습니다.
+```
+
+### Answer Assembly 규칙
+
+"요약 + 근거 + 충돌 표시" 구조.
+
+#### local 질문
+
+- 현재 chunk answer 우선
+- 필요 시 feature summary 1개
+- 과거 변경 이력은 1줄만
+
+#### feature 질문
+
+- feature summary 로 서두 작성
+- 대표 chunk 2~4개 근거 첨부
+- conflict 있으면 중간에 별도 문장으로 표시
+
+#### global 질문
+
+- project summary 로 전체 구조 설명
+- document / feature summary 로 세부 분기
+- 중요한 current decision chunk 만 근거로 첨부
+- conflict 는 "프로젝트 내 변경 / 불일치" 섹션으로 분리
+
+#### grounding 규칙
+
+- summary 만 단독 사용 금지
+- 최종 answer 마다 최소 1~3개의 current chunk 근거 포함
+- obsolete chunk 는 "과거 이력" 으로만 사용
+
+### 실제 동작 시나리오
+
+**시나리오 A — local 질문**
+
+질문: `디버그 토글 누르면 지금 뭐 돼?`
+
+1. alias resolve → `test_button`
+2. local classifier
+3. 1단계 hybrid retrieval 실행
+4. 최신 decision chunk 선택
+5. feature summary 1개 보조
+6. contradiction 존재 시 변경 이력 한 줄 추가
+
+출력 성격: 짧고 직접적, 최신 current 정책 우선.
+
+**시나리오 B — feature 질문**
+
+질문: `테스트 모드 진입 UX 전체 설명해줘`
+
+1. feature classifier
+2. `feature:test_mode_entry` summary retrieval
+3. 관련 current chunk 3~5개 로딩
+4. contradiction candidate 확인
+5. feature summary 기반으로 흐름 설명
+6. 하위 chunk 근거 인용
+
+출력 성격: 버튼 → 모달 → 진입 흐름 순서 설명, 변경 이력 있으면 마지막에 설명.
+
+**시나리오 C — global 질문**
+
+질문: `이 프로젝트의 테스트 관련 정책 전체 정리해줘`
+
+1. global classifier
+2. project summary retrieval
+3. 관련 document summary 2~4개 선택
+4. 중요 feature summary drill-down
+5. 각 summary 에서 partial answer 생성
+6. 최종 종합 answer 생성
+7. confirmed contradiction 있으면 별도 표시
+
+출력 성격: 기능군 기준 구조화된 요약, 문서 간 합의 / 변경 포인트 포함.
+
+### 배치 / 갱신 전략
+
+실시간 전부 재계산이 아니라 **비동기 incremental 갱신**.
+
+#### summary rebuild 트리거
+
+- 새 문서 ingest
+- 기존 문서 update
+- entity merge / split
+- supersede 상태 변경
+- current flag 변경
+
+#### 재계산 범위
+
+- 변경된 chunk 와 연결된 feature summary 만 재생성
+- 그 다음 해당 document summary 재생성
+- 마지막으로 project summary 재생성
+
+leaf 변경이 상위 summary 로 전파되는 방식.
+
+#### contradiction rebuild 트리거
+
+- 새 decision chunk 생성
+- entity alias merge
+- supersede 확정
+- current / current 쌍 변화
+
+### 후속 결정 (구현 진입 전 좁혀야 할 세부)
+
+| # | 항목 | 후보 | 비고 |
+|---|---|---|---|
+| 7b-1 | NLI 모델 선택 | mDeBERTa-v3-base-mnli-xnli / korNLI fine-tuned / 다국어 NLI | 정확도·메모리·다국어 trade. Phase 7a 임베딩 모델 결정 후 함께 잡으면 효율. |
+| 7b-2 | scope classifier rule-set 시드 | 키워드 매칭 / 정규식 / 단순 LLM 보조 | 초기 rule 시드 (전체·전반·프로젝트·정리 → global, 기능·플로우·UX → feature, 그 외 → local) |
+| 7b-3 | summary 갱신 빈도 | 즉시 sync / 5분 배치 / 매시간 배치 | incremental update 구현이 끝난 뒤 트래픽 측정 후 결정 |
+| 7b-4 | contradiction `confirmed` 임계 | 자동 임계 / 사용자 확인 필수 | 명세는 양쪽 다 가능. 초기엔 사용자 확인 필수로 보수 운영 권장 |
+
+### 구현 우선순위
+
+1. `summaries`, `summary_links`, `contradictions` 테이블 추가
+2. feature summary 생성기 구현
+3. document / project summary 생성기 구현
+4. summary embedding + FTS 인덱싱
+5. query scope classifier 추가
+6. retrieval routing 분기 추가
+7. contradiction candidate generator 구현
+8. NLI / LLM contradiction judge 연결
+9. answer assembly 업데이트
+
+### 완료 조건
+
+- "전체", "흐름", "정리" 류 질문에 chunk 나열이 아니라 구조화된 답이 나온다
+- summary retrieval 후에도 실제 current chunk 근거가 함께 유지된다
+- 같은 entity 의 상충 decision 이 자동 candidate 로 잡힌다
+- confirmed contradiction 이 있으면 답변에서 명시적으로 드러난다
+- summary rebuild 가 full rebuild 가 아니라 incremental update 로 동작한다
+
+### 다음 액션
+
+- **(전제)** Phase 7a 안정 운용 — 후속 결정 2-1·3-1·5-1·6-1 합의 후 SQLite 스키마 v1·hybrid retrieval·rerank 까지 머지된 상태
+- **(다음 PR)** 후속 결정 7b-1~4 좁히기 — NLI 모델 / classifier rule-set / 갱신 빈도 / confirmed 임계
+- **(그 다음 PR)** 명세 "구현 우선순위" 1번 (summaries · summary_links · contradictions 테이블) 부터 PR 단위로 분해
 
 ## 성능 병목 진단 — 3축 (2026-05-09)
 

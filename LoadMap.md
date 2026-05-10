@@ -274,12 +274,37 @@ GitHub repo (imprint-skills)
 - manifest.json 포맷 정의
 - 로컬 override 우선순위
 
-### Phase 7. Vector / 고급 추출 (선택)
+### Phase 7a. Chunk-level retrieval 정밀도 (의미 검색 + 엔티티 + 버전)
 
-- sqlite-vec 또는 LanceDB
-- chunk embedding pipeline
-- hybrid search (FTS + vector)
-- LLM 기반 chunk 추출 정교화
+7개 결정(2026-05-10)에 따라 다음 컴포넌트를 한 사이클 안에 묶음:
+
+- **SQLite + FTS5 + sqlite-vec** — 단일 파일 정체성 유지
+- **로컬 multilingual 임베딩** (multilingual-e5 / BGE 계열) — 외부 API key 의존 없음
+- **contextual prefix + retrieval_text** 분리 저장 (Anthropic contextual retrieval 방식)
+- **entity alias canonicalization** — 자동 추출 + review queue (오탐 방지)
+- **versioning 필드** (`valid_from` / `valid_to` / `is_current` / `supersedes_chunk_id`) — 사용자 명시 기본 + 자동 제안 보조
+- **hybrid retrieval (RRF) + 로컬 cross-encoder rerank**
+- **inline-first + daemon-ready abstraction** — `retrieve(query)` 시그니처 추상화
+
+상세 명세·결정 사항·후속 결정·구현 우선순위는 `HANDOFF.md` 의 **"Phase 7a — 청크 + 의미 검색 + 엔티티 정규화 + 버전"** 참조. 결정 사유는 `HISTORY.md` 2026-05-10 참조.
+
+### Phase 7b. 계층 요약 + 충돌 감지 (검색 결과를 프로젝트 수준에서 해석)
+
+Phase 7a 가 안정적으로 운용된 뒤 진입. **그래프 DB 도입이 아니라**, 1단계 retrieval 엔진 위에 **질문 해상도에 맞는 요약 계층** 과 **충돌 감지 계층** 을 얹는 단계. 단계 정의:
+
+- **1단계 (7a)**: 검색을 잘하게 만든다
+- **2단계 (7b)**: 검색된 결과를 프로젝트 수준에서 해석하게 만든다
+
+핵심 컴포넌트:
+
+- **RAPTOR 형 계층 요약** — feature / document / project 3계층, leaf 변경이 상위로 incremental 전파
+- **query scope classifier** — local / feature / global 분류, retrieval 단위를 질문 해상도에 맞춤
+- **경량 contradiction awareness** — 같은 entity 의 상충 decision 을 candidate 로 잡고 NLI / LLM 으로 정밀 판정, confirmed 만 답변에 노출
+- **resolution-aware answer assembly** — summary + 근거 chunk + 충돌 표시
+
+상세 명세·후속 결정·구현 우선순위·완료 조건은 `HANDOFF.md` 의 **"Phase 7b — 계층 요약 + 충돌 감지 (2단계 명세)"** 참조.
+
+**영구 deferred** (Phase 7b 에서도 도입 안 함): full knowledge graph DB · GraphRAG / HippoRAG 풀스택 · graph traversal multi-hop · 자동 belief revision · 완전 자동 supersede 확정.
 
 ## Tauri 앱 처리
 
@@ -422,7 +447,8 @@ export IMPRINT_PROFILE=1
 
 1. **Phase 5 (Workflow skill)** — 매일 트리거할 사용자-facing 명령 4개. memory + git porcelain + `claude -p` 합성. 다음에 만들 가치가 가장 큼.
 2. **Phase 6 (레지스트리)** — 사용자 수가 늘어 skill 공유 수요가 생기는 시점에 시작.
-3. **Phase 7 (Vector / 고급 추출)** — FTS5 trigram의 한계(의미 검색 필요·외래어 매칭)가 보일 때 진입. 그 전에는 미루는 게 ROI 높음.
+3. **Phase 7a (Chunk-level retrieval 정밀도)** — FTS5 trigram 의 한계(의미 검색 필요·외래어 매칭·paraphrase 미스)가 보일 때 진입. 결정 사항·후속 결정은 `HANDOFF.md` 참조.
+4. **Phase 7b (Project-level graph)** — Phase 7a 가 안정적으로 운용된 뒤. 프로젝트가 길어질수록 ROI 가 시간에 비례해 커짐.
 
 ## 최종 목표
 

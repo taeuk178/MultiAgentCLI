@@ -9,6 +9,25 @@
 
 기록 순서는 **최신이 위**. 항목당 한 단락 안에 변경/사유/대안 폐기 근거를 묶는다.
 
+## 2026-05-10 — Phase 7a 7개 결정 (스택 · 임베딩 · chunk_type · alias · supersedes · hosting · rerank)
+
+**무엇:** Phase 7a (chunk + hybrid retrieval + entity + versioning) 진입 전 7개 결정 확정. (1) Storage = SQLite + FTS5 + sqlite-vec, (2) Embedding = 로컬 multilingual (multilingual-e5 또는 BGE 계열), (3) chunk_type = 기존 9+3 유지 + normalized 4-category 컬럼 이중 계층, (4) Entity alias = 자동 추출 + review queue, (5) Supersedes = 사용자 명시 기본 + 자동 제안 보조, (6) Hosting = inline-first + daemon-ready abstraction, (7) Rerank = 로컬 cross-encoder first + Cohere 옵션 + Claude judge 실험. 동시에 LoadMap.md 의 Phase 7 을 7a (chunk-level) / 7b (project-level graph: hierarchical summary · contradiction detection · entity-relation graph) 로 분리.
+
+**왜:** 7개 항목의 공통 축은 "**로컬 단일 파일 + OAuth 친화 + 점진 진화**" 라는 imprint 정체성을 일관되게 관통한다는 점. PostgreSQL · 외부 임베딩 API · 외부 reranker · 완전 자동 alias / supersede 같은 옵션은 각각 기능적으로 좋아도 "별도 데몬 / 별도 API key / 외부 정책 의존 / 오탐의 retrieval 오염" 중 하나에 걸려, 한 군데 무너지면 나머지 결정도 같이 흔들린다. 반대 방향(로컬·OAuth 친화·반자동·이중 계층) 으로 전부 묶으면 정체성이 한 사이클 안에 일관되게 유지되고 다음 진화 경로(PostgreSQL migration / 외부 reranker 옵션 / Phase 7b 자동화) 가 모두 열린 채 남는다.
+
+**폐기한 대안:**
+- **PostgreSQL + pgvector + FTS** — 운영 단순성↑이지만 별도 데몬·설치·마이그레이션·백업·배포가 plugin 정체성과 충돌. 기능 한계(동시성·확장성)가 실제로 보이는 시점에 migration path 만 남겨둠.
+- **외부 임베딩 API (OpenAI / Voyage / Cohere) 우선** — 별도 API key 의존이 OAuth 구독 정체성과 충돌하고, 다중 사용자/제품 성격으로 갈 때 키 관리·과금이 추가 부담. 차원 수(1536 등) 도 모델에 종속되므로 모델 결정이 schema 보다 선행.
+- **chunk_type 4개로 일괄 마이그레이션** — 현 9+3 enum 이 검색·필터·UI 디버그 신호로 이미 의미가 있어 버리면 손실. `raw_chunk_type` 유지 + `normalized_chunk_type` 추가의 이중 계층화로 호환과 단순화 양립.
+- **entity alias 완전 자동 link** — UI 요소 alias 의미가 프로젝트마다 달라("디버그 토글" 이 한 화면에선 같은 entity 지만 다른 화면에선 다를 수 있음) 오탐이 retrieval 전체를 영구 오염시킴. review queue 로 점진 학습.
+- **supersedes 완전 자동 (동일 entity + 동일 section → 자동 supersede)** — 보완 설명을 폐기로 오인할 위험. 자동 detection 은 contradiction detection 영역이라 Phase 7b 로 연기.
+- **Cohere rerank-3 / Claude haiku as judge 우선** — 비용·정책 리스크 + 외부 의존. 핵심 retrieval 파이프라인의 rerank 를 외부에 묶지 않고 로컬 cross-encoder 로 시작, Cohere 는 옵션, Claude judge 는 실험 기능으로 격하.
+- **Retrieval API 완전 데몬 (`imprintd`)** — 설치·운영 부담. 반대로 완전 인라인은 기능이 늘수록 hook/skill 코드가 비대화. inline-first + 동일 함수 시그니처로 추상화해 두고 배포 형태만 늦게 결정하는 하이브리드.
+
+**남은 후속 결정 (Phase 7a 구현 진입 전 좁힘):** (2-1) multilingual-e5 vs BGE 정확한 모델·차원 — schema `embedding vector(N)` 확정용. (3-1) `raw_chunk_type → normalized_chunk_type` 매핑표 — 9+3 → 4 의 결정표. (5-1) supersedes 자동 제안의 트리거 패턴 — 정규식("변경 / 대체 / 폐기") vs LLM 분류기. (6-1) inline / daemon backend 의 공통 함수 시그니처. 본 결정과 별개로 짧은 라운드 1회씩에서 좁힐 수 있는 분량이라 별도 항목으로 분리.
+
+**참고 자료 매핑:** Anthropic contextual retrieval (Phase 7a context_prefix + retrieval_text 이중 표현), RAPTOR (Phase 7b hierarchical summary 의 직접 참고), MemoryBank (TTL · stale 정책), CoALA (chunk_type 의 working / episodic / semantic / procedural 매핑). HippoRAG / GraphRAG / 풀 knowledge graph 는 영구 deferred — Phase 7b 가 "그래프 DB 도입" 이 아니라 "RAPTOR 형 경량 계층 요약 + contradiction awareness" 로 결정.
+
 ## 2026-05-09 — Advisor skill 완전 제거
 
 **무엇:** `scripts/imprint/advisor.sh`, `skills/advisor/SKILL.md`, `provider_runs` 테이블 정의(`schema.sql`), plugin manifest의 advisor/ccg keyword·tag·description 흔적을 모두 삭제. 같은 날 직전 커밋(`e2c75f1`)에서 추가했던 advisor timeout wrapping(`IMPRINT_ADVISOR_TIMEOUT`·`with_timeout`·`gtimeout` 폴백)도 함께 제거됨.
