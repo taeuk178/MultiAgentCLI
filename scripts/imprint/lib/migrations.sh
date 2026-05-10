@@ -66,6 +66,25 @@ SQL
   fi
 }
 
+# ingest_queue 에 priority 컬럼이 없는 기존 DB 에 ALTER TABLE 로 추가.
+# SQLite ALTER 가 idempotent 하지 않아 PRAGMA table_info 로 컬럼 존재 검사 선행.
+add_ingest_queue_priority() {
+  if ! sqlite3 "$IMPRINT_DB" \
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='ingest_queue';" \
+      2>>"$IMPRINT_LOG" | grep -q ingest_queue; then
+    return 0
+  fi
+  if sqlite3 "$IMPRINT_DB" "PRAGMA table_info(ingest_queue);" 2>>"$IMPRINT_LOG" \
+      | awk -F'|' '{print $2}' | grep -qx priority; then
+    return 0
+  fi
+  log_info "migration: adding priority column to ingest_queue"
+  sqlite3 "$IMPRINT_DB" \
+    "ALTER TABLE ingest_queue ADD COLUMN priority INTEGER NOT NULL DEFAULT 5;" \
+    >/dev/null 2>>"$IMPRINT_LOG" \
+    || log_error "ingest_queue priority migration failed"
+}
+
 run_migrations() {
   if ! command -v sqlite3 >/dev/null 2>&1; then
     return 0
@@ -73,4 +92,5 @@ run_migrations() {
   fts_migrate_to_trigram events_fts events text_clean
   fts_migrate_to_trigram memory_chunks_fts memory_chunks text
   backfill_external_chunk_types
+  add_ingest_queue_priority
 }

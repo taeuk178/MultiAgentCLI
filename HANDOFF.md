@@ -1115,14 +1115,14 @@ leaf 변경이 상위 summary 로 전파되는 방식. 다이어그램의 `J5 �
 | `J4` entity refresh | 낮음 | alias 사전의 점진적 개선 |
 | `J3` warm cache | 낮음 | 성능 보조 (콜드 로드 흡수), 기능 회귀 영향 X |
 
-### 후속 결정 (구현 진입 전 좁혀야 할 세부)
+### 후속 결정 4건 (2026-05-10 락인)
 
-| # | 항목 | 후보 | 비고 |
-|---|---|---|---|
-| 7b-1 | NLI 모델 선택 | mDeBERTa-v3-base-mnli-xnli / korNLI fine-tuned / 다국어 NLI | 정확도·메모리·다국어 trade. Phase 7a 임베딩 모델 결정 후 함께 잡으면 효율. |
-| 7b-2 | scope classifier rule-set 시드 | 키워드 매칭 / 정규식 / 단순 LLM 보조 | 초기 rule 시드 (전체·전반·프로젝트·정리 → global, 기능·플로우·UX → feature, 그 외 → local) |
-| 7b-3 | summary 갱신 빈도 | 즉시 sync / 5분 배치 / 매시간 배치 | incremental update 구현이 끝난 뒤 트래픽 측정 후 결정 |
-| 7b-4 | contradiction score 3 구간 임계 + neutral 정책 | high ≥ 0.8 → `candidate` / 0.4~0.8 → `neutral` / < 0.4 → `neutral` (예시) | 초기 임계는 위 예시값으로 시작. 실제 값은 NLI 모델 결정 (7b-1) 후 첫 100~200 쌍 측정으로 캘리브레이션. `confirmed` 승격은 항상 사용자 명시 (자동 X). |
+스키마 v2 진입 전에 한 라운드로 좁힘. 결정 사유 로그는 `HISTORY.md` 2026-05-10 "Phase 7b 후속 결정 4건 락인" 항목.
+
+- **7b-1 NLI 모델**: **mDeBERTa-v3-base-mnli-xnli** (다국어, 약 280M). xlm-roberta-large-xnli 는 무게 2배라 메모리 부담, klue/roberta-base 는 NLI head 부재.
+- **7b-2 scope classifier**: rule-based 우선. `전체|전반|프로젝트|정리|흐름 전체` → global, `기능|플로우|과정|UX|시나리오` → feature, 그 외 + entity 매칭 + ≤ 30 자 → local. fallback local→feature→global. LLM 분류기는 동기 경로 budget 위반 우려로 보류.
+- **7b-3 summary 갱신 빈도**: 즉시 sync — `J5` 가 W1 commit 분석 결과 변경 감지 시에만 enqueue. 매 turn 재생성 X. 배치 도입은 트래픽 측정 후.
+- **7b-4 contradiction 임계**: `≥ 0.8 → candidate`, `0.4~0.8 → neutral`, `< 0.4 → neutral` (명세 예시값). 자동 dismiss 금지. 첫 100~200 쌍 측정 후 캘리브레이션.
 
 ### 구현 우선순위
 
@@ -1152,9 +1152,12 @@ leaf 변경이 상위 summary 로 전파되는 방식. 다이어그램의 `J5 �
 
 ### 다음 액션
 
-- **(전제)** Phase 7a 안정 운용 — 후속 결정 2-1·3-1·5-1·6-1 합의 후 SQLite 스키마 v1·hybrid retrieval·rerank 까지 머지된 상태
-- **(다음 PR)** 후속 결정 7b-1~4 좁히기 — NLI 모델 / classifier rule-set / 갱신 빈도 / confirmed 임계
-- **(그 다음 PR)** 명세 "구현 우선순위" 1번 (summaries · summary_links · contradictions 테이블) 부터 PR 단위로 분해
+- (완료, 2026-05-10) Phase 7a 안정 운용 — `refactor/phase_7a` 브런치에 schema v1 + retrieval 패키지 머지
+- (완료, 2026-05-10) 후속 결정 7b-1~4 락인 (mDeBERTa-v3-base-mnli-xnli / rule-based scope classifier / 즉시 sync 갱신 / 0.8·0.4 임계) — `HISTORY.md` 2026-05-10 참조
+- (완료, 2026-05-10) **현재 브런치 `refactor/phase_7b`** — 13개 우선순위 중 1·2·3·4·5·6·7·8·9·10·12·13 완료, 11(NLI 정밀 판정) 은 lazy skeleton. 결정적 path 는 ingest → dispatch → drain → feature/document/project summary → routed retrieve → assembly 까지 동작.
+- **(다음 PR)** ML 의존성 통합 — `transformers` (NLI), `sentence-transformers` (BGE-M3 + cross-encoder), `sqlite-vec` extension 의 모델 캐시·로딩 정책 결정.
+- **(그 다음 PR)** chunk_entities 자동 채우기 — 별도 skill (LLM-driven NER) 가 ingest 결과를 받아 entity link 를 채우면 contradiction 후보 생성이 의미 있어짐.
+- **(후속)** README 의 Phase 7b 다이어그램 (`SC` / `HYB2` / `HYB3` / `GROUND` / `CCHECK` / `J5` / `J6`) 과 실제 구현 노드 매핑 검증.
 
 ## 성능 병목 진단 — 3축 (2026-05-09)
 

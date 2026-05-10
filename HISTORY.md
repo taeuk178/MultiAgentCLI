@@ -9,6 +9,21 @@
 
 기록 순서는 **최신이 위**. 항목당 한 단락 안에 변경/사유/대안 폐기 근거를 묶는다.
 
+## 2026-05-10 — Phase 7b 후속 결정 4건 락인 (NLI 모델 · scope classifier · summary 갱신 빈도 · contradiction 임계)
+
+**무엇:** Phase 7b (계층 요약 + 충돌 감지) 진입 직전, HANDOFF.md 후속 결정 4건을 한 라운드에 확정. (7b-1) NLI = **mDeBERTa-v3-base-mnli-xnli** (다국어, 한국어 포함, 약 280M 파라미터) — `xlm-roberta-large-xnli` 는 더 무겁고 한국어 fine-tune 차이 크지 않음, `klue/roberta-base` 는 NLI head 없어 전이학습 부담. (7b-2) Scope classifier = **rule-based 우선** + 명세 시드 그대로: `전체|전반|프로젝트|정리|흐름 전체` → global, `기능|플로우|과정|UX|시나리오` → feature, 그 외 + entity 매칭 + ≤ 30 자 → local. fallback 순서 local→feature→global. (7b-3) Summary 갱신 빈도 = **즉시 sync(commit-trigger 기반 incremental)** + 명시 호출 가능. 매 turn 재생성 X — `J5` 가 W1 commit 분석 결과 변경 감지 시에만 enqueue. (7b-4) Contradiction 3구간 임계 = 명세 예시값 그대로 시작 — `≥ 0.8 → candidate`, `0.4~0.8 → neutral`, `< 0.4 → neutral`. 자동 dismiss 금지 (false negative 영구 손실 방지). 임계는 NLI 모델 첫 100~200 쌍 측정 후 캘리브레이션.
+
+**왜:** 7b 도 7a 와 동일하게 "1차 구현 진입을 막지 않는 합리적 기본값" 이 핵심. mDeBERTa-v3 는 NLI 벤치마크 한국어 성능이 안정적이고 메모리 부담(약 1GB)이 cross-encoder 와 비슷해 daemon 모드에서 병렬 운영 가능. rule-based scope classifier 는 LLM 호출 추가 없이 동기 경로 budget(~10 ms) 안에 동작, 명세 시드 키워드만으로 90% 케이스 커버. 즉시 sync 전략은 "사용자가 새 정책을 commit 한 다음 turn 부터 새 답변" 이라는 일관성 보장 — 5분 배치는 그 사이에 잘못된 답이 나갈 위험. 충돌 임계 0.8/0.4 는 NLI 통상 분포의 타당한 분할이고, 정확한 값은 측정 데이터 없이는 결정 불가라 명세 예시 그대로 시작.
+
+**폐기한 대안:**
+- **7b-1 — `xlm-roberta-large-xnli`** — 정확도는 살짝 ↑ 이지만 모델 크기 2배(560M) 로 메모리·로드 시간 부담. mDeBERTa-v3 가 한국어 NLI 에 보통 동등 이상 성능.
+- **7b-1 — `klue/roberta-base` + NLI fine-tune** — 한국어 단일 fine-tune 으로 정확도 ↑ 이지만 영어/혼합 코드 컨텍스트(stack trace, command output)에 취약. retrieval 의 다국어 robustness 우선.
+- **7b-2 — LLM 분류기 우선** — 정확도 ↑ 이지만 동기 경로 budget 위반 위험 + claude OAuth 호출 비용. rule-based 가 의도적으로 fallback 인 이유는 명세에서 이미 결정.
+- **7b-3 — 5분 배치 / 매시간 배치** — 첫 구현엔 트래픽 측정 데이터 없어 배치 간격 정당화 어려움. incremental commit-trigger 가 "변경 없으면 J5 spawn 도 안 함" 으로 유휴 비용 0. 트래픽이 보이면 그때 배치 도입.
+- **7b-4 — 자동 dismiss 활성화** — high score 가 아니면 dismiss 로 영구 정리하면 contradiction 추적이 끊김. neutral 보존이 false negative 영구 손실 방지.
+
+**참고:** 4건 모두 첫 구현 머지 후 측정 인프라 위에서 재평가. 가장 휘발성 높은 항목은 (7b-1) NLI 모델 정확도, (7b-4) 임계치. (7b-3) 즉시 sync 는 트래픽 측정 결과로 배치 도입 여부만 결정.
+
 ## 2026-05-10 — Phase 7a 후속 결정 7건 락인 (임베딩 모델 · chunk_type 매핑 · supersedes 트리거 · 함수 시그니처 · warm cache · rerank cache · ingest queue)
 
 **무엇:** 스키마 v1 진입 직전, HANDOFF.md 후속 결정 7건을 한 라운드에 확정. (2-1) 임베딩 = **BGE-M3 1024 dim**. (3-1) `raw_chunk_type → normalized_chunk_type` 매핑표 = `decision/fix → decision`, `todo/spec → requirement`, `error/test_result/summary/note/message/thread → discussion`, `command/code_context → code_note`. (5-1) supersedes 자동 제안 = **정규식 트리거 1단계** (한국어 "변경한다 / 대체한다 / 폐기 / 취소 / 업데이트 / 이제는 / 롤백" + 영어 "supersede / replace / deprecate / cancel / now use / rollback") — 매칭 시 후보 제시만, 자동 적용 X. (6-1) 함수 시그니처 = **Python module** (`imprint.retrieval.retrieve(query, project_id, top_k) -> RetrievalResult`). inline / daemon 모두 같은 import, daemon 은 RPC 위임. (7a-7) warm cache = **lazy spawn** (첫 query 시 cold-load, 이후 keep alive, `IMPRINT_WARM_CACHE=always` 로 강제 always-on 옵션). (7a-8) rerank cache key = `sha256(query_normalized + sorted(candidate_ids) + project_id)`, **세션 단위 TTL · 메모리 LRU 64개 · 영속 X**. (7a-9) ingest queue = **SQLite append-only 테이블 + polling worker** (`ingest_queue (id, project_id, payload_json, status, created_at, claimed_at, completed_at)`). inline 모드는 hook 종료 직전 직접 drain.
