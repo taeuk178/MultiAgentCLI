@@ -26,12 +26,23 @@
 | 6 | Retrieval API 호스팅 | **inline-first + daemon-ready abstraction** | 현 hook/skill 구조 유지. `retrieve(query)` 시그니처만 추상화해 두고 배포 형태는 늦게 결정. |
 | 7 | rerank 모델 | **로컬 cross-encoder first + Cohere 옵션 + Claude judge 실험** | OAuth 친화 + 비용 통제. 핵심 파이프라인을 외부 의존에 묶지 않음. |
 
+#### 결정 보강 (다이어그램 검증으로 도출, 2026-05-10)
+
+README "Phase 7a — 검색 정밀도 (1단계)" 의 mermaid 검토 과정에서 동기 경로 무거움 우려가 제기되어 위 7개 결정 위에 다음 세부 패턴이 합의됨:
+
+- **결정 #1 보강 — single-writer ingest queue**: 모든 백그라운드(`J1/J2/J4`)가 `PACK*` 만 만들어 같은 `ENQ` 큐로 보내고 `DEDUPE → VRES → CONF → W1` 한 줄로 직렬 commit. 이전 성능 병목 진단의 **영구 deferred 였던 C축 #3 (단일 writer 큐) 가 7a 의 자연 일부로 흡수**. WAL+busy_timeout 보강이 아니라 락 자체를 없애는 패턴.
+- **결정 #6 보강 — daemon-ready 노드 5개 명시**: `QEMB` (query embedding) · `HYB` (FTS5 + sqlite-vec) · `RR` (cross-encoder rerank) · `W1` (single writer commit) · `WC` (warm cache manager). 평소엔 inline 으로 동작하고, 동기 경로 latency budget 위반 시 이 5개를 daemon (`imprintd`) 으로 분리하는 것이 첫 escape hatch.
+- **결정 #7 보강 — RG 게이트 기준 + timeout**: cross-encoder rerank 는 `count ≥ 10 AND top-1 score < 0.85 AND rerank cache miss` 셋 모두 성립할 때만 발동, 그 외엔 BOOST 결과 직접 prepend. 발동 시에도 200 ms timeout — 만료되면 boost 결과로 graceful degradation (RROK 분기).
+
 #### 남은 후속 결정 (구현 진입 전 좁혀야 할 세부)
 
 - **2-1**: multilingual-e5 vs BGE 계열 정확한 모델명 + 차원 (multilingual-e5-large = 1024 / BGE-M3 = 1024 / BGE-ko-small = 384 등) — schema `embedding vector(N)` 확정
 - **3-1**: `normalized_chunk_type` 의 9+3 → 4 매핑 룰 — `decision / fix / todo / error / command / test_result / summary / code_context / note + spec / message / thread` → `requirement / decision / discussion / code_note` 결정표
 - **5-1**: supersedes 자동 제안의 패턴 트리거 — 정규식("변경한다 / 대체한다 / 폐기" 등) vs LLM 분류기 — Phase 7a 안에서 결정
 - **6-1**: inline backend / daemon backend 의 공통 함수 시그니처 — Python module / shell command / RPC 중 어느 인터페이스를 표준으로
+- **7a-7**: warm cache (`J3`) 정책 — daemon always-on / lazy spawn / first-query-on-demand 중 어디에 머무를지. 임베딩 모델 콜드 로드 비용 (+500 ms~) 흡수가 목적
+- **7a-8**: rerank cache key 설계 — `query hash + candidate id set hash + project_id` 조합, TTL (분 단위? 세션 단위?), retrieval scope 별 구분 여부
+- **7a-9**: ingest queue 구현체 — SQLite append-only 테이블 + polling worker / Unix socket IPC / mmap ring buffer 중 어느 형태. inline-only 모드와 daemon 모드 전환 시 동일 인터페이스 유지가 조건
 
 > **명세 본문 주의**: 아래 명세 일부는 PostgreSQL 기준으로 작성되어 있습니다 (시스템 구성·테이블 설계 SQL·`vector(1536)` 등). 결정 #1 (SQLite + FTS5 + sqlite-vec) 에 따라 첫 구현 PR 에서 SQLite 스키마로 재작성합니다 — 본문은 설계 의도와 컬럼 단위 의미를 보존하기 위한 참고로 유지합니다.
 
@@ -73,12 +84,15 @@
 
 구성 요소:
 
-- **Ingestion Worker** — Notion / Slack / 문서 수집
+- **Ingestion Worker** — Notion / Slack / 문서 수집 (J1 lazy fetch)
 - **Chunking Worker** — 문서 분리 및 메타데이터 부착
 - **Context Builder** — 각 chunk 에 `context_prefix` 생성
-- **Embedding Worker** — contextualized text 임베딩 생성
-- **Entity Resolver** — alias 추출, canonical entity 연결
-- **Retrieval API** — query 전처리, hybrid search, rerank, context 조립
+- **Embedding Worker** — contextualized text 임베딩 생성 (chunk-side EMB1/EMB2 + query-side QEMB, daemon-ready)
+- **Entity Resolver** — alias 추출, canonical entity 연결 (entity mention 추출 + `chunk_entities` link, J4 alias mining)
+- **Single-Writer Worker** — `ENQ` 큐 consumer. `DEDUPE → VRES → CONF → W1/W2` 직렬 commit. 모든 ingest 경로가 이 워커 하나를 통과
+- **Warm Cache Manager** — J3 가 spawn. 임베딩 모델 warm-up + recent query embedding cache 를 `QEMB` 에 dotted 제공
+- **Rerank Worker** — 로컬 cross-encoder, RG 게이트 통과 시에만 호출. timeout 200 ms 가드 (daemon-ready)
+- **Retrieval API** — query 전처리, hybrid search, RG 게이트, rerank, context 조립
 - **Claude Adapter** — 최종 prompt 구성 후 Claude 호출
 
 ### 테이블 설계
@@ -346,19 +360,19 @@ test 버튼 클릭 시 확인 모달 후 테스트 모드로 진입
 
 ### Retrieval API 플로우
 
-질문이 들어오면 아래 순서로 처리:
+질문이 들어오면 아래 순서로 처리. README **"Phase 7a — 검색 정밀도 (1단계)"** 다이어그램이 같은 흐름을 시각화합니다.
 
-1. query normalize
-2. entity alias resolve
-3. query expansion
-4. query embedding 생성
-5. vector retrieval top-N
-6. BM25 / FTS retrieval top-N
-7. RRF 기반 score fusion
-8. version filter / recency boost
-9. entity coverage boost
-10. rerank
-11. top-K context assembly
+1. **`QN`** query normalize *(sync)*
+2. **`RES`** entity alias resolve *(sync)*
+3. query expansion *(sync, RES 안에서 alias 사전 적용)*
+4. **`QEMB`** query embedding 생성 *(sync/daemon-ready, J3 warm cache 우선)*
+5. **`HYB`** hybrid retrieval — FTS5 BM25 top-N + sqlite-vec ANN top-N *(sync/daemon-ready)*
+6. **`RRF`** score fusion *(sync)*
+7. **`BOOST`** version filter (`is_current`) + recency + entity coverage *(sync)*
+8. **`RG{rerank 필요?}`** 게이트 — `count ≥ 10 AND top-1 < 0.85 AND cache miss` 면 yes, 아니면 skip
+9. **`RR`** (RG = yes 시) 로컬 cross-encoder rerank *(sync/daemon-ready, timeout 200 ms)*
+10. **`RROK`** timeout 분기 — success 또는 timeout 둘 다 다음 단계로 (graceful degradation)
+11. **`CTX`** top-K 구조화 context assembly *(sync)*
 12. Claude 호출
 
 **query normalize**
@@ -386,15 +400,25 @@ resolve:
 
 ### Hybrid Search 설계
 
-Anthropic cookbook 기준처럼 semantic + BM25 결과를 각각 과다 회수한 뒤 score fusion 하는 방식.
+Anthropic cookbook 기준처럼 semantic + BM25 결과를 각각 과다 회수한 뒤 score fusion 하는 방식. README 다이어그램의 `QEMB → HYB → RRF → BOOST → RG` 흐름이 이 단계.
 
 **추천 기본값**
 
 - vector topN: 100~150
 - bm25 topN: 100~150
 - final fusion candidate: 150~250
-- rerank input: top 30~50
+- rerank input: top 30~50 (단, RG 게이트 통과 시에만)
 - final context topK: 8~15
+
+**`RG` 게이트 — rerank 발동 조건 (AND 셋 모두 성립 시 yes)**
+
+| 조건 | 의미 | 이유 |
+|---|---|---|
+| `boost 통과 candidate count ≥ 10` | 후보가 충분히 많을 때만 | 후보 < 10 이면 rerank 가 정렬 효용 미미 |
+| `boost 후 top-1 score < 0.85` | 확신 있는 1위가 없을 때만 | top-1 이 압도적이면 rerank 가 결과를 바꾸지 않음 |
+| `rerank cache miss` | 같은 (query hash, candidate id set, project) 조합이 캐시에 없을 때만 | 같은 의미 query 가 반복되면 캐시 hit 으로 동기 비용 0 |
+
+세 조건 중 하나라도 안 맞으면 RG = no → BOOST 결과 그대로 `CTX` 로 직행. 후속 결정 7a-8 이 cache key·TTL 을 확정.
 
 **RRF 예시**
 
@@ -419,6 +443,8 @@ final_score = rrf_score
 
 초기 retrieval 은 recall 중심이고, reranking 은 precision 중심.
 
+**진입 조건**: 위 `RG` 게이트의 AND 조건 셋이 모두 성립할 때만 (README 다이어그램의 `RG -->|yes| RR`).
+
 **rerank 입력**
 
 - user query
@@ -431,6 +457,31 @@ final_score = rrf_score
 - 최신 정책 우선
 - 중복 청크 제거
 - 같은 의미의 여러 청크 중 대표성 높은 청크 선택
+
+**Timeout 정책 — graceful degradation (`RROK`)**
+
+cross-encoder 는 후보 30 개 × forward pass 라 시간 분포가 큽니다. 200 ms 안에 끝나지 않으면:
+
+1. inference 를 강제 종료하지 않고 (모델 상태 보호) 별도 watcher 가 200 ms 시점에 분기
+2. `RROK -->|timeout| CTX` 경로로 BOOST 결과를 그대로 prepend
+3. 끝난 rerank 결과는 도착 시점에 cache 에 저장 — 다음 같은 query 에서 cache hit 으로 활용
+
+평소 동기 경로 budget 을 깨지 않으면서 rerank 효용을 시간차로 흡수하는 패턴.
+
+### 동기 경로 latency budget
+
+UPS hook 의 동기 경로는 README 본 플로우의 "≈1초 보장" 정신을 유지합니다. 7a 도입으로 retrieval 단계가 늘어나므로 budget 을 두 케이스로 나눠 명시:
+
+| rerank 발동 여부 | budget | 단계별 추정 |
+|---|---|---|
+| `RG = no` (skip) | **< 100 ms** | `QN` < 5 + `RES` < 5 + `QEMB` 50~100 (warm cache hit 시 < 5) + `HYB` 30~80 + `RRF` < 1 + `BOOST` < 5 + `CTX` < 5 |
+| `RG = yes` (발동) | **< 300 ms** | 위 + `RR` ≤ 200 (timeout cap). timeout 시 200 ms 직후 `RROK → CTX` |
+
+**위반 감지 + 대응**
+
+- 모든 `(sync)` 와 `(sync/daemon-ready)` 노드는 진입/탈출 시 wall clock 측정. 위반 시 `plugin.log` WARN + profile.jsonl 에 stage 기록 (성능 병목 진단의 IMPRINT_PROFILE=1 인프라 재사용).
+- 같은 budget 위반이 5분 윈도에 3회 이상 → 결정 #6 의 daemon backend escape hatch 발동: `QEMB` / `HYB` / `RR` 중 가장 무거운 노드부터 daemon 으로 분리. inline backend 와 동일 함수 시그니처(후속 결정 6-1) 라 호출 측 코드는 변경 없음.
+- `QEMB` 콜드 로드 비용 흡수는 J3 warm cache (후속 결정 7a-7) 가 1차 방어, daemon 분리가 2차 방어.
 
 ### Final Context Assembly 규칙
 
@@ -568,14 +619,18 @@ POST /v1/projects/:projectId/query
 
 ### 구현 우선순위
 
-가장 안정적인 구현 순서:
+가장 안정적인 구현 순서 (README 다이어그램의 노드 묶음 기준):
 
-1. `documents`, `chunks` 저장 구조부터 만든다
-2. `context_prefix`, `retrieval_text`, embedding, `tsv` 생성 파이프라인을 붙인다
-3. pgvector + FTS 기반 hybrid search 를 구현한다
-4. entity alias 를 수동 seed + 반자동 추출로 붙인다
-5. versioning 필드를 붙이고 current 우선 정렬을 넣는다
-6. reranking 과 Claude prompt assembly 를 마무리한다
+1. **스키마 v1** — `documents`, `chunks` (이중 `chunk_type`), `entities`, `entity_aliases`, `chunk_entities` 저장 구조 + sqlite-vec extension 로딩 + FTS5 trigger
+2. **chunking 파이프라인 (BG side)** — `SPL → CP → (EMB ‖ ENT) → PACK` 분해 구현. 두 hook (J1/J2) 모두 같은 정의를 공유
+3. **single-writer ingest queue** — `ENQ → DEDUPE → VRES → CONF → W1/W2`. C축 #3 단일 writer 큐 패턴이 자연스럽게 흡수
+4. **hybrid retrieval 동기 경로** — `QN → RES → QEMB → HYB → RRF → BOOST → CTX` (rerank 없이) 먼저 작동시키고 본 다이어그램의 SEARCH 자리에 swap
+5. **entity alias** — 수동 seed + 반자동 추출 + review queue (`/memory entities` 스킬). W2 → ENTS → ENQ 순환 완성
+6. **versioning** — `valid_from / valid_to / is_current / supersedes_chunk_id` + `/memory remember --supersedes` 인자. `BOOST` 의 current 우선 정렬 활성화
+7. **RG 게이트 + cross-encoder rerank + RROK timeout** — RR 발동 조건 + cache + 200 ms graceful
+8. **warm cache (J3) + entity refresh (J4)** — `WC -.cache.-> QEMB` dotted edge. 콜드 로드 흡수
+9. **Claude prompt assembly 구조화** — 명세 "Claude 전달 포맷" 적용
+10. **latency budget 모니터링** — IMPRINT_PROFILE=1 인프라에 7a stage 추가, 위반 시 WARN. daemon escape hatch 발동 조건 명시
 
 ### 완료 조건
 
@@ -590,17 +645,29 @@ POST /v1/projects/:projectId/query
 ### 다음 액션
 
 - (완료, 2026-05-10) 7개 결정 합의 — 본 섹션 "결정 사항" 표 + `HISTORY.md` 2026-05-10 참조
+- (완료, 2026-05-10) 다이어그램 검증으로 결정 #1 / #6 / #7 보강 — single-writer queue · daemon-ready 노드 5개 · RG 게이트 기준 · timeout 200 ms graceful · 동기 경로 latency budget. README **"Phase 7a — 검색 정밀도 (1단계)"** 가 같은 흐름을 시각화.
 - (완료, 2026-05-10) `LoadMap.md` Phase 7 → 7a / 7b 분리 갱신
 - (완료, 2026-05-10) `HISTORY.md` 결정 사유 로그 추가
-- **(다음 PR)** 후속 결정 2-1 · 3-1 좁히기 — 임베딩 모델·차원 확정 + `raw_chunk_type → normalized_chunk_type` 매핑표 작성. 짧은 결정 라운드 1회로 끝낼 수 있는 분량.
-- **(그 다음 PR)** SQLite 스키마 v1 — `documents`, `chunks`(이중 `chunk_type`), `entities`, `entity_aliases`, `chunk_entities` 를 `~/.claude/imprint/app.sqlite` 에 idempotent migration 으로 추가. FTS5 virtual table 동기화 trigger + sqlite-vec extension 로딩.
-- **(그 다음 PR 들)** 명세 "구현 우선순위" 2~6번 단계로 분해.
+- **(다음 PR — 결정 라운드 1회)** 후속 결정 7건 좁히기 (2-1 · 3-1 · 5-1 · 6-1 · 7a-7 · 7a-8 · 7a-9). 짧은 인터뷰 한 번에 묶을 수 있는 분량.
+- **(그 다음 PR)** 구현 우선순위 1번 (SQLite 스키마 v1) — `documents`, `chunks` (이중 `chunk_type`), `entities`, `entity_aliases`, `chunk_entities` + sqlite-vec extension + FTS5 trigger. idempotent migration.
+- **(그 다음 PR 들)** 구현 우선순위 2~10번 (chunking → ingest queue → hybrid retrieval → entity alias → versioning → RG 게이트+rerank → warm cache → assembly → latency 모니터)
 
 ## Phase 7b — 계층 요약 + 충돌 감지 (2단계 명세) — 2026-05-10
 
 이 섹션은 시스템 디자인 2단계 — Phase 7a retrieval 엔진 위에 **질문 해상도에 맞는 요약 계층** 과 **충돌 감지 계층** 을 얹는 단계 — 의 명세입니다. 작은 질문은 여전히 chunk 기반으로 답하되, 큰 질문은 feature / document / project summary 부터 접근하고, 서로 상충하는 결정이 있으면 명시적으로 표시해야 합니다.
 
 **진입 조건**: Phase 7a 가 안정적으로 운용된 뒤. Phase 7a 의 후속 결정 4건과 SQLite 스키마 v1 이 머지된 상태가 전제.
+
+### 명세 보강 (다이어그램 검증으로 도출, 2026-05-10)
+
+README "Phase 7b — 프로젝트 수준 해석 (2단계)" 의 mermaid 검토 과정에서 다음 4가지 보강이 합의됨. 본 명세 본문은 이 보강을 반영해 갱신:
+
+- **`GROUND` drill-down 룰 명시** — summary 검색 결과는 `summary_links` 테이블의 `child_kind = chunk` 항목 1~3개를 추가 조회해 grounding context 에 함께 첨부. summary 만 단독으로 답변에 들어가는 케이스 차단. (Answer Assembly grounding 규칙)
+- **`W1` commit trigger edge — incremental 원칙 시각화** — `J5` (summary rebuild) 와 `J6` (contradiction detection) 는 `ST` 가 아니라 single-writer commit 직후 변경이 감지된 entity / feature / decision 이 있을 때만 trigger. 매 turn 무조건 재생성 X. (배치 / 갱신 전략)
+- **NLI judge 결과 3구간 — neutral 저장으로 false negative 방지** — `CDCONF` score 가 high 면 `status=candidate`, mid·low 면 `status=neutral` 저장 (재검토 가능). 자동 dismiss 안 함. (Contradiction Detection 플로우 "3. 저장")
+- **Summary retrieval depth limit 명시** — feature 검색은 `summary 5 + chunk 8` 까지, global 검색은 `proj 1 + doc 3 + feat 5 + chunk 6` 까지. context 폭주 방지. (Retrieval 라우팅)
+
+추가로 NLI judge timeout 500 ms (실패 시 status=candidate 유지 + 다음 배치 재시도) 와 `J6` candidate 생성 조건 (same entity + decision + time gap < 90 d, O(n²) 방지) 도 명세 본문에 박힘.
 
 ### 한 줄 요약
 
@@ -826,24 +893,26 @@ RAPTOR 처럼 하위 정보를 재귀적으로 요약해서 상위 요약을 만
 
 #### feature 질문
 
-summary 우선 retrieval 로 전환:
+summary 우선 retrieval 로 전환. **depth limit: feature summary 최대 5개 + drill-down chunk 최대 8개**.
 
 1. entity / feature key resolve
-2. feature summary retrieval
-3. 관련 하위 chunk 3~5개 회수
-4. contradiction check
+2. feature summary retrieval (최대 5개)
+3. 관련 하위 chunk drill-down (최대 8개, `summary_links` 따라)
+4. contradiction check (read-only `contradictions` 조회)
 5. answer assembly
 
 #### global 질문
 
-상위 summary 부터 시작:
+상위 summary 부터 시작. **depth limit: project 1 + document 3 + feature 5 + 대표 chunk 4~6 (총 15 항목 이내)**.
 
-1. project summary retrieval
-2. 관련 document summary retrieval
-3. 필요 시 feature summary drill-down
-4. 대표 chunk 근거 회수
+1. project summary retrieval (1개)
+2. 관련 document summary retrieval (최대 3개)
+3. 필요 시 feature summary drill-down (최대 5개)
+4. 대표 chunk 근거 회수 (4~6개, `summary_links` 따라)
 5. contradiction check
 6. map-reduce 식 answer assembly
+
+> **depth limit 의미**: GraphRAG 의 global summary retrieval 패턴처럼 상위 summary 에서 답의 구조를 먼저 잡되, drill-down 의 폭이 무한히 늘어나지 않도록 각 레벨에 상한을 둠. context 폭주 방지 + Claude 호출 비용 통제.
 
 GraphRAG 의 global summary retrieval 패턴처럼, global question 은 상위 summary 에서 먼저 답의 구조를 잡는 방식.
 
@@ -853,15 +922,15 @@ GraphRAG 의 global summary retrieval 패턴처럼, global question 은 상위 s
 
 #### 1. 후보 생성
 
-비교 대상 축소 규칙 (모든 chunk 쌍 비교는 비용 과다):
+비교 대상 축소 규칙 (모든 chunk 쌍 비교는 비용 과다, O(n²) 방지):
 
 - 같은 `entity_id`
 - 같은 `normalized_chunk_type = decision`
 - 같은 `scope_key` 또는 `section_path`
 - 둘 다 `is_current = true` 이거나 current 와 직전 버전 관계
-- 시간상 충돌 가능성이 있는 쌍만 선택
+- **time gap < 90 일** — 너무 오래된 쌍은 후보에서 제외
 
-이 단계는 **규칙 기반**.
+이 단계는 **규칙 기반**. 다이어그램의 `J6 → CDCAND` 가 이 단계.
 
 #### 2. 정밀 판정
 
@@ -869,17 +938,26 @@ GraphRAG 의 global summary retrieval 패턴처럼, global question 은 상위 s
 
 - 로컬 NLI 모델
 - 실패 또는 low confidence 시 LLM judge fallback
+- **timeout 500 ms** — 만료 시 status = `candidate` 유지하고 다음 배치에서 재시도 (1단계 RR timeout 200 ms 와 비례)
 
 입력: chunk A · chunk B · entity / context metadata
 출력: entailment / contradiction / neutral · confidence · 짧은 이유
 
-#### 3. 저장
+다이어그램의 `J6 → CDCAND → CDJUDGE → CDCONF` 가 이 단계.
 
-`contradictions` 에 저장:
+#### 3. 저장 — score 3 구간 분기
 
-- `candidate` — 자동 검출 직후
-- `confirmed` — 임계치 이상 또는 사용자 확인
-- `dismissed` — false positive
+`CDCONF{score 구간}` 으로 NLI 결과를 3구간으로 나눠 `contradictions` 테이블에 저장. 자동 dismiss 는 **금지** — false negative 가 영구 손실되는 위험을 차단.
+
+| 구간 | status | 의미 |
+|---|---|---|
+| **high** (예: ≥ 0.8) | `candidate` | NLI 가 충돌로 확신. 사용자 검토 후 `confirmed` 승격 가능 |
+| **mid** (예: 0.4~0.8) | `neutral` | NLI 가 애매. 같은 entity 쌍이 재등장하거나 임계 조정 시 재검토 |
+| **low** (예: < 0.4) | `neutral` | NLI 가 충돌 아님으로 본 것 — 그래도 dismissed 가 아닌 neutral 로 보존해 추적 가능 |
+
+`confirmed` 는 사용자가 `/memory entities` 또는 별도 confirm 명령으로 명시 승격할 때만. `dismissed` 는 사용자가 명시 거부했을 때만 — 자동 처리 X. 정확한 임계치 (0.8 / 0.4) 는 **후속 결정 7b-4** 에서 측정 데이터로 확정.
+
+다이어그램의 `CDCONF -->|high| PACK5_CAND` / `-->|mid·low| PACK5_NEUT` 가 이 흐름. 둘 다 `ENQ` 큐로 보내져 single-writer commit.
 
 #### 4. query 시 활용
 
@@ -914,9 +992,11 @@ GraphRAG 의 global summary retrieval 패턴처럼, global question 은 상위 s
 
 #### grounding 규칙
 
-- summary 만 단독 사용 금지
-- 최종 answer 마다 최소 1~3개의 current chunk 근거 포함
-- obsolete chunk 는 "과거 이력" 으로만 사용
+- summary 만 단독 사용 **금지** — 최종 answer 마다 최소 1~3 개의 current chunk 근거 포함
+- summary 검색 결과는 `summary_links` 테이블의 `child_kind = chunk` 항목 1~3 개를 추가 조회해 grounding context 에 함께 첨부 (다이어그램의 `GROUND` 단계)
+  - SQL 형태 예: `SELECT * FROM summary_links WHERE parent_summary_id = ? AND child_kind = 'chunk' ORDER BY rank_order LIMIT 3`
+  - 검색 결과에 chunk 가 이미 포함된 경우 추가 drill-down 생략
+- obsolete chunk (`is_current = false`) 는 "과거 이력" 으로만 사용
 
 ### 실제 동작 시나리오
 
@@ -962,15 +1042,19 @@ GraphRAG 의 global summary retrieval 패턴처럼, global question 은 상위 s
 
 ### 배치 / 갱신 전략
 
-실시간 전부 재계산이 아니라 **비동기 incremental 갱신**.
+실시간 전부 재계산이 아니라 **비동기 incremental 갱신**. 매 turn 무조건 재생성이 아니라 **single-writer commit 직후 변경이 감지된 entity / feature / decision 이 있을 때만** trigger — 다이어그램의 `W1 -.변경 발생 시 trigger.-> J5 / J6` edge.
 
-#### summary rebuild 트리거
+#### J5 (summary rebuild) trigger
 
-- 새 문서 ingest
-- 기존 문서 update
-- entity merge / split
-- supersede 상태 변경
-- current flag 변경
+`W1` 가 commit 한 변경을 분석해 다음 중 하나가 발생한 경우에만 spawn:
+
+- 새 문서 ingest (`documents` INSERT)
+- 기존 문서 update (`documents` UPDATE)
+- entity merge / split (`chunk_entities` 변경)
+- supersede 상태 변경 (`supersedes_chunk_id` 갱신)
+- current flag 변경 (`is_current` flip)
+
+변경 없으면 `J5` 자체를 spawn 하지 않음.
 
 #### 재계산 범위
 
@@ -978,14 +1062,31 @@ GraphRAG 의 global summary retrieval 패턴처럼, global question 은 상위 s
 - 그 다음 해당 document summary 재생성
 - 마지막으로 project summary 재생성
 
-leaf 변경이 상위 summary 로 전파되는 방식.
+leaf 변경이 상위 summary 로 전파되는 방식. 다이어그램의 `J5 → SMTRIG → SMGEN → SMEMB → PACK4 → ENQ` 가 이 흐름.
 
-#### contradiction rebuild 트리거
+#### J6 (contradiction detection) trigger
 
-- 새 decision chunk 생성
-- entity alias merge
-- supersede 확정
+`W1` commit 직후 다음 중 하나가 감지될 때만 spawn:
+
+- 새 decision chunk 생성 (`normalized_chunk_type = decision` INSERT)
+- entity alias merge (같은 entity 묶음 변화)
+- supersede 확정 (`supersedes_chunk_id` 갱신)
 - current / current 쌍 변화
+
+변경 없으면 `J6` 자체를 spawn 하지 않음. 다이어그램의 `J6 → CDCAND → CDJUDGE → CDCONF → PACK5_*` 가 이 흐름.
+
+### 비동기 job 우선순위
+
+비동기 job 이 6개로 늘어나 각자 다른 우선순위가 필요. 큐 consumer 가 같은 ENQ 에서 꺼낼 때 다음 순서:
+
+| Job | 우선순위 | 이유 |
+|---|---|---|
+| `J2` response extract | 높음 | 다음 turn 의 retrieval 후보에 즉시 영향 |
+| `J1` lazy fetch | 높음 | 사용자가 명시한 외부 source — 즉시 노출 가치 |
+| `J5` summary rebuild | 중간 | feature / global 질문 대응 품질에 직결, 단 첫 사용까지 시간 여유 있음 |
+| `J6` contradiction detection | 중간 | conflict 표시 품질에 영향, 단 즉시 노출 필수 X |
+| `J4` entity refresh | 낮음 | alias 사전의 점진적 개선 |
+| `J3` warm cache | 낮음 | 성능 보조 (콜드 로드 흡수), 기능 회귀 영향 X |
 
 ### 후속 결정 (구현 진입 전 좁혀야 할 세부)
 
@@ -994,19 +1095,25 @@ leaf 변경이 상위 summary 로 전파되는 방식.
 | 7b-1 | NLI 모델 선택 | mDeBERTa-v3-base-mnli-xnli / korNLI fine-tuned / 다국어 NLI | 정확도·메모리·다국어 trade. Phase 7a 임베딩 모델 결정 후 함께 잡으면 효율. |
 | 7b-2 | scope classifier rule-set 시드 | 키워드 매칭 / 정규식 / 단순 LLM 보조 | 초기 rule 시드 (전체·전반·프로젝트·정리 → global, 기능·플로우·UX → feature, 그 외 → local) |
 | 7b-3 | summary 갱신 빈도 | 즉시 sync / 5분 배치 / 매시간 배치 | incremental update 구현이 끝난 뒤 트래픽 측정 후 결정 |
-| 7b-4 | contradiction `confirmed` 임계 | 자동 임계 / 사용자 확인 필수 | 명세는 양쪽 다 가능. 초기엔 사용자 확인 필수로 보수 운영 권장 |
+| 7b-4 | contradiction score 3 구간 임계 + neutral 정책 | high ≥ 0.8 → `candidate` / 0.4~0.8 → `neutral` / < 0.4 → `neutral` (예시) | 초기 임계는 위 예시값으로 시작. 실제 값은 NLI 모델 결정 (7b-1) 후 첫 100~200 쌍 측정으로 캘리브레이션. `confirmed` 승격은 항상 사용자 명시 (자동 X). |
 
 ### 구현 우선순위
 
-1. `summaries`, `summary_links`, `contradictions` 테이블 추가
-2. feature summary 생성기 구현
-3. document / project summary 생성기 구현
-4. summary embedding + FTS 인덱싱
-5. query scope classifier 추가
-6. retrieval routing 분기 추가
-7. contradiction candidate generator 구현
-8. NLI / LLM contradiction judge 연결
-9. answer assembly 업데이트
+가장 안정적인 구현 순서 (README 다이어그램의 노드 묶음 기준):
+
+1. `summaries`, `summary_links`, `contradictions` 테이블 추가 (이중 status enum: `candidate` / `neutral` / `confirmed` / `dismissed`)
+2. **W1 commit dispatcher** — single-writer commit 결과를 분석해 변경된 entity / feature / decision 이 있으면 `J5` / `J6` spawn (incremental)
+3. `J5` feature summary 생성기 + `summary_links` 연결
+4. `J5` document / project summary 생성기 (상향식 전파)
+5. summary embedding + FTS 인덱싱 (`PACK4`)
+6. query scope classifier (`SC` 노드)
+7. **retrieval routing 분기 + depth limit** (`HYB1` / `HYB2` summary 5+chunk 8 / `HYB3` proj 1+doc 3+feat 5+chunk 6)
+8. **`GROUND` drill-down** — `summary_links` 따라 근거 chunk 1~3 개 추가 조회
+9. **`CCHECK`** — retrieved entity 의 `confirmed` contradiction read-only 조회
+10. `J6` contradiction candidate generator (same entity + decision + time gap < 90 d)
+11. NLI / LLM judge 연결 + **timeout 500 ms** + **score 3 구간 분기 (`PACK5_CAND` / `PACK5_NEUT`)**
+12. answer assembly 업데이트 (summary + 근거 chunk + conflict 표시)
+13. **비동기 우선순위 큐** — `ENQ` consumer 가 J2/J1 (높음) → J5/J6 (중간) → J4/J3 (낮음) 순서로 처리
 
 ### 완료 조건
 

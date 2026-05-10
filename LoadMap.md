@@ -283,10 +283,12 @@ GitHub repo (imprint-skills)
 - **contextual prefix + retrieval_text** 분리 저장 (Anthropic contextual retrieval 방식)
 - **entity alias canonicalization** — 자동 추출 + review queue (오탐 방지)
 - **versioning 필드** (`valid_from` / `valid_to` / `is_current` / `supersedes_chunk_id`) — 사용자 명시 기본 + 자동 제안 보조
-- **hybrid retrieval (RRF) + 로컬 cross-encoder rerank**
-- **inline-first + daemon-ready abstraction** — `retrieve(query)` 시그니처 추상화
+- **hybrid retrieval (RRF) + 조건부 cross-encoder rerank** — `RG{count≥10 AND top-1<0.85 AND cache miss}` 게이트로 발동, 200 ms timeout graceful
+- **single-writer ingest queue** — 모든 백그라운드(J1/J2/J4)가 `PACK* → ENQ → DEDUPE → VRES → CONF → W1` 직렬 commit. 성능 병목 진단의 영구 deferred 였던 C축 #3 이 자연 흡수
+- **inline-first + daemon-ready abstraction** — `QEMB` · `HYB` · `RR` · `W1` · `WC` 5개 노드가 daemon 후보. 동기 경로 latency budget 위반 시 escape hatch
+- **warm cache (J3) + entity refresh (J4)** — 임베딩 모델 콜드 로드 비용 흡수, recent query embedding cache 를 `QEMB` 에 dotted 제공
 
-상세 명세·결정 사항·후속 결정·구현 우선순위는 `HANDOFF.md` 의 **"Phase 7a — 청크 + 의미 검색 + 엔티티 정규화 + 버전"** 참조. 결정 사유는 `HISTORY.md` 2026-05-10 참조.
+상세 명세·결정 사항·후속 결정·latency budget·구현 우선순위는 `HANDOFF.md` 의 **"Phase 7a — 청크 + 의미 검색 + 엔티티 정규화 + 버전"** 참조. 결정 사유는 `HISTORY.md` 2026-05-10 참조. 런타임 플로우 시각화는 `README.md` 의 **"Phase 7a — 검색 정밀도 (1단계)"** 참조.
 
 ### Phase 7b. 계층 요약 + 충돌 감지 (검색 결과를 프로젝트 수준에서 해석)
 
@@ -297,12 +299,13 @@ Phase 7a 가 안정적으로 운용된 뒤 진입. **그래프 DB 도입이 아�
 
 핵심 컴포넌트:
 
-- **RAPTOR 형 계층 요약** — feature / document / project 3계층, leaf 변경이 상위로 incremental 전파
-- **query scope classifier** — local / feature / global 분류, retrieval 단위를 질문 해상도에 맞춤
-- **경량 contradiction awareness** — 같은 entity 의 상충 decision 을 candidate 로 잡고 NLI / LLM 으로 정밀 판정, confirmed 만 답변에 노출
-- **resolution-aware answer assembly** — summary + 근거 chunk + 충돌 표시
+- **RAPTOR 형 계층 요약** — feature / document / project 3계층, leaf 변경이 상위로 incremental 전파. `J5` 가 `W1` commit 직후 변경 발생 시에만 trigger
+- **query scope classifier (`SC`)** — local / feature / global 분류, retrieval 단위를 질문 해상도에 맞춤 (`HYB1` / `HYB2` / `HYB3` 분기)
+- **depth limit** — feature 검색 `summary 5 + chunk 8`, global 검색 `proj 1 + doc 3 + feat 5 + chunk 6` — context 폭주 방지
+- **경량 contradiction awareness** — 같은 entity 의 상충 decision 을 candidate 로 잡고 NLI 판정 (timeout 500 ms). score 3 구간 (high → `candidate`, mid·low → `neutral`) — false negative 영구 dismiss 방지. `confirmed` 승격은 사용자 명시만
+- **resolution-aware answer assembly** — `GROUND` 가 `summary_links` 따라 근거 chunk 1~3 개 drill-down + `CCHECK` 가 `confirmed` conflict 표시
 
-상세 명세·후속 결정·구현 우선순위·완료 조건은 `HANDOFF.md` 의 **"Phase 7b — 계층 요약 + 충돌 감지 (2단계 명세)"** 참조.
+상세 명세·후속 결정·구현 우선순위·완료 조건은 `HANDOFF.md` 의 **"Phase 7b — 계층 요약 + 충돌 감지 (2단계 명세)"** 참조. 런타임 플로우 시각화는 `README.md` 의 **"Phase 7b — 프로젝트 수준 해석 (2단계)"** 참조.
 
 **영구 deferred** (Phase 7b 에서도 도입 안 함): full knowledge graph DB · GraphRAG / HippoRAG 풀스택 · graph traversal multi-hop · 자동 belief revision · 완전 자동 supersede 확정.
 

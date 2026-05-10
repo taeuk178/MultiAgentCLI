@@ -59,6 +59,19 @@ flowchart TB
 | 동기 응답 archive | sqlite3, transcript_path 파일 | `events.llm_response` 기록 누락 |
 | 비동기 chunk 추출 | claude CLI + OAuth | 자동 추출 0건, `/memory remember`로 수동 보강 가능 |
 
+## 외부 소스 lazy-fetch 처리 룰
+
+UserPromptSubmit 의 비동기 경로가 Notion/Slack 을 fetch 할 때 따르는 sectioning · dedup · 갱신 정책. `<project>/.imprint/sources.json` 에 등록된 채널·페이지 또는 prompt 안의 직접 URL 이 trigger.
+
+| 항목 | 처리 |
+|---|---|
+| **Notion 페이지** | 비-QA H1/H2/H3 heading 을 각각 별도 chunk 로 보존 (압축·front-truncation 금지 — 히스토리 유지가 목적) |
+| **Slack thread** | 전체 reply 를 가져와 prompt 관련 reply 만 selection + summary 로 압축 (1~3 chunk) |
+| **Slack 단일 메시지** | 1 chunk |
+| **dedup** | `metadata_json.url` 기준. 같은 URL 은 재 fetch 자체를 skip |
+| **갱신** | TTL 무한 — `/memory refresh <url \| source slack \| source notion \| project>` 명시 명령으로만 |
+| **graceful degradation** | `sources.json` 부재 · MCP 다운 · `claude -p` 실패 시 silent skip + 기존 prepend 로 fallback |
+
 ## 운영 환경 변수
 
 `scripts/imprint/lib/ingestion.py`·각 hook이 읽는 환경 변수입니다. default를 그대로 두는 게 안전하고, 사용자 환경(타임아웃 부족, MCP 서버 이름 다름 등)에 맞춰 조정할 때만 건드립니다.
