@@ -150,6 +150,7 @@ def cmd_routed_json(argv: list[str]) -> int:
                 "chunk_id": c.chunk_id, "section_path": c.section_path,
                 "source_type": c.source_type, "is_current": bool(c.is_current),
                 "final_score": round(c.final_score, 6),
+                "matched_entities": c.matched_entities,
                 "chunk_text": c.chunk_text,
             } for c in result.chunks
         ],
