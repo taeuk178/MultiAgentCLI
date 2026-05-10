@@ -93,3 +93,144 @@ CREATE TRIGGER IF NOT EXISTS chunks_au AFTER UPDATE ON memory_chunks BEGIN
   INSERT INTO memory_chunks_fts(memory_chunks_fts, rowid, text) VALUES ('delete', old.rowid, old.text);
   INSERT INTO memory_chunks_fts(rowid, text) VALUES (new.rowid, new.text);
 END;
+
+-- 외부 문서 원문 (Notion, Slack, PRD, 회의록 등). events 와 분리.
+CREATE TABLE IF NOT EXISTS documents (
+  id                TEXT PRIMARY KEY,
+  project_id        TEXT NOT NULL REFERENCES projects(id),
+  source_type       TEXT NOT NULL,            -- notion | slack | prd | meeting | jira | file
+  source_ref        TEXT NOT NULL,            -- notion page id, slack ts/channel, file path
+  title             TEXT,
+  author            TEXT,
+  source_created_at TEXT,
+  source_updated_at TEXT,
+  raw_text          TEXT NOT NULL,
+  checksum          TEXT NOT NULL,            -- 동일 checksum 이면 re-ingest skip.
+  is_deleted        INTEGER NOT NULL DEFAULT 0,
+  created_at        TEXT NOT NULL,
+  updated_at        TEXT NOT NULL,
+  UNIQUE (project_id, source_type, source_ref)
+);
+
+CREATE INDEX IF NOT EXISTS idx_documents_project_source
+  ON documents (project_id, source_type, source_updated_at DESC);
+
+-- 외부 문서에서 파생된 contextualized chunk. 기존 memory_chunks 와 입력원이 달라 분리.
+CREATE TABLE IF NOT EXISTS chunks_v2 (
+  id                    TEXT PRIMARY KEY,
+  project_id            TEXT NOT NULL REFERENCES projects(id),
+  document_id           TEXT NOT NULL REFERENCES documents(id),
+  chunk_index           INTEGER NOT NULL,
+  section_path          TEXT,                 -- 예: "결제 > 테스트모드 > 버튼동작"
+  chunk_text            TEXT NOT NULL,        -- 원문 청크
+  context_prefix        TEXT,                 -- LLM 생성 1~2 문장 문맥
+  retrieval_text        TEXT NOT NULL,        -- context_prefix + '\n' + chunk_text — 임베딩·FTS 모두 이 컬럼 기준
+  embedding             BLOB,                 -- 1024 dim float32 (4096 bytes). 검색 시 sqlite-vec extension 가용하면 vec0 에 join.
+  raw_chunk_type        TEXT,                 -- decision/fix/todo/error/command/test_result/summary/code_context/note/spec/message/thread
+  normalized_chunk_type TEXT,                 -- requirement/decision/discussion/code_note
+  source_created_at     TEXT,
+  source_updated_at     TEXT,
+  valid_from            TEXT,
+  valid_to              TEXT,
+  is_current            INTEGER NOT NULL DEFAULT 1,
+  supersedes_chunk_id   TEXT REFERENCES chunks_v2(id),
+  created_at            TEXT NOT NULL,
+  UNIQUE (document_id, chunk_index)
+);
+
+CREATE INDEX IF NOT EXISTS idx_chunks_v2_project_doc
+  ON chunks_v2 (project_id, document_id);
+CREATE INDEX IF NOT EXISTS idx_chunks_v2_current
+  ON chunks_v2 (project_id, is_current);
+CREATE INDEX IF NOT EXISTS idx_chunks_v2_valid_time
+  ON chunks_v2 (project_id, valid_from, valid_to);
+CREATE INDEX IF NOT EXISTS idx_chunks_v2_section
+  ON chunks_v2 (project_id, section_path);
+CREATE INDEX IF NOT EXISTS idx_chunks_v2_normalized_type
+  ON chunks_v2 (project_id, normalized_chunk_type);
+
+-- retrieval_text 의 BM25 검색용. trigram tokenizer — 한국어 부분 매칭.
+CREATE VIRTUAL TABLE IF NOT EXISTS chunks_v2_fts USING fts5(
+  retrieval_text,
+  content='chunks_v2',
+  content_rowid='rowid',
+  tokenize='trigram'
+);
+
+CREATE TRIGGER IF NOT EXISTS chunks_v2_ai AFTER INSERT ON chunks_v2 BEGIN
+  INSERT INTO chunks_v2_fts(rowid, retrieval_text)
+  VALUES (new.rowid, new.retrieval_text);
+END;
+
+CREATE TRIGGER IF NOT EXISTS chunks_v2_ad AFTER DELETE ON chunks_v2 BEGIN
+  INSERT INTO chunks_v2_fts(chunks_v2_fts, rowid, retrieval_text)
+  VALUES ('delete', old.rowid, old.retrieval_text);
+END;
+
+CREATE TRIGGER IF NOT EXISTS chunks_v2_au AFTER UPDATE ON chunks_v2 BEGIN
+  INSERT INTO chunks_v2_fts(chunks_v2_fts, rowid, retrieval_text)
+  VALUES ('delete', old.rowid, old.retrieval_text);
+  INSERT INTO chunks_v2_fts(rowid, retrieval_text)
+  VALUES (new.rowid, new.retrieval_text);
+END;
+
+-- canonical entity. 같은 UI 요소·feature 를 여러 표현으로 가리키는 alias 들의 결착점.
+CREATE TABLE IF NOT EXISTS entities (
+  id              TEXT PRIMARY KEY,
+  project_id      TEXT NOT NULL REFERENCES projects(id),
+  entity_type     TEXT NOT NULL,              -- ui_element | screen | feature | api | state | experiment_flag
+  canonical_name  TEXT NOT NULL,              -- "test_button"
+  display_name    TEXT NOT NULL,              -- "Test 버튼"
+  created_at      TEXT NOT NULL,
+  UNIQUE (project_id, entity_type, canonical_name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_entities_project_type
+  ON entities (project_id, entity_type);
+
+-- entity 별 alias 표현. status 로 review queue 흡수.
+CREATE TABLE IF NOT EXISTS entity_aliases (
+  id               TEXT PRIMARY KEY,
+  entity_id        TEXT NOT NULL REFERENCES entities(id),
+  alias            TEXT NOT NULL,              -- 원문 그대로
+  normalized_alias TEXT NOT NULL,              -- 소문자 + 공백 trim + 특수문자 제거
+  status           TEXT NOT NULL DEFAULT 'pending',  -- pending | confirmed | rejected
+  confidence       REAL NOT NULL DEFAULT 1.0,
+  created_at       TEXT NOT NULL,
+  UNIQUE (entity_id, normalized_alias)
+);
+
+CREATE INDEX IF NOT EXISTS idx_entity_aliases_norm
+  ON entity_aliases (normalized_alias);
+CREATE INDEX IF NOT EXISTS idx_entity_aliases_status
+  ON entity_aliases (status);
+
+-- chunk ↔ entity 다대다 mention link.
+CREATE TABLE IF NOT EXISTS chunk_entities (
+  chunk_id    TEXT NOT NULL REFERENCES chunks_v2(id),
+  entity_id   TEXT NOT NULL REFERENCES entities(id),
+  mention     TEXT NOT NULL,                  -- 청크 내 등장한 표현
+  confidence  REAL NOT NULL,
+  PRIMARY KEY (chunk_id, entity_id, mention)
+);
+
+CREATE INDEX IF NOT EXISTS idx_chunk_entities_entity
+  ON chunk_entities (entity_id);
+
+-- append-only ingest queue. polling worker 가 status 로 drain.
+CREATE TABLE IF NOT EXISTS ingest_queue (
+  id            TEXT PRIMARY KEY,
+  project_id    TEXT NOT NULL REFERENCES projects(id),
+  payload_json  TEXT NOT NULL,                -- {kind: chunk|alias|version, ...}
+  status        TEXT NOT NULL DEFAULT 'pending',  -- pending | claimed | done | failed
+  attempt_count INTEGER NOT NULL DEFAULT 0,
+  last_error    TEXT,
+  created_at    TEXT NOT NULL,
+  claimed_at    TEXT,
+  completed_at  TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_ingest_queue_status_created
+  ON ingest_queue (status, created_at);
+CREATE INDEX IF NOT EXISTS idx_ingest_queue_project
+  ON ingest_queue (project_id, status);

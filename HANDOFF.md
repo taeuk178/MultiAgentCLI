@@ -34,15 +34,17 @@ README "Phase 7a — 검색 정밀도 (1단계)" 의 mermaid 검토 과정에서
 - **결정 #6 보강 — daemon-ready 노드 5개 명시**: `QEMB` (query embedding) · `HYB` (FTS5 + sqlite-vec) · `RR` (cross-encoder rerank) · `W1` (single writer commit) · `WC` (warm cache manager). 평소엔 inline 으로 동작하고, 동기 경로 latency budget 위반 시 이 5개를 daemon (`imprintd`) 으로 분리하는 것이 첫 escape hatch.
 - **결정 #7 보강 — RG 게이트 기준 + timeout**: cross-encoder rerank 는 `count ≥ 10 AND top-1 score < 0.85 AND rerank cache miss` 셋 모두 성립할 때만 발동, 그 외엔 BOOST 결과 직접 prepend. 발동 시에도 200 ms timeout — 만료되면 boost 결과로 graceful degradation (RROK 분기).
 
-#### 남은 후속 결정 (구현 진입 전 좁혀야 할 세부)
+#### 후속 결정 7건 (2026-05-10 락인)
 
-- **2-1**: multilingual-e5 vs BGE 계열 정확한 모델명 + 차원 (multilingual-e5-large = 1024 / BGE-M3 = 1024 / BGE-ko-small = 384 등) — schema `embedding vector(N)` 확정
-- **3-1**: `normalized_chunk_type` 의 9+3 → 4 매핑 룰 — `decision / fix / todo / error / command / test_result / summary / code_context / note + spec / message / thread` → `requirement / decision / discussion / code_note` 결정표
-- **5-1**: supersedes 자동 제안의 패턴 트리거 — 정규식("변경한다 / 대체한다 / 폐기" 등) vs LLM 분류기 — Phase 7a 안에서 결정
-- **6-1**: inline backend / daemon backend 의 공통 함수 시그니처 — Python module / shell command / RPC 중 어느 인터페이스를 표준으로
-- **7a-7**: warm cache (`J3`) 정책 — daemon always-on / lazy spawn / first-query-on-demand 중 어디에 머무를지. 임베딩 모델 콜드 로드 비용 (+500 ms~) 흡수가 목적
-- **7a-8**: rerank cache key 설계 — `query hash + candidate id set hash + project_id` 조합, TTL (분 단위? 세션 단위?), retrieval scope 별 구분 여부
-- **7a-9**: ingest queue 구현체 — SQLite append-only 테이블 + polling worker / Unix socket IPC / mmap ring buffer 중 어느 형태. inline-only 모드와 daemon 모드 전환 시 동일 인터페이스 유지가 조건
+스키마 v1 진입 전에 한 라운드로 좁힘. 결정 사유 로그는 `HISTORY.md` 2026-05-10 "Phase 7a 후속 결정 7건 락인" 항목.
+
+- **2-1 임베딩 모델**: **BGE-M3 1024 dim**. 한국어 PRD/Slack 에 강하고 1024 차원이 sqlite-vec blob 비용 대비 합리. multilingual-e5-large 동차원이라 모델 swap 으로 escape.
+- **3-1 chunk_type 매핑**: `decision / fix → decision`, `todo / spec → requirement`, `error / test_result / summary / note / message / thread → discussion`, `command / code_context → code_note`. "결정으로 볼지 토의로 볼지" 기준 정렬 — fix 는 결정, summary 는 토의 산출물.
+- **5-1 supersedes 트리거**: 정규식 1단계. 한국어 `변경한다|대체한다|폐기|취소|업데이트|이제는|롤백` + 영어 `supersede|replace|deprecate|cancel|now use|rollback`. 매칭 시 후보 제시만 (자동 적용 X — 결정 #5 사용자 명시 원칙 유지). LLM 분류기는 false negative 누적 측정 후 도입.
+- **6-1 함수 시그니처**: Python module. `imprint.retrieval.retrieve(query, project_id, top_k) -> RetrievalResult`. inline / daemon 모두 같은 import, daemon 모드는 RPC wrapper 만 추가. shell wrapper (`scripts/imprint/retrieve.sh`) 는 hook 호출 측 얇은 어댑터.
+- **7a-7 warm cache 정책**: lazy spawn. 첫 query 에 cold-load (500 ms~ 1회), 이후 keep alive. SessionStart 가 미리 spawn 하지 않음 — retrieval 을 안 쓰는 세션 비용 0. `IMPRINT_WARM_CACHE=always` 로 always-on 강제 옵션.
+- **7a-8 rerank cache key**: `sha256(query_normalized + sorted(candidate_ids) + project_id)`. **세션 단위 TTL · 메모리 LRU 64개 · 영속 X**. 영속 캐시는 측정 후 결정.
+- **7a-9 ingest queue**: SQLite append-only 테이블 + polling worker. `ingest_queue(id, project_id, payload_json, status, created_at, claimed_at, completed_at)`. inline 모드는 hook 종료 직전 drain. Unix socket / mmap ring 은 latency 위반 누적 시 escape hatch.
 
 > **명세 본문 주의**: 아래 명세 일부는 PostgreSQL 기준으로 작성되어 있습니다 (시스템 구성·테이블 설계 SQL·`vector(1536)` 등). 결정 #1 (SQLite + FTS5 + sqlite-vec) 에 따라 첫 구현 PR 에서 SQLite 스키마로 재작성합니다 — 본문은 설계 의도와 컬럼 단위 의미를 보존하기 위한 참고로 유지합니다.
 
@@ -648,9 +650,19 @@ POST /v1/projects/:projectId/query
 - (완료, 2026-05-10) 다이어그램 검증으로 결정 #1 / #6 / #7 보강 — single-writer queue · daemon-ready 노드 5개 · RG 게이트 기준 · timeout 200 ms graceful · 동기 경로 latency budget. README **"Phase 7a — 검색 정밀도 (1단계)"** 가 같은 흐름을 시각화.
 - (완료, 2026-05-10) `LoadMap.md` Phase 7 → 7a / 7b 분리 갱신
 - (완료, 2026-05-10) `HISTORY.md` 결정 사유 로그 추가
-- **(다음 PR — 결정 라운드 1회)** 후속 결정 7건 좁히기 (2-1 · 3-1 · 5-1 · 6-1 · 7a-7 · 7a-8 · 7a-9). 짧은 인터뷰 한 번에 묶을 수 있는 분량.
-- **(그 다음 PR)** 구현 우선순위 1번 (SQLite 스키마 v1) — `documents`, `chunks` (이중 `chunk_type`), `entities`, `entity_aliases`, `chunk_entities` + sqlite-vec extension + FTS5 trigger. idempotent migration.
-- **(그 다음 PR 들)** 구현 우선순위 2~10번 (chunking → ingest queue → hybrid retrieval → entity alias → versioning → RG 게이트+rerank → warm cache → assembly → latency 모니터)
+- (완료, 2026-05-10) 후속 결정 7건 락인 (2-1 BGE-M3 1024 / 3-1 매핑표 / 5-1 정규식 1단계 / 6-1 Python module / 7a-7 lazy spawn / 7a-8 LRU 64 메모리 / 7a-9 SQLite queue table) — 본 섹션 "후속 결정 7건" 표 + `HISTORY.md` 2026-05-10
+- (완료, 2026-05-10) **현재 브런치 `phase-7a-schema-v1`** — 구현 우선순위 1·2·3·5·6·9·10 완료, 4·7·8 골격만:
+  - 1 스키마 v1: `documents`, `chunks_v2`, `entities`, `entity_aliases`, `chunk_entities`, `ingest_queue` + FTS5 trigger
+  - 2 chunking: paragraph + markdown heading + overlap (`retrieval/chunking.py`)
+  - 3 ingest queue: enqueue / claim / drain (`retrieval/ingest_queue.py`)
+  - 5 entity alias: upsert / add_alias / confirm / resolve_in_query (`retrieval/entity.py`)
+  - 6 versioning: mark_superseded / find_supersede_candidates + 정규식 트리거 (`retrieval/version.py` + `normalize.py`)
+  - 9 assembly: Claude prompt 포맷 (`retrieval/assembly.py`)
+  - 10 latency profile: Span 컨텍스트 매니저로 QN/RES/QEMB/HYB/RRF/BOOST/RR/CTX 측정 (`retrieval/_common.py`)
+  - 4 hybrid retrieve: FTS path 동작, vector path 는 embedding 가용 시 자동 활성. sqlite-vec extension 미사용 (Python cosine fallback)
+  - 7·8 rerank/warm cache: cross-encoder + LRU + 200 ms timeout 골격, 실제 모델 통합 시 sentence-transformers 의존성 추가 필요
+- **(다음 PR)** 우선순위 4·7·8 의 실제 ML 통합 — sentence-transformers 의존성 추가 + sqlite-vec extension 로딩 + cross-encoder 모델 캐시 위치 결정 + warm cache daemon 모드 설계.
+- **(그 다음 PR)** entity alias / context_prefix 자동 추출 (LLM-driven) 을 별도 skill 로 — `claude -p` 호출이 BG 단에서만 발동되도록 ingest_queue 와 결합.
 
 ## Phase 7b — 계층 요약 + 충돌 감지 (2단계 명세) — 2026-05-10
 

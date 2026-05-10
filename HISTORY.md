@@ -9,6 +9,24 @@
 
 기록 순서는 **최신이 위**. 항목당 한 단락 안에 변경/사유/대안 폐기 근거를 묶는다.
 
+## 2026-05-10 — Phase 7a 후속 결정 7건 락인 (임베딩 모델 · chunk_type 매핑 · supersedes 트리거 · 함수 시그니처 · warm cache · rerank cache · ingest queue)
+
+**무엇:** 스키마 v1 진입 직전, HANDOFF.md 후속 결정 7건을 한 라운드에 확정. (2-1) 임베딩 = **BGE-M3 1024 dim**. (3-1) `raw_chunk_type → normalized_chunk_type` 매핑표 = `decision/fix → decision`, `todo/spec → requirement`, `error/test_result/summary/note/message/thread → discussion`, `command/code_context → code_note`. (5-1) supersedes 자동 제안 = **정규식 트리거 1단계** (한국어 "변경한다 / 대체한다 / 폐기 / 취소 / 업데이트 / 이제는 / 롤백" + 영어 "supersede / replace / deprecate / cancel / now use / rollback") — 매칭 시 후보 제시만, 자동 적용 X. (6-1) 함수 시그니처 = **Python module** (`imprint.retrieval.retrieve(query, project_id, top_k) -> RetrievalResult`). inline / daemon 모두 같은 import, daemon 은 RPC 위임. (7a-7) warm cache = **lazy spawn** (첫 query 시 cold-load, 이후 keep alive, `IMPRINT_WARM_CACHE=always` 로 강제 always-on 옵션). (7a-8) rerank cache key = `sha256(query_normalized + sorted(candidate_ids) + project_id)`, **세션 단위 TTL · 메모리 LRU 64개 · 영속 X**. (7a-9) ingest queue = **SQLite append-only 테이블 + polling worker** (`ingest_queue (id, project_id, payload_json, status, created_at, claimed_at, completed_at)`). inline 모드는 hook 종료 직전 직접 drain.
+
+**왜:** 7건 모두 결정 자체보다 "1차 구현 진입을 막지 않는 합리적 기본값" 이 핵심. 각 항목이 latency / 정확도 / 운영 부담 사이의 tradeoff 인데, 정확한 답은 측정 데이터가 쌓여야 보임. 따라서 "되돌리기 쉬운 가장 단순한 선택" 으로 통일. 임베딩은 BGE-M3 가 한국어 PRD/Slack 에 강하고 1024 차원이 sqlite-vec blob 비용 대비 합리. 매핑표는 "결정으로 볼지 토의로 볼지" 의 기준에 정렬 (fix 는 결정, summary 는 토의 맥락). supersedes 정규식은 false negative 가 쌓일 때 LLM 분류기로 escape hatch 가 열려 있음. Python module 시그니처는 ingestion.py 가 이미 Python 이라 자연스럽고 daemon 도입 시 RPC adapter 만 추가. warm cache lazy spawn 은 사용자가 retrieval 을 안 쓰면 비용 0. rerank cache 는 LRU 64 가 일반 세션의 같은 query 반복을 충분히 흡수, 영속화는 측정 후. ingest queue SQLite 테이블은 단일 파일 정체성과 정합 + polling worker 가 inline / daemon 양쪽 모드를 동일 인터페이스로 운영 가능.
+
+**폐기한 대안:**
+- **multilingual-e5-large 1024** — BGE-M3 와 성능 비슷하지만 한국어 기술 문서·Slack 짧은 발화에 BGE-M3 토큰화가 더 안정적. 차원 동일이라 schema 영향 없음 — 임베딩 worker 만 모델 swap 가능하게 추상화.
+- **BGE-ko-small 384 dim** — 한국어 단일 fine-tune 으로 정확도는 좋지만 영어/혼합 코드 컨텍스트(stack trace, command output)에 약함. 다국어 retrieval 의 robustness 우선.
+- **chunk_type 매핑 — fix → discussion** — fix 는 "왜 이렇게 결정했는가" 의 결과라 decision 쪽이 retrieval boost 정합. summary 는 정반대로 "토의 산출물 요약" 이라 discussion.
+- **supersedes LLM 분류기 우선** — Phase 7a 에서 OAuth 호출 추가는 동기 경로 위반 위험. 정규식은 false negative 가 일부 있어도 사용자 명시(결정 #5)가 backup. LLM 은 후속 단계에서 패턴 누수 측정 후 도입.
+- **함수 시그니처 — shell command / RPC standard 우선** — Python module 이 가장 마찰 적음. shell wrapper 는 hook 호출 측에 얇게 추가 (`scripts/imprint/retrieve.sh`), RPC 는 daemon 도입 시 같은 시그니처로 wrap.
+- **warm cache always-on (SessionStart spawn)** — 사용자가 retrieval 을 안 쓰는 세션 (단순 메모 작성 / HUD 만) 에서 모델 메모리 점유 비용. 명시적 opt-in (`IMPRINT_WARM_CACHE=always`) 으로 보존.
+- **rerank cache 영속 (SQLite 테이블)** — TTL 정책·invalidation 복잡도. 같은 query 가 세션 넘어 반복되는 빈도가 측정되기 전엔 LRU 메모리로 충분.
+- **ingest queue Unix socket / mmap ring** — 더 빠르지만 POSIX/플랫폼 fragility. SQLite 테이블 polling 이 ms 수준 budget 안에 들어오면 그대로 유지, latency 위반 누적 시에만 escape hatch.
+
+**참고:** 7건 모두 schema v1 머지 후 측정 인프라(IMPRINT_PROFILE=1) 위에서 6개월 안에 재평가 대상. 가장 휘발성 높은 항목은 (2-1) 임베딩 모델 (정확도 측정 후 swap), (7a-8) rerank cache TTL/사이즈 (실제 hit rate 보고).
+
 ## 2026-05-10 — Phase 7a 7개 결정 (스택 · 임베딩 · chunk_type · alias · supersedes · hosting · rerank)
 
 **무엇:** Phase 7a (chunk + hybrid retrieval + entity + versioning) 진입 전 7개 결정 확정. (1) Storage = SQLite + FTS5 + sqlite-vec, (2) Embedding = 로컬 multilingual (multilingual-e5 또는 BGE 계열), (3) chunk_type = 기존 9+3 유지 + normalized 4-category 컬럼 이중 계층, (4) Entity alias = 자동 추출 + review queue, (5) Supersedes = 사용자 명시 기본 + 자동 제안 보조, (6) Hosting = inline-first + daemon-ready abstraction, (7) Rerank = 로컬 cross-encoder first + Cohere 옵션 + Claude judge 실험. 동시에 LoadMap.md 의 Phase 7 을 7a (chunk-level) / 7b (project-level graph: hierarchical summary · contradiction detection · entity-relation graph) 로 분리.
