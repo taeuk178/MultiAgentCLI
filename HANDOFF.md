@@ -6,7 +6,7 @@
 - **결정 사유 로그**(왜 그렇게 바꿨는지·폐기한 대안)는 `HISTORY.md` 참조.
 - 구현된 동작·설치·전체 플로우 다이어그램은 `README.md` 참조.
 
-최종 업데이트: 2026-05-10.
+최종 업데이트: 2026-05-11.
 
 ## 완료된 retrieval 인프라 (Phase 7a/7b 요약)
 
@@ -20,6 +20,50 @@
 스키마는 `scripts/imprint/lib/schema.sql` 한 파일 안에 모두 idempotent. `SessionStart` hook 이 매 세션마다 적용.
 
 ML 의존성(transformers / sentence-transformers / sqlite-vec) 은 모두 lazy 로더 + opt-in. 미설치 시 `claude -p haiku` LLM judge / FTS-only 검색으로 안전 fallback. 자세한 설치는 `INSTALL.md` "선택: ML 의존성" 참조.
+
+## 보안 — Redaction coverage 갭 (2026-05-11 관찰)
+
+**현상**. 사용자가 GitHub token 관련 대화를 한 turn 에서 token 문자열이 events 테이블에 raw 로 저장된 사례가 관찰됨. 토큰 형식(`gh[pousr]_...`)이 `redact-rules.default.json` 의 default 룰에 일치함에도 불구하고 redaction 이 적용되지 않음.
+
+**원인**. `redact_text` (`lib/common.sh:96`) 가 호출되는 곳은 `/memory remember --redact` 옵트인 경로 한 군데뿐 (`memory.sh:85`). raw 저장하는 두 INSERT path 는 redaction 을 거치지 않음.
+
+- `user-prompt-submit.sh:47-50` — `events.kind='user_message'` INSERT (사용자 prompt 원문)
+- `stop.sh:120-123` — `events.kind='llm_response'` INSERT (assistant 응답 원문)
+- `stop.sh:131` 뒤의 chunk extraction path 도 raw 텍스트를 stdin 으로 넘김 — `lib/ingestion.py extract` 가 자체 redaction 을 하지 않으면 chunk 단계까지 누출 전파.
+
+`sql_escape` 는 SQL injection 방지(작은 따옴표 escaping)이지 redaction 이 아님.
+
+**우선순위**. 실제 token 누출이 관찰된 회귀이므로 Phase 5 진입과 무관하게 별도 패치로 처리. TODO 2 의 "보안·운영 인터뷰" 라운드 안건이지만, 인터뷰 없이 결정 가능한 단순 갭 (호출 지점 추가 + 패턴 보강) 부분만 먼저 진입 가능.
+
+**대응 후보**.
+
+1. **자동 redaction 진입점 통합** *(가장 단순)*
+
+   `user-prompt-submit.sh` 와 `stop.sh` 에서 `db_exec` INSERT 직전에 `text=$(redact_text "$text")` 한 줄 추가. ingestion.py extract 진입 직전(`stop.sh:128-129` 의 `TMP_BG` 작성) 에도 같은 줄 추가. 호출 비용은 python3 spawn 1 회 / turn — 동기 hook 안에서 이미 다른 python3 spawn (transcript 재파싱) 이 일어나므로 추가 영향은 ms 단위.
+
+   - **왜 이 안인가**: 코드 변경 ~3 줄, 회귀 위험 0 (모든 raw 경로가 같은 룰셋을 통과). simplicity first.
+   - **트레이드오프**: 정규식 false positive 로 정상 문자열이 마스킹될 수 있음 — 룰셋이 보수적인 패턴(접두사 + 길이) 만 잡고 있어 실 사용에서 false positive 는 드묾.
+
+2. **default 룰셋 보강** *(병행)*
+
+   현재 default 룰셋(`lib/redact-rules.default.json`) 에 누락:
+   - **GitHub fine-grained PAT**: `github_pat_[A-Za-z0-9_]{80,}` — 현 `gh[pousr]_` 룰이 못 잡음.
+   - **비밀번호 키워드 컨텍스트**: `(password|pw|비밀번호|passwd)\s*[:=]\s*\S+` — 자유 텍스트 안의 비밀번호 노출.
+   - **신용카드 16자리 + Luhn 검증**: 네 묶음 4자리 (`\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}`) + Python re.sub callback 에서 Luhn 체크로 false positive 억제.
+   - **한국 주민등록번호**: `\d{6}-\d{7}`.
+   - **bearer / authorization 헤더**: `(?i)bearer\s+[A-Za-z0-9._-]{20,}` · `(?i)authorization:\s*\S+`.
+
+   사용자 정의 추가 경로(`~/.claude/imprint/redact-rules.json` 우선) 는 이미 있어 룰 파일만 갱신.
+
+3. **schema-side trigger** *(보류, 측정 후)*
+
+   SQLite trigger 로 `events` / `memory_chunks` INSERT 시 redaction 강제. 호출 경로 누락에 대한 영구 방어지만, SQLite 안에서 정규식 호출은 추가 확장(`sqlite3_create_function`) 이 필요해 의존성 증가. 1+2 로 충분히 흡수되면 영구 보류.
+
+**다음 액션**.
+
+- 1번(`user-prompt-submit.sh`, `stop.sh`, `ingestion.py extract` 진입 직전 `redact_text` 호출) 을 patch 한 PR 한 건.
+- 2번(default 룰셋 보강) 을 별도 PR 한 건 — 룰 추가는 코드 변경 0, JSON 갱신만.
+- 두 PR 모두 머지 후 `events` 테이블의 token-shaped 문자열을 grep 으로 한 번 청소 (사용자 권한 액션, plugin 이 자동 청소하지 않음).
 
 ## 다음 액션
 
@@ -369,6 +413,7 @@ CREATE INDEX idx_chunks_page ON memory_chunks(project_id, meta_page_id);
 
 다뤄야 할 미해결:
 - **redaction 정규식**: 어떤 패턴(`sk-`, `xoxb-`, JWT, IP, email...)을 어디 단계에서(chunk insert 전 / FTS 인덱싱 시)? 사용자 정의 추가 가능?
+- **redaction 호출 경로 갭 (2026-05-11 관찰)**: 단순 결정 가능 부분은 "보안 — Redaction coverage 갭" 섹션으로 분리. 인터뷰가 필요한 잔여 질문 — (a) FTS 인덱싱 전후 어디에서 redact 해야 검색이 깨지지 않는지, (b) 이미 raw 로 저장된 과거 events 행을 일괄 redact / 삭제 / 방치 중 어느 정책으로 갈지, (c) IP·email·전화번호 같은 PII 는 default 룰에 넣을지 사용자 opt-in 으로 갈지.
 - **plugin.log 회전**: 크기·날짜 기반 회전 정책. 압축? 며칠 보관?
 - **반복 실패 사용자 알림**: silent fail이 누적될 때 statusline·session-start prepend로 보고할지. 임계치?
 - **conversation_id 관리**: 한 SessionStart마다 새 conversation? idle 시간 기준 분리?
