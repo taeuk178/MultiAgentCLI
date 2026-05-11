@@ -278,6 +278,20 @@ hook 스크립트 오류는 Claude Code 세션을 차단할 수 있습니다.
 - 의존 누락 시 `IMPRINT_DISABLE_*` 환경 변수로 부분 비활성화 가능
 - Linux/Windows 호환은 사용자 요청 시 별도 Phase로 다룸
 
+### 7. events 무한 누적과 노이즈 turn
+
+raw `events` 테이블이 모든 turn 의 사용자 prompt 와 assistant 응답을 무필터로 저장 — "응", "맞아" 같은 backchannel/confirm turn 도 그대로 누적. 직접 영향은 (a) 디스크 단조 증가, (b) 짧은 confirm 에도 사용자가 token / 비밀번호를 붙여 넣으면 위험 1번(민감정보 저장)과 결합해 누출 표면 확대.
+
+학계 표준은 "raw 보존 + soft filter / 감쇠 점수" — MemGPT(virtual context), MemoryBank(Ebbinghaus forgetting curve), Generative Agents(importance × recency × relevance), LongMemEval/LoCoMo(distractor session) 모두 archival vs recall 2-tier 또는 가중 retrieval 기반. imprint 의 `memory_chunks` (LLM 필터) + `events` (raw) 구조는 이 표준에 이미 부합, events tier 에 soft filter 한 겹만 추가하면 됨.
+
+대응:
+- **Stage 1 (즉시)**: backchannel rule filter — 정규식 + 길이 + chunk 0 개 동시 만족 시 `events.noise=1` 플래그 (삭제 아님, Yngve/Schegloff 언어학 전통과 부합).
+- **Stage 2 (경량)**: forgetting curve — `events.score` 자연 감쇠 + 미접근 노이즈만 cron 으로 hard delete. 의미 있는 raw 는 reinforce 로 영구 보존.
+- **Stage 3 (선택, 보류 우세)**: Stop hook LLM 호출에 importance scoring piggyback — `memory_chunks` 가 이미 의미 추출 중이라 ROI 낮음.
+- 보류: LLMLingua / recursive summarization (turn 단위 보존 철학과 결이 다름), A-MEM dynamic linking (단일 사용자 규모에서 과잉).
+
+자세한 후보 분석·trade-off·다음 액션·학술 레퍼런스는 `HANDOFF.md` "events 노이즈 누적 갭" 섹션 참조.
+
 ## 설계상 병목 후보·대응 플랜
 
 미래 병목으로 발현 가능한 3축을 사전 식별 — A) Stop hook 의 transcript JSONL 재파싱, B) 외부 fetch payload 폭주, C) 동시 백그라운드 부하. 각 축은 `IMPRINT_PROFILE=1` env-gated 계측 hook 이 박혀 있고(평소 OFF, 추가 비용 env 검사 1회), 활성화 시 측정값이 `~/.claude/imprint/profile.jsonl` 에 누적됩니다.

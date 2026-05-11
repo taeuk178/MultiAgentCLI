@@ -65,6 +65,69 @@ ML 의존성(transformers / sentence-transformers / sqlite-vec) 은 모두 lazy 
 - 2번(default 룰셋 보강) 을 별도 PR 한 건 — 룰 추가는 코드 변경 0, JSON 갱신만.
 - 두 PR 모두 머지 후 `events` 테이블의 token-shaped 문자열을 grep 으로 한 번 청소 (사용자 권한 액션, plugin 이 자동 청소하지 않음).
 
+## events 노이즈 누적 갭 (2026-05-11 관찰)
+
+**현상**. `events` 테이블이 모든 turn 의 사용자 prompt 와 assistant 응답을 raw 로 저장. `user-prompt-submit.sh:36` 의 필터는 공백만 있는 빈 문자열 한 가지만 거름. "응", "맞아", "커밋해줘" 같은 짧은 confirm/backchannel turn 도 무필터로 INSERT 되어, 시간이 지나면 events 상당 부분이 의미 없는 noise turn 으로 채워질 수 있음.
+
+**파급**.
+
+- 노이즈 turn 자체는 `memory_chunks` 가 LLM 필터링을 거치므로 retrieval 품질에는 직접 영향 없음.
+- 다만 (a) 디스크 사용량 단조 증가, (b) 짧은 confirm prompt 에도 사용자가 무심코 token / 비밀번호를 붙여 넣을 수 있어, 위 "보안 — Redaction coverage 갭" 과 결합 시 누출 표면이 확대.
+
+**학계 표준 — raw 보존 + soft filter**. 노이즈 turn 을 "삭제" 하기보다 "감쇠/플래그" 로 다루는 게 주류 (Sources 참조).
+
+- **MemGPT** (Packer et al., arXiv 2310.08560) — virtual context management, archival vs recall tier 분리. raw 는 cold storage 보존.
+- **MemoryBank** (Zhong et al., AAAI 2024, arXiv 2305.10250) — Ebbinghaus forgetting curve `R = exp(-t/S)`. 재호출되면 strength 증가, 안 쓰이면 자연 감쇠.
+- **Generative Agents** (Park et al., 2023) — LLM 이 1~10 점 importance scoring. 검색 점수 = `α·recency + β·relevance + γ·importance`. "응" 같은 turn 은 자연히 1~2 점.
+- **Backchannel/continuer 언어학** (Yngve 1970, Schegloff 1982) — non-lexical("uh-huh") / phrasal("yeah", "ok") / substantive(repeat) 3분류. 길이 + 정규식만으로 정확도 매우 높음.
+- **LongMemEval / LoCoMo** (arXiv 2410.10813, 2402.17753) — 두 벤치마크 모두 distractor session 의도적 혼입. "노이즈 제거" 가 아닌 "노이즈가 있어도 정답 찾기" 로 평가.
+
+공통 결론은 imprint 의 `memory_chunks` (LLM 필터) + `events` (raw) 2-tier 가 이미 표준과 동일 구조라는 점. 추가할 것은 events tier 에 soft filter 한 겹.
+
+**대응 후보 — 3 단계 점진 도입**.
+
+1. **Stage 1 — Backchannel rule filter** *(즉시, 무비용)*
+
+   `user-prompt-submit.sh:36-50` INSERT 직전에 (a) backchannel 정규식 매칭, (b) `len(prompt) < 20`, (c) 직후 Stop hook chunk 추출 결과 0 개 의 세 조건 동시 만족 시 `events.noise=1` 플래그 (삭제 아님, 표식). 정규식 예: `^(응|네|ㅇㅇ|좋아|그래|맞아|커밋해줘|ok|yes|yeah)\W*$`.
+   - **왜 이 안인가**: 코드 변경 ~10 줄, schema 마이그레이션 1 컬럼. Yngve/Schegloff 전통의 phrasal continuer 와 정확히 부합 — false positive 거의 없음.
+   - **트레이드오프**: "응" + 긴 follow-up 한 줄짜리 prompt 는 정상 통과. 짧은 confirm 만 표식.
+
+2. **Stage 2 — Forgetting curve soft delete** *(가벼움)*
+
+   `events` 에 `score REAL DEFAULT 1.0`, `last_accessed TEXT` 컬럼 추가. retrieval hit 시 reinforce (`score *= 1.2`, `last_accessed = now`), 미접근 시 자연 감쇠 (cron 으로 `score *= exp(-age_days / S)`). `score < threshold AND age > 30d AND noise=1` 인 행만 hard delete — 의미 있는 raw 는 score 가 자연 유지되어 영구 보존.
+   - **왜 이 안인가**: MemoryBank 식. raw 보존 철학을 깨지 않으면서 "오래 안 쓰인 노이즈" 만 정리. cron 1 회 / 주.
+   - **트레이드오프**: 새 컬럼 + cron job 추가. retrieval 경로에 reinforce 호출 한 줄 필요.
+
+3. **Stage 3 — Importance scoring** *(선택, 보류 우세)*
+
+   Stop hook 의 chunk 추출 LLM 호출에 piggyback 으로 1~10 점 importance 를 요청. Generative Agents 식. 다만 `memory_chunks` 가 이미 의미 단위 추출을 하고 있어 ROI 낮음 — chunk 추출 결과가 0 개면 사실상 "중요도 1점" 으로 간주해도 무방. Stage 1+2 효과가 부족한 시점에만 진입.
+
+**보류 — 결이 안 맞는 접근**.
+
+- **LLMLingua / recursive summarization** — turn 단위 보존 철학과 결이 다르고 (information lossy, debug 가독성 손해), backchannel 압축은 0bit → ROI 0.
+- **A-MEM dynamic linking** — 단일 사용자·단일 프로젝트 로컬 메모리 규모에서는 과잉 (Zettelkasten 식 동적 link 가 가져올 가치보다 복잡도가 큼).
+
+**도메인 분리 가정**. 현재 schema 는 `project_id` 한 축으로만 분리 — 한 project 안의 모든 events 가 단일 풀이고 명시적 `domain` 컬럼은 없음. Stage 1·2 의 noise 플래그·forgetting curve 도 project 단위 단일 정책으로 설계. 도메인별 차등 정책 (예: "인프라" 주제는 오래 보존, "잡담" 은 빨리 잊기) 이 명확히 필요해지는 시점에는 두 가지 길:
+
+- **간접 path (권장)** — `chunk_entities` / `summaries.target_key` (Phase 7b feature 단위) 와 join 해서 retrieval reinforcement 가 feature-summary 를 거치게 만듦. 새 컬럼 없이도 events.score 가 자연스레 도메인 가중을 반영.
+- **직접 path (보류)** — `events.domain TEXT NULL` 컬럼 추가. 다만 도메인 자동 분류 자체가 별도 LLM/룰 작업을 요구하고, summaries 의 feature-level 이 이미 동일 역할을 하므로 중복. 명확한 사용 사례가 나오기 전엔 보류.
+
+**다음 액션**.
+
+- Stage 1 (rule filter + `noise` 컬럼) 을 별도 PR — 코드 ~10 줄, schema 마이그레이션 1 컬럼.
+- Stage 1 머지 후 1~2 주 데이터 (`SELECT count(*) FROM events WHERE noise=1` 비율) 보고 Stage 2 진입 여부 결정.
+- Stage 3 는 Stage 2 효과가 부족한 시점에만 검토 — 영구 보류 가능.
+
+**Sources**.
+
+- [MemGPT (arXiv 2310.08560)](https://arxiv.org/abs/2310.08560)
+- [MemoryBank (arXiv 2305.10250)](https://arxiv.org/abs/2305.10250)
+- [Generative Agents (Park et al. 2023)](https://3dvar.com/Park2023Generative.pdf)
+- [LongMemEval (arXiv 2410.10813)](https://arxiv.org/pdf/2410.10813)
+- [LoCoMo (arXiv 2402.17753)](https://arxiv.org/abs/2402.17753)
+- [Backchannel — Wikipedia (Yngve 1970)](https://en.wikipedia.org/wiki/Backchannel_(linguistics))
+- [Cathcart et al., EACL 2003 — Shallow Model of Backchannel Continuers](https://aclanthology.org/E03-1069.pdf)
+
 ## 다음 액션
 
 다음 PR 단위로 분해 가능한 즉시 픽업 후보:
