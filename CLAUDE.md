@@ -33,8 +33,6 @@
 
 이 repo는 Claude Code plugin입니다. 로컬 작업 기억(SQLite + FTS5), 외부 소스(Slack·Notion) lazy fetch, statusline HUD를 hook·skill·subagent 형태로 제공합니다.
 
-이전에는 [`MultiAgentCLI`](../MultiAgentCLI)(SwiftUI)의 후속으로 Tauri 데스크톱 앱(이전 코드명 `multi-agent-cli-v2`)을 청사진으로 잡았으나, **Tauri 방향은 폐기**하고 Claude Code plugin(`imprint`)으로 전환했습니다. 본 repo에는 더 이상 Rust/React 코드가 없습니다.
-
 현재 동작과 설치 방법은 `README.md`, `INSTALL.md`, 방향성은 `LoadMap.md`를 기준으로 합니다.
 
 ## Stack
@@ -43,7 +41,8 @@
 - **Hooks (Bash)**: `hooks/hooks.json`이 `SessionStart`, `UserPromptSubmit`, `Stop`을 `scripts/imprint/*.sh`에 연결
 - **Skills**: `skills/{memory,hud}/SKILL.md` — Claude가 필요할 때 dispatcher 스크립트를 호출
 - **데이터**: `~/.claude/imprint/app.sqlite` (FTS5 포함), `~/.claude/imprint/plugin.log`
-- **Statusline**: `scripts/imprint/hud.sh`가 Claude Code stdin의 세션 JSON을 읽어 5h/wk/ctx + 잔여 시간과 활성 plugin의 skills/agents 수를 출력
+- **Statusline**: `scripts/imprint/hud.sh`가 세션 JSON을 읽어 사용자가 선택한 HUD 필드(12종 중)를 출력. 설정은 `hud-setup.sh`로
+- **Retrieval**: `scripts/imprint/lib/retrieval/`이 hybrid 검색 파이프라인(FTS5 trigram BM25 + BGE-M3 embedding + RRF). dispatcher는 `retrieve.sh`, ingest queue drain은 `ingest-drain.sh`
 
 런타임 의존: `bash`, `python3`, `sqlite3`, `uuidgen`. 백그라운드 LLM 호출(prefill 분석, Slack/Notion lazy fetch, Stop chunk 추출)은 OAuth 구독으로 인증된 `claude` CLI를 사용합니다.
 
@@ -63,14 +62,18 @@ imprint/
 │   ├── lib/
 │   │   ├── common.sh        DB·project·redact·로그 헬퍼
 │   │   ├── ingestion.py     prefill 분석·Slack/Notion lazy fetch·Stop 추출·refresh
+│   │   ├── retrieval/       hybrid retrieval pipeline (FTS5 + BGE-M3 + RRF)
 │   │   ├── redact-rules.default.json  플러그인 default redact 룰셋
 │   │   └── schema.sql       SQLite 스키마 (idempotent)
 │   ├── session-start.sh     SessionStart hook
 │   ├── user-prompt-submit.sh UserPromptSubmit hook
 │   ├── stop.sh              Stop hook
+│   ├── ingest-drain.sh      ingest_queue drainer (inline/daemon)
 │   ├── memory.sh            /memory dispatcher
+│   ├── retrieve.sh          /retrieve dispatcher
 │   ├── hud.sh               statusline body
-│   └── hud-setup.sh         statusLine install/status/uninstall/layout
+│   ├── hud-setup.sh         statusLine install/status/uninstall/layout
+│   └── tests/               단위·통합 테스트
 ├── INSTALL.md
 ├── LoadMap.md
 ├── HANDOFF.md
@@ -87,7 +90,7 @@ imprint/
 
 ### 커밋 메시지
 
-- **전부 한국어.** 제목과 본문 모두. Co-Authored-By 트레일러만 영어 유지.
+- **전부 한국어.** 제목과 본문 모두.
 - 제목은 50자 이내, 본문은 "왜 그랬는지" 중심으로 2~4줄.
 - 기능 단위로 쪼개서 커밋. 포맷팅·리팩토링·기능 추가를 한 커밋에 섞지 않습니다.
 
