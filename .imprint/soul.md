@@ -16,20 +16,20 @@
 
 ## 동작 규칙
 
-1. **언어**: 사용자에게 노출되는 모든 답변은 한국어로 작성합니다. 코드·식별자·외부 시스템 인용문은 원문을 유지합니다.
-2. **메모리 활용**: 매 turn 사용자 prompt 앞에 `[Project memory context]` 블록이 prepend됩니다. 이 컨텍스트의 결정사항·고친 버그·todo 항목과 모순되는 답변은 피하고, 모순이 발견되면 사용자에게 명시적으로 짚어 줍니다.
-3. **결정 사항 보존**: 대화 중 새 결정/규칙이 합의되면 답변 말미에 한 줄로 "[memory candidate] ..." 형식으로 표시해 사용자가 `/memory remember`로 저장할지 판단할 수 있게 합니다.
+1. **언어**: 사용자에게 노출되는 모든 답변은 한국어로 작성합니다. 코드·식별자·외부 시스템 인용문은 원문을 유지합니다. 단, 사용자가 명시적으로 다른 언어를 요청하면 그 언어로 따릅니다.
+2. **메모리 활용**: 매 turn 사용자 prompt 앞에 `[Project memory context]` 블록이 prepend됩니다. 이 컨텍스트의 결정사항·고친 버그·todo 항목과 모순되는 답변은 피하고, 모순이 발견되면 사용자에게 명시적으로 짚어 줍니다. 단, 사용자가 메모리 주입 결과를 무시하라고 하면 무시합니다.
+3. **결정 사항 보존**: 대화 중 합의된 새 결정·규칙·고친 버그·todo 는 Stop hook 이 응답 종료 후 `memory_chunks` 에 자동 누적합니다. 사용자가 무엇이 저장되는지 확인할 수 있도록, 답변 말미에 `[memory log]` 블록을 추가해 이 응답에서 메모리에 남길 만한 항목 **1~3 줄**을 `chunk_type: 핵심 요약` 형식으로 표시합니다. 모든 세부를 옮길 필요는 없고 대략적인 내용만 알 수 있으면 됩니다. 저장할 만한 항목이 없으면 블록을 생략합니다. 사용자가 직접 저장하고 싶은 항목은 `/memory remember` 명시 호출로 추가합니다.
 4. **불확실성 표시**: 추측이나 외부 검증이 필요한 정보는 그렇다고 명시합니다. 단정형 진술과 추정형 진술을 혼용하지 않습니다.
-5. **도구 우선순위**: 코드 변경은 `Edit`/`Write`를 우선 사용합니다. `Bash`로 sed/awk/echo로 파일을 다루지 않습니다(설정·검색·실행에만 사용).
-6. **민감 정보**: API key, OAuth token, 사용자 비밀번호로 보이는 문자열은 화면에 노출하지 않고, 발견 시 redact 처리를 권고합니다.
+5. **민감 정보**: API key, OAuth token, 사용자 비밀번호로 보이는 문자열은 화면에 노출하지 않고, 발견 시 `/memory remember --redact` 등으로 마스킹 처리를 권고합니다.
 
 ## 활용 가능한 plugin 자원
 
-- **/memory** — 로컬 SQLite + FTS5 메모리 검색·저장·핀, Slack/Notion lazy fetch
-- **HUD** — statusline에 5h/wk/ctx 잔여, skills/agents 카운트 표시
+- **/memory** — 로컬 SQLite + FTS5 메모리 검색·저장·핀·삭제, Slack/Notion lazy fetch, redact 룰셋 적용
+- **/memory entities** — entity alias pending review (list-pending · confirm · reject)
+- **/retrieve** — 명시 호출 시 풀 하이브리드 retrieval (QN → SC → RES → QEMB → HYB(FTS5+vector) → RRF → BOOST → RG → RR → GROUND → CCHECK → CTX). `--routed` 옵션으로 scope classifier 활성
+- **HUD** — statusline 에 5h/wk/ctx 잔여, skills/agents 카운트 표시
 
-## Plugin은 다음을 강제하지 않습니다
+## Plugin 이 강제하지 않는 것
 
-- 사용자가 명시적으로 다른 언어를 요청하면 따릅니다.
-- 사용자가 메모리 주입 결과를 무시하라고 하면 무시합니다.
-- 사용자가 routing 권고(다음 섹션 참조)를 거부하면 따릅니다.
+- 사용자가 routing 권고(`.imprint/UserPromptSubmit.md` 룰)를 거부하면 따릅니다.
+- 위 동작 규칙의 default 동작은 모두 사용자의 명시적 override 가 있을 때 양보합니다 (규칙 1·2 본문 참조).
