@@ -39,32 +39,32 @@ pip install -r requirements-optional.txt
 
 ## 어떻게 동작하는가
 
-매 turn마다 turn 사이클 hook 2개(`UserPromptSubmit` · `Stop`)가 **동기·비동기 두 경로**로 작동합니다(세션 진입 시점에는 별도로 `SessionStart` 가 1회 발동 — 스키마 적용 + soul.md prepend). 동기 경로(retrieval + context prepend)는 사용자 turn을 막지 않도록 < 330 ms 안에 끝나고, LLM 호출(`claude -p haiku`)·외부 fetch·chunk 추출 같은 무거운 작업은 전부 백그라운드로 분리됩니다.
+매 turn마다 turn 사이클 hook 2개(`UserPromptSubmit` · `Stop`)가 **동기·비동기 두 경로**로 작동합니다(세션 진입 시점에는 별도로 `SessionStart` 가 1회 발동 — 스키마 적용 + soul.md prepend). UPS hook 의 **자동 동기 경로**는 `events.user_message` 기록 + routing 룰 매칭 + `memory_chunks` recency fallback(LIMIT 8) 만 emit 해서 < 50 ms 안에 끝나고, LLM 호출(`claude -p haiku`)·외부 fetch·chunk 추출 같은 무거운 작업은 전부 백그라운드(J1·J2)로 분리됩니다. **풀 하이브리드 retrieval**(`QN → SC → RES → QEMB → HYB → RRF → BOOST → RG → RR → GROUND → CCHECK → CTX`)은 hook 이 자동으로 부르지 않고, 사용자가 `/retrieve` 또는 `/retrieve --routed` 디스패처를 명시 호출했을 때만 실행됩니다.
 
 ### 전체 플로우
 
-```
-사용자:
-  "Notion https://notion.so/feature-spec 보고,
-   A 버튼 클릭 동작 알려줘"
+아래 예시는 사용자가 `/retrieve --routed "..."` 를 명시 호출했을 때 발동되는 **풀 하이브리드 파이프라인** 시나리오입니다. 일반 prompt 입력(UPS hook 자동 경로)에서는 prefill·routing 두 단계만 동기로 실행됩니다.
 
-[동기 경로 — 2.3초]
-  1. QN: "A 버튼" "클릭" "동작" 정규화
+```
+사용자: /retrieve --routed "A 버튼 클릭 동작 알려줘"
+  (또는: 사전에 prompt 안에 Notion URL 을 넣어 두면 J1 이 백그라운드로 fetch)
+
+[/retrieve 동기 경로 — < 330 ms]
+  1. QN: "a 버튼" "클릭→탭" "동작" 정규화 (NFKC + 동의어)
   2. SC: scope=local (특정 버튼 세부사항)
   3. RES: "A 버튼" → entity_456
-  4. QEMB: query embedding 생성 (warm cache 활용)
+  4. QEMB: query embedding 생성 (BGE-M3 가용 시)
   5. HYB1: chunk retrieval (local 질문)
-     - FTS: 40개
-     - vector: 40개
-  6. RRF: 융합 후 50개
-  7. BOOST: is_current × recency × entity → 12개
-  8. RG: count≥10, top-1<0.85 → rerank 실행
-  9. RR: cross-encoder → 6개 선택
-  10. GROUND: chunk만 있으므로 skip
-  11. CCHECK: entity_456 conflict 없음
-  12. CTX: context prepend
-  13. RESP: Claude 응답 생성
-  14. USR: "A 버튼 클릭 시 handleButtonA() 호출..."
+     - FTS5 trigram: 100개
+     - vector(cosine): 100개
+  6. RRF: 융합 후 ≤200개 (semantic 0.8 / BM25 0.2)
+  7. BOOST: is_current + recency + entity → top-K
+  8. RG: count≥10 AND top-1<0.85 AND rerank 모델 로드 가능 → rerank 발동
+  9. RR: cross-encoder → 재정렬
+  10. GROUND: summary가 섞이면 summary_links 로 근거 chunk drill-down
+  11. CCHECK: entity_456 confirmed contradiction 없음
+  12. CTX: 구조화 context block 출력
+  → 결과 JSON 반환 (사용자가 다음 turn 에 inject 하거나 직접 활용)
 
 [비동기 경로 — 백그라운드]
   Job A (lazy fetch):
@@ -127,7 +127,7 @@ pip install -r requirements-optional.txt
 | hook | matcher | 시점 | 동기 경로 | 비동기 경로 |
 |---|---|---|---|---|
 | **SessionStart** | `startup\|resume\|clear\|compact` | 세션 진입 / 재개 / clear / compact 직후 | SQLite 스키마 idempotent 적용 + 현재 프로젝트 row upsert + `<project>/.imprint/soul.md` 컨텍스트 prepend (timeout 5 s) | — |
-| **UserPromptSubmit** | `*` | 프롬프트 진입 직전 (매 turn) | `events.user_message` 기록 → 기존 chunk FTS 검색 → `[Project memory context]` 블록 prepend (retrieval < 330 ms) | `claude -p haiku` 로 키워드·모호도 추출 → prompt 의 Notion/Slack URL 또는 `sources.json` 기반 lazy-fetch → 외부 chunk INSERT (≈30~60 초, timeout 30 s) |
+| **UserPromptSubmit** | `*` | 프롬프트 진입 직전 (매 turn) | `events.user_message` 기록 → `.imprint/UserPromptSubmit.md` routing 룰 advisory prepend → `memory_chunks` recency fallback (pinned/recent LIMIT 8) → `[Project memory context]` 블록 prepend (< 50 ms). **풀 하이브리드 retrieval 은 `/retrieve` 디스패처 명시 호출 경로로만 진입** | `claude -p haiku` 로 키워드·모호도 추출 → prompt 의 Notion/Slack URL 또는 `sources.json` 기반 lazy-fetch → 외부 chunk INSERT (≈30~60 초, timeout 30 s) |
 | **Stop** | `*` | 응답 종료 직후 (매 turn) | `events.llm_response` 로 응답 텍스트 archive | `claude -p haiku` 가 응답을 9 가지 `chunk_type` (`decision` · `error` · `fix` · `command` · `test_result` · `summary` · `todo` · `code_context` · `note`) 로 분류해 `memory_chunks` 에 누적. 외부 source (Slack · Notion) 는 ingestion 경로에서 `spec` · `message` · `thread` 로 직접 INSERT (timeout 30 s) |
 
 서브프로세스가 다시 hook 을 타며 자기 자신을 spawn 하는 무한 재귀는 `IMPRINT_BYPASS_HOOKS=1` 을 환경에 박아 차단합니다.
@@ -147,52 +147,55 @@ sectioning 룰 · dedup · TTL · graceful degradation 명세는 [`flow.md`](flo
 
 ## 전체 플로우 다이어그램
 
-매 turn 의 동기 경로(사용자 turn 을 차단하지 않는 ≈300 ms 이내) 와 비동기 ingestion / 단일 writer commit chain 을 한 다이어그램에 모았습니다. 노드 라벨의 lifecycle (`sync` · `sync/daemon-ready` · `async` · `async/single-writer`) 과 동기 경로 budget 은 아래 표 참조.
+두 진입점 — **(1) 매 turn 자동 UPS hook**(prefill + routing 만) 과 **(2) 사용자 명시 `/retrieve` 디스패처**(풀 하이브리드 파이프라인) — 을 한 다이어그램에 모았습니다. 비동기 ingestion / 단일 writer commit chain 도 함께 표시. 노드 라벨의 lifecycle (`sync` · `sync/daemon-ready` · `async` · `async/single-writer`) 과 동기 경로 budget 은 아래 표 참조.
 
 ```mermaid
 %%{init: {'flowchart': {'useMaxWidth': false, 'rankSpacing': 80, 'nodeSpacing': 50}, 'theme': 'default'}}%%
 flowchart TB
+    %% ===== UPS hook 자동 경로 =====
     U([사용자 프롬프트]) --> CC[Claude Code]
     CC --> UPS{{UserPromptSubmit hook}}
 
     UPS -->|sync| LOG[("events.user_message 기록")]
-    UPS -->|sync| QN["query normalize<br/>(sync)"]
-    QN --> SC["scope classifier<br/>local/feature/global<br/>(sync)"]
+    UPS -->|sync| ROUTE["routing 룰 매칭<br/>.imprint/UserPromptSubmit.md<br/>(sync)"]
+    UPS -->|sync| PREFILL["memory_chunks<br/>recency fallback<br/>(pinned/recent LIMIT 8)<br/>(sync)"]
+    ROUTE --> CTX0["[Project memory context]<br/>+ routing advisory prepend<br/>(sync)"]
+    PREFILL --> CTX0
+    CTX0 --> RESP["Claude 응답 생성"]
+    RESP --> USR([사용자에게 응답 표시])
+
+    RESP --> ST{{Stop hook}}
+    ST -->|sync| LOG2[("events.llm_response archive")]
+
+    %% ===== /retrieve 디스패처 (사용자 명시 호출) =====
+    RTV(["사용자 /retrieve 호출"]) --> QN["query normalize<br/>NFKC + 도메인 동의어<br/>(sync)"]
+    QN --> SC["scope classifier<br/>local/feature/global<br/>--routed 일 때만<br/>(sync)"]
     SC --> RES["entity alias resolve<br/>(sync)"]
-    RES --> QEMB["query embedding<br/>(sync/daemon-ready)"]
+    RES --> QEMB["query embedding<br/>BGE-M3 가용 시<br/>(sync/daemon-ready)"]
 
     QEMB --> SCOPE{query scope}
 
-    SCOPE -->|local| HYB1["chunk retrieval<br/>FTS5 + sqlite-vec<br/>(sync/daemon-ready)"]
+    SCOPE -->|local| HYB1["chunk retrieval<br/>FTS5 trigram + cosine<br/>chunks_v2<br/>(sync/daemon-ready)"]
     SCOPE -->|feature| HYB2["feature summary retrieval<br/>+ drill-down chunks<br/>max: summary 5 + chunk 8<br/>(sync/daemon-ready)"]
     SCOPE -->|global| HYB3["project/document summary retrieval<br/>+ key summaries<br/>max: proj 1 + doc 3 + feat 5 + chunk 6<br/>(sync/daemon-ready)"]
 
-    HYB1 --> RRF["RRF fusion<br/>(sync)"]
+    HYB1 --> RRF["RRF fusion<br/>semantic 0.8 / BM25 0.2<br/>(sync)"]
     HYB2 --> RRF
     HYB3 --> RRF
 
     RRF --> BOOST["is_current + recency<br/>+ entity coverage boost<br/>(sync)"]
-    BOOST --> RG{"rerank 필요?<br/>count≥10 AND<br/>top-1<0.85 AND<br/>cache miss"}
+    BOOST --> RG{"rerank 발동 조건<br/>count≥10 AND<br/>top-1<0.85 AND<br/>cross-encoder 로드 가능"}
     RG -->|yes| RR["로컬 cross-encoder rerank<br/>(sync/daemon-ready)<br/>timeout 200ms"]
     RG -->|no| GROUND["grounding check<br/>summary면 summary_links로<br/>근거 chunk 1~3개 drill-down<br/>(sync)"]
-    RR --> RROK{timeout?}
-    RROK -->|success| GROUND
-    RROK -->|timeout| GROUND
+    RR --> GROUND
 
     GROUND --> CCHECK["contradiction check<br/>retrieved entity의<br/>confirmed conflict 조회<br/>(sync)"]
-    CCHECK --> CTX["구조화 context prepend<br/>+ conflict 표시<br/>(sync)"]
-    CTX --> RESP["Claude 응답 생성"]
-    RESP --> USR([사용자에게 응답 표시])
+    CCHECK --> CTX["구조화 context block<br/>+ conflict 표시<br/>(sync)"]
+    CTX --> RTVOUT(["retrieve 결과 JSON"])
 
-    RESP --> ST{{Stop hook}}
-    ST --> LOG2[("events.llm_response archive")]
-
+    %% ===== UPS / Stop hook 백그라운드 spawn =====
     UPS -.spawn.-> J1["Job A: lazy fetch<br/>(async, priority 1)"]
     ST  -.spawn.-> J2["Job B: response extract<br/>(async, priority 1)"]
-    UPS -.spawn.-> J3["Job C: retrieval warm cache<br/>(async, priority 9)"]
-
-    J3 --> WC["임베딩 모델 warm-up<br/>+ recent query cache"]
-    WC -.cache 제공.-> QEMB
 
     J1 --> ANL["haiku: 키워드/모호도/URL 분석"]
     ANL --> URL{URL 존재?}
@@ -222,12 +225,12 @@ flowchart TB
     RTYPE -->|chunk/entity| CONF{entity confidence}
     RTYPE -->|summary| W1
     RTYPE -->|contradiction| W1
-    CONF -->|high| W1[("single writer commit<br/>chunks · summaries · contradictions<br/>entity_link · versioning<br/>(async/single-writer)")]
-    CONF -->|low| W2[("entity review queue")]
+    CONF -->|high| W1[("single writer commit<br/>chunks_v2 · summaries · contradictions<br/>entity_link · versioning<br/>(async/single-writer)")]
+    CONF -->|low| W2[("entity_aliases<br/>status=pending")]
 
     W1 -.새 chunk 시.-> J4["Job D: entity NER<br/>(async, priority 9)"]
     W1 -.변경 발생 시.-> J5["Job E: summary rebuild<br/>(async, priority 5)"]
-    W1 -.변경 발생 시.-> J6["Job F: contradiction detection<br/>(async, priority 5)"]
+    W1 -.decision/supersede 변경.-> J6["Job F: contradiction detection<br/>(async, priority 5)"]
 
     J4 --> NEREXT["chunk → entity mention 추출<br/>(LLM, conf≥0.9 auto-confirm)"]
     NEREXT --> PACK3[entity candidate payload]
@@ -248,8 +251,8 @@ flowchart TB
     PACK5_CAND --> ENQ
     PACK5_NEUT --> ENQ
 
-    W1 -.다음 turn 후보.-> QEMB
-    W2 --> ENTS[/"entities skill<br/>list-pending · confirm · reject"/]
+    W1 -.다음 /retrieve 후보.-> QEMB
+    W2 --> ENTS[/"/memory entities CLI<br/>list-pending · confirm · reject"/]
     ENTS --> ENQ
 ```
 
@@ -257,24 +260,27 @@ flowchart TB
 
 | 라벨 | 의미 | 노드 |
 |---|---|---|
-| `(sync)` | 사용자 turn 동기 경로, 추가 지연 가벼움 | `LOG` · `QN` · `SC` · `RES` · `RRF` · `BOOST` · `GROUND` · `CCHECK` · `CTX` · `LOG2` |
-| `(sync/daemon-ready)` | 동기 경로지만 무거운 후보 — daemon 분리 1순위 | `QEMB` · `HYB1/2/3` · `RR` |
-| `(async)` | 백그라운드 spawn, 사용자 turn 차단 없음 | `J1`~`J6` 와 그 하위 모든 노드 |
+| `(sync)` UPS hook 자동 | 매 turn UPS hook 동기 경로 | `LOG` · `ROUTE` · `PREFILL` · `CTX0` · `LOG2` |
+| `(sync)` /retrieve 진입 | `/retrieve` 디스패처 동기 경로 | `QN` · `SC` · `RES` · `RRF` · `BOOST` · `GROUND` · `CCHECK` · `CTX` |
+| `(sync/daemon-ready)` | `/retrieve` 동기 경로 중 무거운 후보 — daemon 분리 1순위 | `QEMB` · `HYB1/2/3` · `RR` |
+| `(async)` | 백그라운드 spawn, 사용자 turn 차단 없음 | `J1` · `J2` · `J4` · `J5` · `J6` 와 그 하위 모든 노드 |
 | `(async/single-writer)` | 모든 ingest 경로가 직렬화되는 단일 writer | `DEDUPE` · `VRES` · `W1` |
 
 ### 동기 경로 latency budget
+
+UPS hook 자동 경로는 `LOG → ROUTE → PREFILL → CTX0` 만 실행해 < 50 ms 안에 끝납니다(SQLite INSERT 1 + recency SELECT LIMIT 8 + regex 룰 평가). 아래 budget 표는 사용자가 `/retrieve` 를 명시 호출했을 때 발동되는 풀 하이브리드 동기 경로 기준입니다.
 
 | 케이스 | budget | 구성 |
 |---|---|---|
 | local + rerank skip | < 130 ms | QN(<5) + SC(<5) + RES(<5) + QEMB(50~100, warm hit 시 <5) + HYB1(30~80) + RRF(<1) + BOOST(<5) + GROUND(<5, skip) + CCHECK(<5) + CTX(<5) |
 | feature/global + rerank skip | < 200 ms | + HYB2/HYB3 summary 검색(50~100) + GROUND drill-down(10~30) |
-| any scope + rerank 발동 | < 330 ms | + RR(≤200, timeout) — timeout 시 200 ms 직후 RROK→GROUND |
+| any scope + rerank 발동 | < 330 ms | + RR(≤200, timeout 시 fall-through → GROUND) |
 
 위 추정치를 위반하면 `(sync/daemon-ready)` 노드(`QEMB` · `HYB1/2/3` · `RR`)를 daemon backend 로 분리하는 것이 첫 escape hatch. 자세한 budget 검증·daemon 분리 정책은 [`HANDOFF.md`](HANDOFF.md) "동기 경로 latency budget" 참조.
 
 ### 비동기 job 우선순위
 
-ingest queue 는 `priority` 컬럼 ASC + `created_at` ASC 로 drain 합니다. 같은 priority 내에서는 FIFO.
+ingest queue 는 `priority` 컬럼 ASC + `created_at` ASC 로 drain 합니다. 같은 priority 내에서는 FIFO. 현재 활성 job 만 표기 (`J3 warm cache` 는 우선순위 상수만 정의돼 있고 spawn 경로 미구현).
 
 | Job | priority | 이유 |
 |---|---|---|
@@ -283,7 +289,6 @@ ingest queue 는 `priority` 컬럼 ASC + `created_at` ASC 로 drain 합니다. �
 | `J5` summary rebuild | 5 | feature/global 질문 대응 품질, 첫 사용까지 시간 여유 |
 | `J6` contradiction detection | 5 | conflict 표시 품질, 즉시 노출 필수 X |
 | `J4` entity NER | 9 | alias 사전의 점진적 개선 |
-| `J3` warm cache | 9 | 콜드 로드 흡수, 기능 회귀 영향 X |
 
 
 ## 사용
