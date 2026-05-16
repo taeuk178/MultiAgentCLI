@@ -12,7 +12,8 @@ from typing import Any, Callable
 
 from ._common import db_connect, log, new_id, now_iso
 
-# 명세 "비동기 job 우선순위" 매핑.
+# Async job priority map. Lower number drains first.
+# J1/J2 are reserved/high-priority ingestion phases; active dispatch currently enqueues J4/J5/J6.
 PRIORITY_J2_EXTRACT = 1
 PRIORITY_J1_FETCH = 1
 PRIORITY_J5_SUMMARY = 5

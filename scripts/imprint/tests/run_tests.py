@@ -132,9 +132,14 @@ def make_fake_claude(home: str) -> str:
     path.write_text(
         f"""#!/bin/sh
 joined="$*"
+stdin="$(cat)"
+joined="$joined $stdin"
 case "$joined" in
   *"Extract durable knowledge chunks"*)
     printf '%s\\n' '[{{"chunk_type":"decision","text":"A 버튼 클릭은 {raw_token} 없이 테스트 모드를 시작합니다.","keywords":["A 버튼","{raw_token}"]}}]'
+    ;;
+  *"contradiction judge"*)
+    printf '%s\\n' '{{"verdict":"contradiction","score":0.95,"reason":"새 결정이 기존 즉시 진입 결정을 대체합니다."}}'
     ;;
   *"Return STRICT JSON with EXACTLY these keys"*)
     printf '%s\\n' '{{"ambiguity_score":0.1,"keywords":["A 버튼","클릭","button click"],"refined_prompt":null}}'
@@ -337,9 +342,10 @@ C 슬롯 본문 v2 (변경됨) 입니다.
 
 
 def tc_08_contradiction_llm(env: dict, home: str, case: CaseResult) -> None:
-    """LLM judge 활성. claude CLI 호출이 11~28s 소요."""
+    """LLM judge 활성 경로를 fake claude 로 결정적으로 검증."""
     env_llm = dict(env)
     env_llm.pop("IMPRINT_DISABLE_LLM_JUDGE", None)
+    env_llm["IMPRINT_CLAUDE_BIN"] = make_fake_claude(home)
 
     code = ("import sys; sys.path.insert(0, %r)\n"
             "from retrieval.entity import upsert_entity\n"
@@ -766,6 +772,440 @@ def tc_14_retrieve_memory_fallback(env: dict, home: str, case: CaseResult) -> No
     )
 
 
+def tc_15_first_turn_working_overlay(env: dict, home: str, case: CaseResult) -> None:
+    """UserPromptSubmit sync mini-chunk + prefill/retrieve working overlay."""
+    env_h = hook_env(env)
+    env_h["IMPRINT_CLAUDE_BIN"] = make_fake_claude(home)
+    rc, _, err = run_cmd(env_h, ["bash", "scripts/imprint/session-start.sh"])
+    if rc != 0:
+        case.passed = False
+        case.detail = f"session-start rc={rc} err={err[:120]}"
+        return
+
+    now = "2026-05-16T00:00:00Z"
+    conn = sqlite3.connect(str(Path(home) / "app.sqlite"))
+    try:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO memory_chunks
+              (id, project_id, source_event_id, chunk_type, text, metadata_json, created_at, pinned)
+            VALUES (?, ?, NULL, ?, ?, ?, ?, 0)
+            """,
+            (
+                "tc15-durable",
+                ROOT_PROJECT_ID,
+                "decision",
+                "A 버튼 클릭은 테스트 모드를 시작합니다.",
+                "{}",
+                now,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    ups_input = json.dumps({"prompt": "A 버튼 클릭 동작 알려줘", "session_id": "tc15"}, ensure_ascii=False)
+    rc_ups, ups_out, ups_err = run_cmd(
+        env_h, ["bash", "scripts/imprint/user-prompt-submit.sh"], input_text=ups_input,
+    )
+
+    noise_input = json.dumps({"prompt": "응", "session_id": "tc15"}, ensure_ascii=False)
+    rc_noise, _, _ = run_cmd(
+        env_h, ["bash", "scripts/imprint/user-prompt-submit.sh"], input_text=noise_input,
+    )
+
+    conn = sqlite3.connect(str(Path(home) / "app.sqlite"))
+    try:
+        working_rows = conn.execute(
+            """
+            SELECT id, chunk_type, text, metadata_json
+            FROM memory_chunks
+            WHERE project_id = ?
+              AND json_extract(metadata_json, '$.memory_tier') = 'working'
+            ORDER BY created_at
+            """,
+            (ROOT_PROJECT_ID,),
+        ).fetchall()
+        noise_working = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM memory_chunks
+            WHERE project_id = ?
+              AND json_extract(metadata_json, '$.memory_tier') = 'working'
+              AND text LIKE '%응%'
+            """,
+            (ROOT_PROJECT_ID,),
+        ).fetchone()[0]
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO documents
+              (id, project_id, source_type, source_ref, title, raw_text,
+               source_created_at, source_updated_at, created_at, updated_at, checksum)
+            VALUES (?, ?, 'notion', 'tc15-doc', 'TC15', ?, ?, ?, ?, ?, 'tc15hash')
+            """,
+            (
+                "tc15-doc",
+                ROOT_PROJECT_ID,
+                "A 버튼 클릭 문서",
+                now,
+                now,
+                now,
+                now,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO chunks_v2
+              (id, project_id, document_id, chunk_index, section_path, chunk_text,
+               retrieval_text, raw_chunk_type, normalized_chunk_type,
+               source_updated_at, valid_from, is_current, created_at)
+            VALUES (?, ?, ?, 0, 'TC15', ?, ?, 'spec', 'spec', ?, ?, 1, ?)
+            """,
+            (
+                "tc15-cv2",
+                ROOT_PROJECT_ID,
+                "tc15-doc",
+                "A 버튼 클릭 시 문서 기반 테스트 모드가 시작됩니다.",
+                "A 버튼 클릭 button click handler action onClick onTap",
+                now,
+                now,
+                now,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    env_r = dict(env)
+    env_r["IMPRINT_SESSION_ID"] = "tc15"
+    proc = subprocess.run(
+        [sys.executable, "-m", "retrieval.cli", "retrieve_json", ROOT_PROJECT_ID, "A 버튼 클릭 동작 알려줘"],
+        env=env_r, capture_output=True, text=True, cwd=str(LIB_DIR),
+    )
+    try:
+        retrieved = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        retrieved = {}
+    candidates = retrieved.get("candidates") or []
+    chunk_ids = {c.get("chunk_id") for c in candidates}
+    working_ok = False
+    rewrite_ok = False
+    if working_rows:
+        try:
+            md = json.loads(working_rows[0][3] or "{}")
+        except json.JSONDecodeError:
+            md = {}
+        working_ok = (
+            working_rows[0][1] == "raw_turn"
+            and md.get("memory_tier") == "working"
+            and md.get("memory_kind") == "raw_turn"
+            and md.get("session_visible") is True
+            and md.get("source_type") == "chat"
+            and md.get("evidence_level") == "raw_turn"
+            and md.get("grounded") is False
+            and md.get("need_retrieval") is True
+        )
+        rewrite_ok = (
+            "onclick" in (md.get("query_rewrite") or "")
+            and len(md.get("query_surfaces") or []) >= 2
+        )
+
+    checks = {
+        "ups": rc_ups == 0,
+        "working_chunk": working_ok,
+        "rewrite": rewrite_ok,
+        "prefill_working": (
+            "[Current turn clues]" in ups_out
+            and "[working] A 버튼 클릭 동작 알려줘" in ups_out
+        ),
+        "prefill_durable": "테스트 모드" in ups_out,
+        "noise_no_working": rc_noise == 0 and noise_working == 0,
+        "retrieve_union_working": any(c.get("source_type") == "working" for c in candidates),
+        "retrieve_keeps_chunks_v2": "tc15-cv2" in chunk_ids,
+    }
+    case.metrics = checks | {
+        "working_rows": len(working_rows),
+        "retrieved": len(candidates),
+    }
+    case.passed = all(checks.values())
+    case.detail = (
+        f"working={len(working_rows)} prefill={checks['prefill_working']}/{checks['prefill_durable']} "
+        f"retrieve={len(candidates)} union={checks['retrieve_union_working']} cv2={checks['retrieve_keeps_chunks_v2']}"
+    )
+    if not case.passed and ups_err:
+        case.detail += f" ups_err={ups_err[:120]}"
+
+
+def tc_16_memory_lane_policy(env: dict, home: str, case: CaseResult) -> None:
+    """working cleanup/gate/provenance + low-confidence MEMFB policy."""
+    env_h = hook_env(env)
+    env_h["IMPRINT_CLAUDE_BIN"] = make_fake_claude(home)
+    env_h["IMPRINT_WORKING_TTL_HOURS"] = "1"
+    env_h["IMPRINT_WORKING_MAX_PER_SESSION"] = "2"
+    rc, _, err = run_cmd(env_h, ["bash", "scripts/imprint/session-start.sh"])
+    if rc != 0:
+        case.passed = False
+        case.detail = f"session-start rc={rc} err={err[:120]}"
+        return
+
+    now = "2026-05-16T00:00:00Z"
+    old = "2026-05-15T00:00:00Z"
+    conn = sqlite3.connect(str(Path(home) / "app.sqlite"))
+    try:
+        for idx, created in enumerate([old, now, now, now]):
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO memory_chunks
+                  (id, project_id, source_event_id, chunk_type, text, metadata_json, created_at, pinned)
+                VALUES (?, ?, NULL, 'raw_turn', ?, ?, ?, 0)
+                """,
+                (
+                    f"tc16-working-{idx}",
+                    ROOT_PROJECT_ID,
+                    f"tc16 working {idx}",
+                    json.dumps({
+                        "memory_tier": "working",
+                        "memory_kind": "raw_turn",
+                        "session_visible": True,
+                        "session_id": "tc16-clean",
+                    }),
+                    created,
+                ),
+            )
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO memory_chunks
+              (id, project_id, source_event_id, chunk_type, text, metadata_json, created_at, pinned)
+            VALUES ('tc16-durable-keep', ?, NULL, 'decision', 'durable 유지', '{}', ?, 0)
+            """,
+            (ROOT_PROJECT_ID, old),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    cleanup_input = json.dumps({"prompt": "A 버튼 클릭 동작 알려줘", "session_id": "tc16-clean"}, ensure_ascii=False)
+    rc_clean, _, _ = run_cmd(
+        env_h, ["bash", "scripts/imprint/user-prompt-submit.sh"], input_text=cleanup_input,
+    )
+    gate_input = json.dumps({"prompt": "PR 올려줘", "session_id": "tc16-gate"}, ensure_ascii=False)
+    rc_gate, gate_out, _ = run_cmd(
+        env_h, ["bash", "scripts/imprint/user-prompt-submit.sh"], input_text=gate_input,
+    )
+
+    code = """
+import sys; sys.path.insert(0, %r)
+from ingestion import db, insert_external_chunk, insert_extracted_chunk, insert_source_status_chunk
+with db() as conn:
+    insert_external_chunk(conn, %r, 'spec', '외부 원문 근거', {'source':'notion','url':'https://notion.so/tc16'})
+    insert_extracted_chunk(conn, %r, None, 'decision', 'assistant 추출 근거', ['assistant'])
+    insert_source_status_chunk(conn, %r, source='slack', status='fetch_failed', text='slack failed', metadata={'url':'https://x.slack.com/archives/C/p1'})
+    conn.commit()
+""" % (str(LIB_DIR), ROOT_PROJECT_ID, ROOT_PROJECT_ID, ROOT_PROJECT_ID)
+    rc_prov, _, err_prov = run_python(env, code)
+
+    conn = sqlite3.connect(str(Path(home) / "app.sqlite"))
+    try:
+        working_clean_count = conn.execute(
+            """
+            SELECT COUNT(*) FROM memory_chunks
+            WHERE project_id = ?
+              AND json_extract(metadata_json, '$.memory_tier') = 'working'
+              AND json_extract(metadata_json, '$.session_id') = 'tc16-clean'
+            """,
+            (ROOT_PROJECT_ID,),
+        ).fetchone()[0]
+        durable_keep = conn.execute(
+            "SELECT COUNT(*) FROM memory_chunks WHERE id = 'tc16-durable-keep'",
+        ).fetchone()[0]
+        gate_md_raw = conn.execute(
+            """
+            SELECT metadata_json FROM memory_chunks
+            WHERE project_id = ?
+              AND json_extract(metadata_json, '$.session_id') = 'tc16-gate'
+            ORDER BY created_at DESC LIMIT 1
+            """,
+            (ROOT_PROJECT_ID,),
+        ).fetchone()
+        provenance_rows = conn.execute(
+            """
+            SELECT chunk_type, metadata_json FROM memory_chunks
+            WHERE text IN ('외부 원문 근거', 'assistant 추출 근거', 'slack failed')
+            ORDER BY chunk_type
+            """
+        ).fetchall()
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO memory_chunks
+              (id, project_id, source_event_id, chunk_type, text, metadata_json, created_at, pinned)
+            VALUES ('tc16-memfb', ?, NULL, 'decision', '청운 플래그는 fallback memory에서 확인합니다.', '{}', ?, 0)
+            """,
+            (PROJECT_ID, now),
+        )
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO memory_chunks
+              (id, project_id, source_event_id, chunk_type, text, metadata_json, created_at, pinned)
+            VALUES ('tc16-working-low', ?, NULL, 'raw_turn', '청운 플래그 알려줘', ?, ?, 0)
+            """,
+            (
+                PROJECT_ID,
+                json.dumps({
+                    "memory_tier": "working",
+                    "memory_kind": "raw_turn",
+                    "session_visible": True,
+                    "session_id": "tc16-low",
+                }),
+                now,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    gate_md = json.loads(gate_md_raw[0]) if gate_md_raw else {}
+    provenance = []
+    for _ctype, md_raw in provenance_rows:
+        try:
+            provenance.append(json.loads(md_raw))
+        except json.JSONDecodeError:
+            provenance.append({})
+
+    env_r = dict(env)
+    env_r["IMPRINT_SESSION_ID"] = "tc16-low"
+    low = _retrieve_plain_json(env_r, "청운 플래그 알려줘")
+    low_chunks = low.get("candidates") or []
+    low_text = "\n".join(c.get("chunk_text", "") for c in low_chunks)
+
+    checks = {
+        "cleanup": rc_clean == 0 and working_clean_count <= 2 and durable_keep == 1,
+        "gate": (
+            rc_gate == 0
+            and gate_md.get("need_retrieval") is False
+            and "durable search skipped" in gate_out
+        ),
+        "provenance": (
+            rc_prov == 0
+            and any(p.get("evidence_level") == "raw_source" and p.get("grounded") is True and p.get("source_uri") for p in provenance)
+            and any(p.get("evidence_level") == "assistant_extracted" and p.get("source_type") == "chat" for p in provenance)
+            and any(p.get("evidence_level") == "status_marker" and p.get("grounded") is False for p in provenance)
+        ),
+        "low_conf_memfb": (
+            any(c.get("source_type") == "working" for c in low_chunks)
+            and "fallback memory" in low_text
+        ),
+    }
+    case.metrics = checks | {
+        "working_clean_count": working_clean_count,
+        "low_chunks": len(low_chunks),
+    }
+    case.passed = all(checks.values())
+    case.detail = (
+        f"cleanup={checks['cleanup']} gate={checks['gate']} "
+        f"provenance={checks['provenance']} low_memfb={checks['low_conf_memfb']}"
+    )
+    if not case.passed and err_prov:
+        case.detail += f" prov_err={err_prov[:120]}"
+
+
+def tc_17_observability_dedup_status(env: dict, home: str, case: CaseResult) -> None:
+    """retrieve trace JSON + text_hash dedup + /memory status."""
+    env_p = dict(env)
+    env_p["IMPRINT_PROFILE"] = "1"
+    code = """
+import sys; sys.path.insert(0, %r)
+from ingestion import db, insert_external_chunk, insert_extracted_chunk
+from ingestion import now_iso
+with db() as conn:
+    conn.execute(
+        "INSERT OR REPLACE INTO events "
+        "(id, project_id, conversation_id, source, kind, text_clean, metadata_json, noise, created_at) "
+        "VALUES ('tc17-event', %r, NULL, 'test', 'llm_response', 'assistant', '{}', 0, ?)",
+        (now_iso(),),
+    )
+    insert_external_chunk(conn, %r, 'spec', '관측 원문 근거', {'source':'notion','url':'https://notion.so/tc17'})
+    insert_external_chunk(conn, %r, 'spec', '관측 원문 근거', {'source':'notion','url':'https://notion.so/tc17'})
+    insert_extracted_chunk(conn, %r, 'tc17-event', 'decision', '관측 플래그는 fallback memory에서 확인합니다.', ['관측'])
+    insert_extracted_chunk(conn, %r, 'tc17-event', 'decision', '관측 플래그는 fallback memory에서 확인합니다.', ['관측'])
+    conn.commit()
+""" % (str(LIB_DIR), PROJECT_ID, PROJECT_ID, PROJECT_ID, PROJECT_ID, PROJECT_ID)
+    rc_setup, _, err_setup = run_python(env_p, code)
+
+    conn = sqlite3.connect(str(Path(home) / "app.sqlite"))
+    try:
+        external_count = conn.execute(
+            """
+            SELECT COUNT(*) FROM memory_chunks
+            WHERE project_id = ?
+              AND json_extract(metadata_json, '$.source_uri') = 'https://notion.so/tc17'
+            """,
+            (PROJECT_ID,),
+        ).fetchone()[0]
+        extracted_count = conn.execute(
+            """
+            SELECT COUNT(*) FROM memory_chunks
+            WHERE project_id = ? AND source_event_id = 'tc17-event'
+            """,
+            (PROJECT_ID,),
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    plain = _retrieve_plain_json(env_p, "관측 플래그 알려줘")
+    routed = _retrieve_json(env_p, "관측 플래그 알려줘")
+    trace = plain.get("trace") or {}
+    candidates = plain.get("candidates") or []
+    assistant_candidate = next(
+        (c for c in candidates if c.get("evidence_level") == "assistant_extracted"),
+        {},
+    )
+    routed_trace = routed.get("trace") or {}
+
+    rc_status, status_out, status_err = run_cmd(
+        env_p, ["bash", "scripts/imprint/memory.sh", "status", "--json"],
+    )
+    try:
+        status_json = json.loads(status_out) if status_out else {}
+    except json.JSONDecodeError:
+        status_json = {}
+
+    profile_path = Path(home) / "profile.jsonl"
+    profile_text = profile_path.read_text(encoding="utf-8") if profile_path.exists() else ""
+
+    checks = {
+        "dedup": rc_setup == 0 and external_count == 1 and extracted_count == 1,
+        "trace": (
+            bool(trace.get("query_surfaces"))
+            and trace.get("fallback_triggered") is True
+            and bool(trace.get("fallback_reasons"))
+            and bool(trace.get("rerank_gate_reason"))
+        ),
+        "candidate_meta": (
+            assistant_candidate.get("lane") == "durable_evidence"
+            and assistant_candidate.get("text_hash")
+            and isinstance(assistant_candidate.get("penalties"), list)
+        ),
+        "routed_trace": bool(routed_trace.get("query_surfaces")),
+        "status": rc_status == 0 and (status_json.get("db") or {}).get("ok") is True,
+        "profile": "retrieve_done" in profile_text,
+    }
+    case.metrics = checks | {
+        "external_count": external_count,
+        "extracted_count": extracted_count,
+        "fallback_reasons": trace.get("fallback_reasons"),
+        "status_rc": rc_status,
+    }
+    case.passed = all(checks.values())
+    case.detail = (
+        f"dedup={checks['dedup']} trace={checks['trace']} "
+        f"candidate_meta={checks['candidate_meta']} status={checks['status']}"
+    )
+    if not case.passed:
+        extra = err_setup or status_err or plain.get("_error") or routed.get("_error")
+        if extra:
+            case.detail += f" err={str(extra)[:160]}"
+
+
 # -----------------------------------------------------------------------------
 # 러너
 # -----------------------------------------------------------------------------
@@ -785,6 +1225,9 @@ CASES: list[tuple[str, str, callable]] = [
     ("TC-12", "Memory search/list/inject fixture", tc_12_memory_search_fixture),
     ("TC-13", "Source status + noise + profile", tc_13_source_noise_profile),
     ("TC-14", "Retrieve memory_chunks fallback", tc_14_retrieve_memory_fallback),
+    ("TC-15", "First-turn working overlay", tc_15_first_turn_working_overlay),
+    ("TC-16", "Memory lane policy", tc_16_memory_lane_policy),
+    ("TC-17", "Observability dedup status", tc_17_observability_dedup_status),
 ]
 
 

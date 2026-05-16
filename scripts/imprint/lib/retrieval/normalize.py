@@ -4,7 +4,8 @@ from __future__ import annotations
 import re
 import unicodedata
 
-# raw_chunk_type → normalized_chunk_type. 락인된 4-category 매핑.
+# raw_chunk_type → normalized_chunk_type.
+# Retrieval/summary/contradiction layers reason over this smaller category set.
 RAW_TO_NORMALIZED: dict[str, str] = {
     "decision": "decision",
     "fix": "decision",
@@ -20,6 +21,7 @@ RAW_TO_NORMALIZED: dict[str, str] = {
     "code_context": "code_note",
 }
 
+# Allowed normalized categories. Keep this in sync with RAW_TO_NORMALIZED values.
 NORMALIZED_TYPES = ("requirement", "decision", "discussion", "code_note")
 
 

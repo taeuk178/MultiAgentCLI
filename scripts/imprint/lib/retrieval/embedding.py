@@ -12,7 +12,8 @@ from typing import Sequence
 
 from ._common import log
 
-# 1024 dim float32. 실제 모델은 BGE-M3.
+# Embedding vector shape and model selection.
+# BGE-M3 returns 1024 float32 values; byte size is used to validate stored blobs.
 EMBEDDING_DIM = 1024
 EMBEDDING_BYTES = EMBEDDING_DIM * 4
 MODEL_NAME = os.environ.get("IMPRINT_EMBEDDING_MODEL") or "BAAI/bge-m3"

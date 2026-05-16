@@ -21,9 +21,14 @@ from dataclasses import dataclass
 from ._common import db_connect, log, new_id, now_iso
 from .entity import upsert_entity, add_alias
 
+# Entity extraction runs in background jobs, so Haiku timeout can be higher than hook paths.
 CLAUDE_BIN = os.environ.get("IMPRINT_CLAUDE_BIN") or "claude"
 NER_TIMEOUT_MS = int(os.environ.get("IMPRINT_NER_TIMEOUT_MS") or "25000")
+
+# Mentions above this confidence skip manual review and become confirmed aliases.
 AUTO_CONFIRM_THRESHOLD = float(os.environ.get("IMPRINT_NER_AUTO_CONFIRM") or "0.9")
+
+# Per-chunk text cap sent to the LLM extractor.
 NER_MAX_CHARS = 1500
 
 # canonical_name 정규화 — 영문 식별자 스타일로 강제. 공백/특수문자 → _.

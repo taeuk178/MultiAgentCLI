@@ -10,6 +10,8 @@ from dataclasses import dataclass
 
 from .normalize import normalize_query
 
+# Scope classifier keyword sets.
+# These are intentionally deterministic so routed retrieval does not call LLMs in the sync path.
 GLOBAL_KEYWORDS = (
     "전체", "전반", "프로젝트", "정리", "흐름 전체",
     "overall", "summarize", "everything", "all features",

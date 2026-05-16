@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+# Shared runtime paths for retrieval modules.
+# IMPRINT_HOME lets tests and users isolate app.sqlite/plugin.log/profile.jsonl.
 IMPRINT_HOME = Path(os.environ.get("IMPRINT_HOME") or (Path.home() / ".claude" / "imprint"))
 IMPRINT_DB = IMPRINT_HOME / "app.sqlite"
 IMPRINT_LOG = IMPRINT_HOME / "plugin.log"
