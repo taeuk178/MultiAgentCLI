@@ -2,24 +2,41 @@
 
 **문서 책임**
 - 본 문서는 **단기**: 즉시 다음에 손댈 검토 안건, deferred TODO, 측정 후 캘리브레이션 항목, 다음 세션 시작 시 픽업 지점만 담는다.
-- **큰 그림**(비전·Phase 정의·아키텍처·완료/미시작 단계·위험 요소)은 `LoadMap.md` 참조.
+- **큰 그림**(비전·아키텍처·남은 단계·위험 요소)은 `LoadMap.md` 참조.
 - **결정 사유 로그**(왜 그렇게 바꿨는지·폐기한 대안)는 `HISTORY.md` 참조.
 - 구현된 동작·설치·전체 플로우 다이어그램은 `README.md` 참조.
 
-최종 업데이트: 2026-05-11.
+최종 업데이트: 2026-05-16.
 
-## 완료된 retrieval 인프라 (Phase 7a/7b 요약)
+## RAG 기본 동작 안정화 우선순위
 
-`refactor/phase_7a` 와 `refactor/phase_7b` 브런치에 머지된 retrieval + ingestion 파이프라인. 결정 사유와 폐기한 대안은 `HISTORY.md` 의 다음 항목 참조:
+목표는 기능 확장보다 먼저 **실제 프로젝트에서 기억이 저장되고, 다시 검색되며, 사용자가 답변 근거로 참고할 수 있는지**를 확인하는 것. 다음 PR 은 아래 순서로 진행.
 
-- 2026-05-10 Phase 7a 7개 결정 (스택·임베딩·chunk_type·alias·supersedes·hosting·rerank)
-- 2026-05-10 Phase 7a 후속 결정 7건 락인 (BGE-M3 1024 / 매핑표 / 정규식 / Python module / lazy spawn / LRU 64 / SQLite queue)
-- 2026-05-10 Phase 7b 후속 결정 4건 락인 (mDeBERTa-v3 / rule-based scope / 즉시 sync / 0.8·0.4 임계)
-- 2026-05-10 Phase 7b 우선순위 11 완료 (NLI primary + LLM judge fallback chain)
+1. **저장 경로 보안 보강 — redaction coverage**
+   `events.user_message`, `events.llm_response`, Stop hook extract 입력, 외부 source chunk INSERT 전 redaction 을 적용. token 이 raw DB/FTS 로 들어가면 RAG 신뢰성 이전에 사용 불가 상태가 되므로 최우선.
 
-스키마는 `scripts/imprint/lib/schema.sql` 한 파일 안에 모두 idempotent. `SessionStart` hook 이 매 세션마다 적용.
+2. **자동 memory loop 스모크 테스트**
+   `SessionStart → UserPromptSubmit → Stop → 다음 UserPromptSubmit` 를 샘플 JSON/임시 DB로 직접 호출해 다음을 검증: schema 적용, user/assistant event 저장, response extract 후 `memory_chunks` INSERT, 다음 prompt 에 `[Project memory context]` prepend. 이 테스트가 RAG 기본 생명선.
 
-ML 의존성(transformers / sentence-transformers / sqlite-vec) 은 모두 lazy 로더 + opt-in. 미설치 시 `claude -p haiku` LLM judge / FTS-only 검색으로 안전 fallback. 자세한 설치는 `INSTALL.md` "선택: ML 의존성" 참조.
+3. **읽기 경로 정합성 결정**
+   현재 자동 hook 과 `/memory` 는 `memory_chunks`, `/retrieve` 는 `chunks_v2`/`summaries` 를 본다. 실제 프로젝트 사용자가 “방금 저장된 기억을 RAG가 찾아준다”고 느끼려면 둘 중 하나가 필요:
+   - 단기: 기본 사용자 경로를 `/memory search` + 자동 prefill 로 명시하고 `/retrieve` 는 문서 ingestion 전용으로 분리 표시.
+   - 중기: `memory_chunks → chunks_v2` bridge 또는 `/retrieve` 의 legacy `memory_chunks` fallback 추가.
+
+4. **검색 품질 최소 fixture**
+   decision/fix/todo/note/spec/message/thread 샘플을 넣고 한국어 부분일치, pinned 우선순위, source/type 필터, `/memory inject` 출력이 기대대로 동작하는지 테스트. “저장됐는데 못 찾는” 케이스를 먼저 잡는다.
+
+5. **외부 source 갱신/누락 가시화**
+   Slack/Notion URL cap 초과, stale `fetched_at`, fetch 실패를 사용자가 볼 수 있게 `plugin.log` 또는 `/memory show/list` 에 표시. 자동 refresh 보다 “지금 참조한 기억이 낡았는지 알기”가 먼저.
+
+6. **노이즈 turn soft filter**
+   `events.noise=1` 플래그부터 도입. 삭제가 아니라 표식만 붙여 RAG 후보 품질과 DB 증가량을 관찰한다.
+
+7. **측정 후 캘리브레이션**
+   `IMPRINT_PROFILE=1` 로 한 주 데이터 수집 후 latency budget, contradiction 임계, daemon 분리, summary 생성 품질을 판단한다.
+
+8. **후순위 기능 확장**
+   Workflow skill(`/commit-message`, `/pr-draft`, `/recap`, `/handoff`), registry, entity merge/split UI 는 RAG 기본 저장/검색 루프가 안정된 뒤 진행.
 
 ## 보안 — Redaction coverage 갭 (2026-05-11 관찰)
 
@@ -33,7 +50,7 @@ ML 의존성(transformers / sentence-transformers / sqlite-vec) 은 모두 lazy 
 
 `sql_escape` 는 SQL injection 방지(작은 따옴표 escaping)이지 redaction 이 아님.
 
-**우선순위**. 실제 token 누출이 관찰된 회귀이므로 Phase 5 진입과 무관하게 별도 패치로 처리. TODO 2 의 "보안·운영 인터뷰" 라운드 안건이지만, 인터뷰 없이 결정 가능한 단순 갭 (호출 지점 추가 + 패턴 보강) 부분만 먼저 진입 가능.
+**우선순위**. 실제 token 누출이 관찰된 회귀이므로 기능 확장 진입과 무관하게 별도 패치로 처리. TODO 3 의 "보안·운영 인터뷰" 라운드 안건이지만, 인터뷰 없이 결정 가능한 단순 갭 (호출 지점 추가 + 패턴 보강) 부분만 먼저 진입 가능.
 
 **대응 후보**.
 
@@ -127,96 +144,6 @@ ML 의존성(transformers / sentence-transformers / sqlite-vec) 은 모두 lazy 
 - [LoCoMo (arXiv 2402.17753)](https://arxiv.org/abs/2402.17753)
 - [Backchannel — Wikipedia (Yngve 1970)](https://en.wikipedia.org/wiki/Backchannel_(linguistics))
 - [Cathcart et al., EACL 2003 — Shallow Model of Backchannel Continuers](https://aclanthology.org/E03-1069.pdf)
-
-## 다음 액션
-
-다음 PR 단위로 분해 가능한 즉시 픽업 후보:
-
-1. **Phase 5 (Workflow skill)** — `/commit-message`, `/pr-draft`, `/recap`, `/handoff`. retrieval 인프라가 안정 운용되는 지금이 워크플로 skill 만들 자연스러운 시점.
-2. **남은 인터뷰 라운드** — TODO 1 (chunk lifecycle: dedup / 자동 pin / 검색 가중치) · TODO 2 (보안·운영: redaction / log 회전 / 에러 알림 / conversation_id). 본문 "TODO" 참조.
-3. **retrieval 측정 → 캘리브레이션** — `IMPRINT_PROFILE=1` 활성화 후 한 주 데이터 수집 → contradiction 임계 (`HIGH=0.8`, `MID=0.4`) · daemon 분리 시점 · summary LLM vs deterministic 비교.
-4. **사용자 환경 검증** — iOS 팀 멤버 1명이 사내 프로젝트에서 1주 정성 검증, plugin.log 의 `WARN: claude -p` 빈도 모니터링.
-5. **entity merge / split UI** — `entities` CLI 가 confirm/reject 만 지원. NER 이 같은 entity 를 분리 등록한 케이스(예: `test_button` vs `debug_toggle`)를 합치는 명령 필요.
-6. **Chunk 분류 2단계** — 검색 체감 저하 시 진입. 본문 "Chunk 분류 2단계" 참조.
-
-## 다이어그램 노드 ↔ 구현 매핑
-
-`README.md` 의 "전체 플로우 다이어그램" 노드와 실제 구현 위치 정리. 미구현 노드 0개.
-
-**동기 경로 (User Prompt → Claude 응답):**
-
-| 노드 | 의미 | 구현 |
-|---|---|---|
-| `LOG` | events.user_message 기록 | 기존 `scripts/imprint/user-prompt-submit.sh` |
-| `QN` | query normalize | `retrieval/normalize.py::normalize_query` |
-| `SC` | scope classifier | `retrieval/scope.py::classify` |
-| `RES` | entity alias resolve | `retrieval/entity.py::resolve_in_query` |
-| `QEMB` | query embedding | `retrieval/embedding.py::embed_text` |
-| `SCOPE` | scope 분기 | `retrieval/routing.py::routed_retrieve` |
-| `HYB1` | chunk hybrid retrieval | `retrieval/retrieve.py::_fts_search` + `_vector_search` |
-| `HYB2` | feature summary retrieval | `retrieval/routing.py::_retrieve_summaries(level='feature')` |
-| `HYB3` | project/document summary | `retrieval/routing.py::_retrieve_summaries(level=...)` |
-| `RRF` | RRF fusion | `retrieval/retrieve.py::retrieve` (RRF 단계) + `routing.py::_retrieve_summaries` |
-| `BOOST` | is_current + recency + entity coverage | `retrieval/retrieve.py::retrieve` (BOOST 단계) |
-| `RG` | rerank 게이트 | `retrieval/retrieve.py::retrieve` (RG 게이트) |
-| `RR` | cross-encoder rerank | `retrieval/rerank.py::rerank` |
-| `RROK` | rerank timeout 분기 | `retrieval/rerank.py::rerank` (200ms watcher) |
-| `GROUND` | summary_links drill-down | `retrieval/routing.py::_ground_drilldown` |
-| `CCHECK` | confirmed contradiction read-only | `retrieval/routing.py::_ccheck` |
-| `CTX` | 구조화 context prepend | `retrieval/assembly.py::format_for_claude` / `format_routed_for_claude` |
-
-**비동기 ingestion (BG side):**
-
-| 노드 | 의미 | 구현 |
-|---|---|---|
-| `J1` | lazy fetch (Slack/Notion) | 기존 `scripts/imprint/lib/ingestion.py` |
-| `J2` | response extract | 기존 `scripts/imprint/lib/ingestion.py` |
-| `J3` | retrieval warm cache | `retrieval/embedding.py::_try_load_model` lazy spawn |
-| `J4` | entity NER | `retrieval/ner.py::extract_for_document` + `refresh_aliases` |
-| `J5` | summary rebuild | `retrieval/dispatch.py::handle_payload(kind=summary_regen)` → `summary.regenerate_for_document` |
-| `J6` | contradiction detection | `retrieval/dispatch.py::handle_payload(kind=contradiction_scan)` → `contradiction.scan_and_store` |
-| `WC` | warm cache manager | `retrieval/embedding.py::_try_load_model` (process-wide 싱글톤) |
-| `ANL` / `EX` | claude haiku 분류 | 기존 `lib/ingestion.py` |
-| `URL` / `FETCH` / `KW` | URL 추출 → MCP fetch / 키워드 검색 | 기존 `lib/ingestion.py` |
-| `SPL1` / `SPL2` | chunk split | `retrieval/chunking.py::split_document` |
-| `CP1` / `CP2` | context_prefix 생성 | `retrieval/ingest.py::_generate_context_prefix` |
-| `EMB1` / `EMB2` | chunk embedding | `retrieval/embedding.py::embed_texts` |
-| `NEREXT` | chunk → entity mention | `retrieval/ner.py::extract_for_chunk` |
-| `PACK1` / `PACK2` | chunk payload | `retrieval/ingest.py::ingest_document` |
-| `PACK3` | entity candidate payload | `retrieval/ner.py::extract_for_chunk` (entity_aliases status=pending) |
-| `PACK4` | summary payload | `retrieval/summary.py::_upsert_summary` |
-| `PACK5_CAND` / `PACK5_NEUT` | contradiction payload | `retrieval/contradiction.py::scan_and_store` (status 분기) |
-| `ENQ` | ingest queue | `retrieval/ingest_queue.py::enqueue` (priority 별) |
-
-**single-writer commit chain:**
-
-| 노드 | 의미 | 구현 |
-|---|---|---|
-| `DEDUPE` | hash dedupe | `retrieval/ingest.py::upsert_document` (checksum 비교) |
-| `VRES` | version resolver | `retrieval/version.py::find_supersede_candidates` + `mark_superseded` |
-| `RTYPE` | record type 분기 | `retrieval/dispatch.py::handle_payload` (kind 별 라우팅) |
-| `CONF` | entity confidence 분기 | `retrieval/ner.py::extract_for_chunk` (`AUTO_CONFIRM_THRESHOLD=0.9`) |
-| `W1` | single writer commit | `retrieval/ingest_queue.py::drain` + `dispatch.py::handle_payload` |
-| `W2` | entity review queue | `retrieval/entity.py::add_alias` (status='pending') |
-| `ENTS` | entities skill | `retrieval/cli.py::cmd_entities` (list-pending / confirm / reject) |
-
-**판정 노드 (contradiction):**
-
-| 노드 | 의미 | 구현 |
-|---|---|---|
-| `CDCAND` | contradiction candidate 생성 | `retrieval/contradiction.py::candidate_pairs_for_project` |
-| `CDJUDGE` | NLI / LLM judge | `retrieval/contradiction.py::_judge_pair` (NLI primary → LLM fallback → rule retry) |
-| `CDCONF` | score 3구간 분기 | `retrieval/contradiction.py::_classify_status` |
-
-**환경 변수 (lifecycle 라벨):**
-
-| 라벨 | 노드 | 비활성화 환경변수 |
-|---|---|---|
-| `(sync)` 가벼움 | `QN` · `SC` · `RES` · `RRF` · `BOOST` · `GROUND` · `CCHECK` · `CTX` | (항상 ON) |
-| `(sync/daemon-ready)` | `QEMB` · `HYB*` · `RR` | `IMPRINT_DISABLE_EMBEDDING=1` · `IMPRINT_DISABLE_RERANK=1` |
-| `(async)` BG | `J1`~`J6` 와 그 하위 노드 | inline 모드는 ingest_queue drain 으로 처리 |
-| `(async/single-writer)` | `DEDUPE` · `VRES` · `W1` | (항상 ON, single-writer 직렬 commit) |
-| ML 옵션 | `QEMB` (BGE-M3) · `RR` (cross-encoder) · `CDJUDGE` (NLI / LLM) · `NEREXT` (LLM NER) | `IMPRINT_DISABLE_EMBEDDING/RERANK/NLI/LLM_JUDGE/NER_LLM/SQLITE_VEC=1` |
 
 ## 동기 경로 latency budget 위반 대응
 
@@ -463,7 +390,16 @@ CREATE INDEX idx_chunks_page ON memory_chunks(project_id, meta_page_id);
 
 ## TODO — 다음 세션에서 이어서
 
-### TODO 1. Chunk lifecycle 인터뷰 라운드 (deferred)
+### TODO 1. RAG 저장/검색 루프 검증
+
+다뤄야 할 미해결:
+- **자동 hook loop**: `SessionStart`, `UserPromptSubmit`, `Stop` 을 샘플 JSON 으로 직접 호출해 event 저장, chunk 추출, 다음 turn prefill 이 이어지는지 확인.
+- **읽기 경로 정합성**: 자동 저장된 `memory_chunks` 가 `/memory search` 와 prefill 에서 안정적으로 노출되는지, `/retrieve` 와 분리된 사실이 사용자에게 충분히 명확한지 확인.
+- **fixture 기반 검색 품질**: 한국어 부분일치, pinned 우선순위, source/type 필터, `/memory inject` 출력 검증.
+
+진입 명령: 수동 smoke test PR 로 시작. 인터뷰보다 실제 fixture 와 hook 직접 호출 검증을 우선.
+
+### TODO 2. Chunk lifecycle 인터뷰 라운드 (deferred)
 
 다뤄야 할 미해결:
 - **dedup 정책**: 같은 의미 chunk가 여러 turn에서 누적될 때 — 자동 dedup 룰? 사용자 명령? 무시 후 검색 단계 dedup?
@@ -472,7 +408,7 @@ CREATE INDEX idx_chunks_page ON memory_chunks(project_id, meta_page_id);
 
 진입 명령: `/ouroboros:interview chunk lifecycle (dedup·자동 pin·검색 ranking 가중치)`
 
-### TODO 2. 보안·운영 인터뷰 라운드 (deferred)
+### TODO 3. 보안·운영 인터뷰 라운드 (deferred)
 
 다뤄야 할 미해결:
 - **redaction 정규식**: 어떤 패턴(`sk-`, `xoxb-`, JWT, IP, email...)을 어디 단계에서(chunk insert 전 / FTS 인덱싱 시)? 사용자 정의 추가 가능?
@@ -483,13 +419,13 @@ CREATE INDEX idx_chunks_page ON memory_chunks(project_id, meta_page_id);
 
 진입 명령: `/ouroboros:interview 보안·운영 (redaction·log 회전·에러 알림·conversation_id)`
 
-### TODO 3. 사용자 환경 검증
+### TODO 4. 사용자 환경 검증
 
 1. iOS 팀 멤버 1명이 브랜치 checkout 후 자기 사내 프로젝트에서 1주 정성 검증 (AC5)
 2. `IMPRINT_ALLOWED_TOOLS_FETCH` 가 사용자 등록 Slack/Notion MCP 이름과 일치하는지 확인 (각자 다를 수 있음)
 3. plugin.log에서 `WARN: claude -p` 빈도 모니터링 — 일정 임계 초과 시 timeout 조정
 
-### TODO 4. retrieval 측정 → 캘리브레이션 (deferred, 1주 데이터 후)
+### TODO 5. retrieval 측정 → 캘리브레이션 (deferred, 1주 데이터 후)
 
 - contradiction 임계 (`HIGH=0.8`, `MID=0.4`) — 첫 100~200 쌍 측정 후 캘리브레이션
 - summary LLM (claude haiku) vs deterministic concat 정확도 비교
@@ -506,8 +442,9 @@ CREATE INDEX idx_chunks_page ON memory_chunks(project_id, meta_page_id);
 
 ## 다음 세션 시작 시 추천 픽업 지점
 
-1. **Phase 5 진입 (Workflow skill)** — `/commit-message`, `/pr-draft`, `/recap`, `/handoff`. retrieval 인프라가 안정 운용되는 지금이 워크플로 skill 만들 자연스러운 시점.
-2. **남은 인터뷰 라운드** — TODO 1·2 를 별도 세션에서 `/ouroboros:interview ...` 로 재개.
-3. **사용자 환경 검증** — TODO 3 을 iOS 팀에 위임하고 plugin.log에서 `WARN: claude -p` 빈도 모니터링.
-4. **retrieval 측정** — TODO 4 의 데이터 수집 후 임계 캘리브레이션 / daemon 분리 결정.
-5. **Chunk 분류 2단계** — 검색 체감 저하 시 진입(metadata generated column + 인덱스).
+1. **redaction coverage 패치** — raw token 이 DB/FTS 에 들어가는 경로를 먼저 닫기.
+2. **RAG 저장/검색 루프 smoke test** — hook 직접 호출 + 임시 DB fixture 로 `memory_chunks` 저장/검색/prefill 확인.
+3. **읽기 경로 정합성 결정** — `memory_chunks` 기본 RAG 와 `chunks_v2` `/retrieve` 경로의 역할을 문서/코드에서 명확히 나누거나 bridge 설계.
+4. **외부 source stale/누락 가시화** — URL cap, stale fetched_at, fetch 실패를 사용자 관찰 가능하게 만들기.
+5. **retrieval 측정** — 기본 루프가 안정된 뒤 `IMPRINT_PROFILE=1` 데이터 수집으로 임계 캘리브레이션 / daemon 분리 결정.
+6. **후순위** — Workflow skill, registry, entity merge/split UI, Chunk 분류 2단계는 RAG 기본 동작 안정 후 진입.

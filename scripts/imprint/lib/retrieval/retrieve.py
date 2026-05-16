@@ -69,6 +69,10 @@ class RetrievalResult:
 
 
 _TOKEN_RE = re.compile(r"[가-힣A-Za-z0-9]+")
+_LIKE_STOPWORDS = {
+    "알려줘", "알려주세요", "설명해줘", "설명해주세요",
+    "어떻게", "뭐야", "무엇", "동작",
+}
 
 
 def _build_fts_query(query: str) -> str | None:
@@ -107,6 +111,62 @@ def _fts_search(conn: sqlite3.Connection, project_id: str, query: str, top_n: in
         (fts_query, project_id, top_n),
     )
     return list(cur.fetchall())
+
+
+def _like_fallback_search(
+    conn: sqlite3.Connection,
+    project_id: str,
+    raw_query: str,
+    normalized_query: str,
+    top_n: int,
+) -> list[sqlite3.Row]:
+    """FTS/vector 가 둘 다 비었을 때 쓰는 짧은 한국어 토큰 fallback.
+
+    FTS5 trigram 은 2글자 한국어 토큰(버튼, 클릭, 동작)을 거의 못 잡는다.
+    embedding 미설치 환경에서는 이런 짧은 UI 질의가 빈 결과가 되므로, 원문과
+    정규화 질의의 2글자 이상 토큰을 `LIKE` 로 한 번 더 확인한다.
+    """
+    tokens: list[str] = []
+    seen: set[str] = set()
+    for source in (raw_query, normalized_query):
+        for tok in _TOKEN_RE.findall(source):
+            t = tok.strip().lower()
+            if len(t) < 2 or t in _LIKE_STOPWORDS or t in seen:
+                continue
+            seen.add(t)
+            tokens.append(t)
+    if not tokens:
+        return []
+
+    clauses = []
+    params: list[str] = []
+    for tok in tokens[:8]:
+        pat = f"%{tok}%"
+        clauses.append("(lower(c.retrieval_text) LIKE ? OR lower(c.chunk_text) LIKE ?)")
+        params.extend([pat, pat])
+
+    cur = conn.execute(
+        f"""
+        SELECT c.id, c.document_id, c.retrieval_text, c.chunk_text, c.section_path,
+               c.source_updated_at, c.is_current, c.raw_chunk_type, c.normalized_chunk_type,
+               d.source_type
+        FROM chunks_v2 c
+        JOIN documents d ON d.id = c.document_id
+        WHERE c.project_id = ?
+          AND c.is_current = 1
+          AND ({' OR '.join(clauses)})
+        LIMIT ?
+        """,
+        (project_id, *params, max(top_n * 2, top_n)),
+    )
+    rows = list(cur.fetchall())
+
+    def hit_count(row: sqlite3.Row) -> int:
+        haystack = f"{row['retrieval_text'] or ''}\n{row['chunk_text'] or ''}".lower()
+        return sum(1 for tok in tokens if tok in haystack)
+
+    rows.sort(key=lambda r: (-hit_count(r), -(r["is_current"] or 0), r["id"]))
+    return rows[:top_n]
 
 
 def _vector_search(
@@ -198,6 +258,10 @@ def retrieve(
                 vector_rows: list[tuple[sqlite3.Row, float]] = []
                 if query_embedding is not None:
                     vector_rows = _vector_search(conn, project_id, query_embedding, VECTOR_TOPN)
+                if not bm25_rows and not vector_rows:
+                    bm25_rows = _like_fallback_search(
+                        conn, project_id, query, expanded, BM25_TOPN,
+                    )
 
             # RRF
             with Span("RRF"):

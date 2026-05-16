@@ -177,7 +177,7 @@ def _retrieve_json(env: dict, query: str) -> dict:
 
 
 def tc_03_retrieve_short(env: dict, home: str, case: CaseResult) -> None:
-    out = _retrieve_json(env, "test 버튼")
+    out = _retrieve_json(env, "A 버튼 클릭 동작 알려줘")
     scope = (out.get("scope") or {}).get("scope")
     candidates = len(out.get("chunks") or [])
     summaries = len(out.get("summaries") or [])

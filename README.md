@@ -34,7 +34,7 @@ pip install -r requirements-optional.txt
 | Soul (persona) | `SessionStart` hook이 `<project>/.imprint/soul.md` 내용을 컨텍스트 시작에 prepend. 압축 후에도 `compact` matcher로 자동 재주입 |
 | Routing | `UserPromptSubmit` hook이 `<project>/.imprint/UserPromptSubmit.md`의 키워드 → agent 룰을 평가, 매칭 시 권고 메시지 prepend |
 | Memory | 프롬프트·응답·외부 소스를 `~/.claude/imprint/app.sqlite`에 누적, FTS5 trigram으로 한국어 부분일치 검색. 매 prompt마다 관련 chunk를 `[Project memory context]` 블록으로 자동 prepend |
-| Retrieval | `/retrieve` 명시 호출 시 `chunks_v2`/`summaries` 를 대상으로 hybrid retrieval (FTS5 + sqlite-vec) → RRF fusion → BOOST → 조건부 cross-encoder rerank → grounding/contradiction check. retrieval v2 문서 ingestion 은 `documents`/`chunks_v2` 를 갱신한 뒤 `ingest_queue` 로 NER·summary rebuild·contradiction scan 후속 작업을 예약 |
+| Retrieval | `/retrieve` 명시 호출 시 `chunks_v2`/`summaries` 를 대상으로 hybrid retrieval (FTS5 + sqlite-vec, 미가용 시 FTS/짧은 토큰 fallback) → RRF fusion → BOOST → 조건부 cross-encoder rerank → grounding/contradiction check. retrieval v2 문서 ingestion 은 `documents`/`chunks_v2` 를 갱신한 뒤 `ingest_queue` 로 NER·summary rebuild·contradiction scan 후속 작업을 예약 |
 | HUD | Claude Code statusline에 `5h: 25% (1h 49m) │ wk: 3% (1d 9h) │ ctx: 12% │ skills: 17 │ agents: 1` 형태로 잔여 시간과 활성 plugin의 skills/agents 수 표시 |
 
 ## 어떻게 동작하는가
@@ -52,7 +52,7 @@ pip install -r requirements-optional.txt
   1. UserPromptSubmit: user_message event 저장
   2. .imprint/UserPromptSubmit.md routing 룰 매칭
   3. memory_chunks pinned/recent LIMIT 8 prefill
-  4. [Project memory context] + routing advisory prepend
+  4. [Project memory context] + (매칭 시) routing advisory prepend
   5. Claude 응답 생성
   6. Stop: 마지막 assistant 응답을 llm_response event 로 저장
 
@@ -74,7 +74,7 @@ pip install -r requirements-optional.txt
 [/retrieve 명시 호출 경로]
   1. routed: entity resolve 선행 → scope classifier(local/feature/global)
   2. local: chunk retrieval 경로 호출
-     - QN → RES → QEMB → HYB(chunks_v2 FTS5 + vector) → RRF → BOOST → RG/RR → CTX
+     - QN → RES → QEMB → HYB(chunks_v2 FTS5 + vector, 미가용 시 FTS/짧은 토큰 fallback) → RRF → BOOST → RG/RR → CTX
   3. feature/global: summaries 검색 + chunk retrieval + summary_links grounding
   4. resolved entity 의 confirmed contradiction 조회
   5. 구조화 context block 또는 JSON 반환
@@ -153,7 +153,7 @@ flowchart TB
     ROUTED -->|no| QN["query normalize<br/>(sync)"]
     QN --> RES["entity alias resolve<br/>(sync)"]
     RES --> QEMB["query embedding<br/>BGE-M3 가용 시<br/>(sync/daemon-ready)"]
-    QEMB --> HYB["chunk retrieval<br/>chunks_v2 FTS5 + cosine<br/>(sync/daemon-ready)"]
+    QEMB --> HYB["chunk retrieval<br/>chunks_v2 FTS5 + cosine<br/>short-token fallback<br/>(sync/daemon-ready)"]
     HYB --> RRF["RRF fusion<br/>semantic 0.8 / BM25 0.2<br/>(sync)"]
     RRF --> BOOST["is_current + recency<br/>+ entity coverage boost<br/>(sync)"]
     BOOST --> RG{"rerank 조건"}

@@ -1,7 +1,7 @@
 # imprint Load Map
 
 **문서 책임**
-- 본 문서는 **큰 그림**: 비전·아키텍처·Phase 정의·완료 단계·미시작 단계·위험 요소·최종 목표.
+- 본 문서는 **큰 그림**: 비전·아키텍처·남은 단계·위험 요소·최종 목표.
 - 단기적인 다음 세션 픽업 안건(즉시 검토, deferred TODO, 측정 후 캘리브레이션 항목)은 `HANDOFF.md` 참조.
 - 결정 사유 로그(왜 그렇게 바꿨는지·폐기한 대안)는 `HISTORY.md` 참조.
 - hook 단계별 시스템 의존·운영 환경 변수는 `flow.md` 참조.
@@ -66,14 +66,14 @@ Claude/Codex/Gemini를 같은 SQLite memory에 누적합니다. Claude Code 세�
 
 설계 결정을 `decision` chunk type으로 저장합니다. Stop hook이 응답에서 `결정:`, `선택:` 같은 패턴을 감지하거나, 사용자가 명시적으로 `/memory remember decision <text>`로 등록.
 
-### 6. 자동 산출물 생성
+### 6. 자동 산출물 생성 (후순위)
 
 - 커밋 메시지 후보
 - PR description 초안
 - 작업 회고
 - 다음 작업 리스트
 
-각각 별도 skill로 구현. Claude Code 세션에서 `/commit-message`, `/pr-draft` 등으로 호출. Skill 안에서 memory 기반 컨텍스트 + `claude -p`로 합성.
+각각 별도 skill로 구현. 다만 현재 우선순위는 기능 확장이 아니라 RAG 기본 동작(저장·검색·참조)의 안정화이므로, workflow skill 은 기본 루프 검증 이후로 둡니다.
 
 ### 7. 감사와 추적성
 
@@ -123,7 +123,7 @@ Phase 7a/7b 머지 후 추가 — `documents`, `chunks_v2` (이중 chunk_type + 
 - **UserPromptSubmit hook (prefill)** — stdin 으로 유저 입력 + stdout 추가 컨텍스트 → Claude Code 가 [원본 + 컨텍스트] 를 LLM 에 전달. 프로젝트별 최근 `memory_chunks` 조회(FTS + 최근성) 후 `[Project memory context]` 블록 prepend.
 - **Stop hook (응답 추출)** — stdin 으로 LLM 응답 → `claude -p haiku` 로 chunk_type 별 추출 → `memory_chunks` INSERT.
 
-실제 구현은 `scripts/imprint/{session-start,user-prompt-submit,stop}.sh` + `scripts/imprint/lib/ingestion.py` 참조. Phase 7a/7b 머지 후 동기 retrieval 경로(`QN→SC→RES→QEMB→HYB→...→CTX`) + 비동기 ingest queue (`PACK*→ENQ→DEDUPE→VRES→CONF→W1`) 가 hook 두 개 위에 얹혀 있다 — `README.md` "전체 플로우 다이어그램" 참조.
+실제 구현은 `scripts/imprint/{session-start,user-prompt-submit,stop}.sh` + `scripts/imprint/lib/ingestion.py` 참조. 현재 자동 hook 경로는 `memory_chunks` 를 저장·prefill 하고, `/retrieve` 디스패처는 별도 `chunks_v2`/`summaries` 경로를 사용합니다. 두 경로의 현재 구조는 `README.md` "전체 플로우 다이어그램" 참조.
 
 ### Skill 시스템
 
@@ -176,30 +176,47 @@ GitHub repo (imprint-skills)
 
 ## 단계별 로드맵
 
-> 완료 phase 의 결정 사유는 `HISTORY.md` 참조. 폐기된 phase(4 Advisor skill)도 같은 문서.
+> 과거 phase 와 결정 사유는 `HISTORY.md` 참조. 이 문서에는 앞으로의 방향과 미완료 우선순위만 둡니다.
 
-### 완료된 단계
+### RAG 기본 동작 안정화
 
-- **Phase 1**: SQLite memory 저장소 + FTS5 trigram (`memory_chunks` · `events`)
-- **Phase 2**: SessionStart / UserPromptSubmit / Stop hook 통합
-- **Phase 3**: `/memory` skill (search · remember · pin · list · stats · forget · refresh · inject)
-- **Phase 4.5**: 사내 컨텍스트 ingestion (Slack / Notion lazy fetch + `sources.json`)
-- **Phase 7a**: chunk-level hybrid retrieval — SQLite + FTS5 + sqlite-vec, BGE-M3 임베딩 (opt-in), contextual prefix, entity alias canonicalization, versioning (`valid_from / valid_to / is_current / supersedes_chunk_id`), hybrid retrieval (RRF) + 조건부 cross-encoder rerank (RG 게이트 200 ms timeout), single-writer ingest queue (`PACK* → ENQ → DEDUPE → VRES → CONF → W1`)
-- **Phase 7b**: project-level interpretation — feature/document/project 3계층 요약 (RAPTOR 형, incremental rebuild), query scope classifier (rule-based `local/feature/global`), depth limit 라우팅 (`HYB1/2/3`), grounding drill-down (`summary_links`), contradiction detection (NLI primary → LLM judge fallback → rule retry, 3구간 `candidate/neutral`), `confirmed` 승격은 사용자 명시만
-- **chunk_entities 자동 NER**: `J4` 가 chunk → entity mention 추출, conf ≥ 0.9 auto-confirm, 그 외 review queue
-- **ML 의존성 opt-in**: `requirements-optional.txt` (sqlite-vec / sentence-transformers / transformers), `IMPRINT_MODEL_CACHE_DIR` 환경 변수, 미설치 시 FTS-only + LLM judge fallback 으로 안전 동작
+#### RAG-1. 안전한 저장 경로
 
-런타임 플로우 시각화는 `README.md` "전체 플로우 다이어그램" 참조. 다이어그램 노드 ↔ 코드 매핑은 `HANDOFF.md` "다이어그램 노드 ↔ 구현 매핑" 참조.
+- user prompt, assistant response, extracted chunk, external source chunk 가 DB/FTS 에 들어가기 전 redaction 적용
+- default redact 룰셋 보강
+- 과거 raw row 청소는 사용자 승인 액션으로 분리
 
-### 미시작 단계
+#### RAG-2. 자동 memory loop 검증
 
-#### Phase 5. Workflow skill (1주)
+- `SessionStart → UserPromptSubmit → Stop → 다음 UserPromptSubmit` 를 임시 DB와 fixture 로 직접 검증
+- `memory_chunks` INSERT, FTS trigger, `[Project memory context]` prepend, `/memory search/inject` 확인
+- 실패해도 hook 이 세션을 끊지 않는지 확인
+
+#### RAG-3. 읽기 경로 정합성
+
+- 현재 `memory_chunks` 기반 자동 prefill 과 `chunks_v2` 기반 `/retrieve` 의 역할을 명확히 분리
+- 단기 문서화: 기본 사용자 RAG는 자동 prefill + `/memory` 검색으로 안내
+- 중기 구현: `memory_chunks → chunks_v2` bridge 또는 `/retrieve` 의 legacy fallback 검토
+
+#### RAG-4. 검색 품질 최소 기준
+
+- 한국어 부분일치, pinned 우선순위, chunk_type/source 필터, external source section metadata 를 fixture 로 검증
+- "저장됐는데 못 찾는" 문제를 먼저 줄이고, rerank/summary 품질 개선은 그 다음 단계로 둠
+
+#### RAG-5. 외부 source 신뢰성
+
+- URL cap 초과, fetch 실패, stale `fetched_at` 을 사용자에게 보이게 함
+- 자동 refresh 보다 stale 표시와 명시 refresh 를 우선
+
+### 후순위 확장
+
+#### Phase 5. Workflow skill
 
 - `/commit-message`, `/pr-draft`, `/recap`, `/handoff`
 - git porcelain + memory 결합
-- 출력은 사용자가 검토 후 그대로 사용 가능한 형태
+- RAG 기본 루프가 안정된 뒤 진입
 
-#### Phase 6. 레지스트리 (2주)
+#### Phase 6. 레지스트리
 
 - GitHub 기반 skill 레지스트리
 - `imprint skill add/remove/list/publish`
@@ -214,9 +231,9 @@ GitHub repo (imprint-skills)
 - 완전 자동 supersede 확정 (사용자 명시만 confirmed)
 - Linux/Windows 호환 (요청 시 별도 Phase)
 
-## Tauri 앱 처리
+## Tauri 앱 경계
 
-**폐기 완료.** 본 repo는 Claude Code plugin 단일 책임. Dev PTY 모드가 필요한 사용자는 SwiftUI 버전 [`MultiAgentCLI`](../MultiAgentCLI)를 사용하고, 신규 LoadMap 기능은 어느 쪽에도 포팅하지 않습니다.
+본 repo는 Claude Code plugin 단일 책임입니다. Dev PTY 모드가 필요한 사용자는 SwiftUI 버전 [`MultiAgentCLI`](../MultiAgentCLI)를 사용하고, 신규 LoadMap 기능은 어느 쪽에도 포팅하지 않습니다.
 
 ## 위험 요소
 
@@ -237,7 +254,7 @@ GitHub repo (imprint-skills)
 대응:
 - 같은 project 우선
 - 최근성 + pin 가중치
-- 자동 주입 chunk 수 상한 (기본 5)
+- 자동 주입 chunk 수 상한 (primary prefill 8, legacy fallback 5)
 - 사용자가 hook 동작을 끌 수 있는 토글
 
 ### 3. Hook 실행 실패
@@ -305,15 +322,13 @@ export IMPRINT_PROFILE=1
 
 ## 우선순위 — 남은 단계
 
-1. **Phase 5 (Workflow skill)** — 매일 트리거할 사용자-facing 명령 4개. memory + git porcelain + `claude -p` 합성. 다음에 만들 가치가 가장 큼.
-2. **Phase 6 (레지스트리)** — 사용자 수가 늘어 skill 공유 수요가 생기는 시점에 시작.
-
-retrieval 인프라(7a/7b)는 모두 머지됐으니 측정 데이터가 쌓이면 다음을 고려:
-
-- contradiction 임계 (`HIGH=0.8`, `MID=0.4`) 캘리브레이션 — 첫 100~200 쌍 측정 후
-- daemon 분리 (`QEMB` / `HYB` / `RR` / `W1` / `WC`) — 동기 경로 budget 위반 누적 시
-- summary LLM 정밀도 vs deterministic concat — 실제 사용 후 비교
-- entity merge / split UI — 같은 entity 가 분리 등록될 때
+1. **RAG-1 안전한 저장 경로** — redaction coverage 부터 닫기. 민감정보가 raw DB/FTS 로 들어가면 실제 프로젝트 사용이 불가능합니다.
+2. **RAG-2 자동 memory loop 검증** — hook 직접 호출 fixture 로 저장·추출·다음 turn prefill 을 확인합니다.
+3. **RAG-3 읽기 경로 정합성** — `memory_chunks` 와 `chunks_v2` 가 분리된 현재 구조를 사용자 경로 기준으로 정리합니다.
+4. **RAG-4 검색 품질 최소 기준** — 한국어 FTS, pinned, type/source 필터, inject 를 fixture 로 고정합니다.
+5. **RAG-5 외부 source 신뢰성** — stale/누락/실패를 관찰 가능하게 만듭니다.
+6. **측정 후 캘리브레이션** — latency budget, contradiction 임계, daemon 분리, summary 품질은 1주 데이터 뒤 판단합니다.
+7. **후순위 기능 확장** — Workflow skill, registry, entity merge/split UI 는 RAG 기본 동작이 안정된 뒤 진행합니다.
 
 ## 최종 목표
 

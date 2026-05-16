@@ -9,6 +9,14 @@
 
 기록 순서는 **최신이 위**. 항목당 한 단락 안에 변경/사유/대안 폐기 근거를 묶는다.
 
+## 2026-05-16 — 완료 단계 기록 이관: Phase 1~4.5, 7a/7b, NER, ML opt-in
+
+**무엇:** `HANDOFF.md` 와 `LoadMap.md` 에 남아 있던 완료 단계 요약을 본 결정 사유 로그로 이관. 완료로 분류한 항목은 Phase 1(SQLite memory 저장소 + FTS5 trigram), Phase 2(SessionStart/UserPromptSubmit/Stop hook 통합), Phase 3(`/memory` skill: search/remember/pin/list/stats/forget/refresh/inject), Phase 4.5(Slack/Notion lazy fetch + `sources.json`), Phase 7a(chunk-level hybrid retrieval: SQLite/FTS5/sqlite-vec, BGE-M3 opt-in, contextual prefix, entity alias canonicalization, versioning, RRF + conditional rerank, single-writer ingest queue), Phase 7b(project-level interpretation: feature/document/project summaries, rule-based scope classifier, grounding drill-down, contradiction detection), chunk_entities 자동 NER, ML 의존성 opt-in(`requirements-optional.txt`, `IMPRINT_MODEL_CACHE_DIR`, FTS-only + LLM judge fallback) 이다.
+
+**왜:** `HANDOFF.md` 는 다음 세션에서 바로 집을 미완료 작업과 검증 안건만 담아야 하고, `LoadMap.md` 는 앞으로의 방향과 우선순위를 보여줘야 한다. 완료된 기능 목록이 두 문서에 남아 있으면 “다음에 무엇을 해야 하는가”가 흐려지고, 특히 현재 목표인 “실제 프로젝트에서 RAG가 기본 기능으로 저장·검색·참조되는지 검증”보다 workflow skill 같은 기능 확장이 먼저 보이는 문제가 있었다. 완료 사실과 결정 배경은 `HISTORY.md` 에 보존하고, 진행 문서는 RAG 기본 동작 안정화 중심으로 재정렬한다.
+
+**참고:** Phase 7a/7b 의 세부 결정 사유는 아래 2026-05-10 항목들에 이미 상세 기록되어 있다. 본 항목은 문서 책임을 정리하기 위한 완료 목록 이관 기록이다.
+
 ## 2026-05-10 — Phase 7b 우선순위 11 완료: NLI primary + LLM judge fallback chain
 
 **무엇:** Phase 7b 명세 우선순위 11번 (NLI / LLM judge 연결 + timeout 500 ms + 3구간 분기) 의 결정적 부분을 채움. 판정 파이프라인을 `_judge_pair(a_text, b_text)` 단일 진입점으로 통일하고 fallback chain 명시: (1) NLI 시도 (transformers 가용 시, 500 ms timeout). (2) NLI high confidence(≥0.8 또는 <0.4 — 양 극단) 면 그대로 채택. (3) NLI mid 영역(0.4~0.6) 또는 NLI 미가용/timeout 이면 LLM judge (claude CLI haiku, 30 s timeout) 호출. (4) NLI/LLM 둘 다 실패하면 rule 약 신호(score=0.5) + `needs_retry=True` 로 status=candidate 강제 — 다음 scan 배치가 가용 환경에서 재판정. confirmed/dismissed 가 이미 있는 chunk pair 는 사용자 결정 보호로 덮지 않음.
