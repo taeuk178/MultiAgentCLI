@@ -22,6 +22,8 @@ imprint memory <subcommand> [args]
   inject <id>                Print a chunk's text for context injection
   show <id> [--json]         Pretty-print a chunk's text + metadata (debug)
   stats [--all] [--json]     Memory 분포·통계 요약(현 프로젝트 또는 전 프로젝트)
+  profile [--days <n>] [--json]
+                              Summarize IMPRINT_PROFILE=1 latency/payload data
   pin <id>                   Mark chunk as pinned (always prefilled)
   unpin <id>                 Remove pinned status
   list [--recent|--pinned|--type <t>|--source <slack|notion|internal>]
@@ -186,6 +188,7 @@ cmd_list() {
   local since_filter=""
   local limit="50"
   local project_filter=""
+  local stale_days="${IMPRINT_STALE_DAYS:-14}"
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --recent)  mode="recent"; shift ;;
@@ -202,6 +205,9 @@ cmd_list() {
   # --limit 안전: 정수가 아니면 50으로 폴백
   if ! [[ "$limit" =~ ^[0-9]+$ ]]; then
     limit=50
+  fi
+  if ! [[ "$stale_days" =~ ^[0-9]+$ ]]; then
+    stale_days=14
   fi
 
   # project 결정: --project 없으면 현 프로젝트, 있으면 path(절대경로 시작)는
@@ -243,6 +249,15 @@ cmd_list() {
   db_exec "
     SELECT id, chunk_type, pinned,
            coalesce(json_extract(metadata_json, '\$.source'), 'internal') AS src,
+           CASE
+             WHEN json_extract(metadata_json, '\$.status') IS NOT NULL
+               THEN json_extract(metadata_json, '\$.status')
+             WHEN coalesce(json_extract(metadata_json, '\$.source'), '') IN ('slack','notion')
+               AND json_extract(metadata_json, '\$.fetched_at') IS NOT NULL
+               AND datetime(replace(replace(json_extract(metadata_json, '\$.fetched_at'), 'T', ' '), 'Z', '')) < datetime('now', '-$stale_days days')
+               THEN 'stale'
+             ELSE 'ok'
+           END AS status,
            substr(text, 1, 100)
     FROM memory_chunks
     WHERE $where
@@ -270,6 +285,7 @@ cmd_show() {
   fi
   IMPRINT_DB="$IMPRINT_DB" CHUNK_ID="$id" CHUNK_FMT="$fmt" python3 - <<'PY'
 import json, os, sqlite3, sys, textwrap
+from datetime import datetime, timedelta, timezone
 
 db_path = os.environ["IMPRINT_DB"]
 chunk_id = os.environ["CHUNK_ID"]
@@ -305,12 +321,31 @@ try:
 except json.JSONDecodeError:
     metadata = {"_parse_error": metadata_json}
 
+def source_status(md):
+    if md.get("status"):
+        return md["status"]
+    if md.get("source") not in ("slack", "notion"):
+        return "ok"
+    fetched = md.get("fetched_at")
+    if not fetched:
+        return "unknown"
+    try:
+        ts = datetime.fromisoformat(str(fetched).replace("Z", "+00:00"))
+    except ValueError:
+        return "unknown"
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    stale_days = int(os.environ.get("IMPRINT_STALE_DAYS", "14"))
+    return "stale" if datetime.now(timezone.utc) - ts > timedelta(days=stale_days) else "ok"
+
+status = source_status(metadata)
+
 if fmt == "json":
     sys.stdout.write(json.dumps({
         "id": rid, "project_id": project_id,
         "source_event_id": source_event_id, "chunk_type": chunk_type,
         "pinned": bool(pinned), "created_at": created_at,
-        "metadata": metadata, "text": text,
+        "source_status": status, "metadata": metadata, "text": text,
     }, ensure_ascii=False, indent=2))
     sys.stdout.write("\n")
     sys.exit(0)
@@ -324,6 +359,7 @@ print(f"Project:       {project_id}")
 print(f"Chunk type:    {chunk_type}")
 print(f"Pinned:        {'yes' if pinned else 'no'}")
 print(f"Created at:    {created_at}")
+print(f"Source status: {status}")
 print(f"Source event:  {source_event_id or '<none — external or manual>'}")
 print()
 print("Metadata:")
@@ -493,6 +529,128 @@ print(f"  slack_messages {s['external_urls']['slack_messages']}")
 PY
 }
 
+cmd_profile() {
+  local days="7"
+  local fmt="pretty"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --days) days="${2:-7}"; shift 2 ;;
+      --json) fmt="json"; shift ;;
+      *)      shift ;;
+    esac
+  done
+  if ! [[ "$days" =~ ^[0-9]+$ ]]; then
+    days=7
+  fi
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "python3 not found in PATH" >&2
+    exit 1
+  fi
+  IMPRINT_HOME="$IMPRINT_HOME" PROFILE_DAYS="$days" PROFILE_FMT="$fmt" python3 - <<'PY'
+import json, os, statistics, sys
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+home = Path(os.environ["IMPRINT_HOME"])
+path = home / "profile.jsonl"
+days = int(os.environ.get("PROFILE_DAYS", "7"))
+fmt = os.environ.get("PROFILE_FMT", "pretty")
+since = datetime.now(timezone.utc) - timedelta(days=days)
+
+def parse_ts(value):
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+def percentile(vals, pct):
+    if not vals:
+        return None
+    vals = sorted(vals)
+    idx = int(round((len(vals) - 1) * pct))
+    return vals[idx]
+
+stages = {}
+payloads = {}
+total = 0
+kept = 0
+if path.exists():
+    with path.open("r", encoding="utf-8") as f:
+        for line in f:
+            total += 1
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            ts = parse_ts(row.get("ts"))
+            if ts is not None and ts < since:
+                continue
+            kept += 1
+            stage = row.get("stage") or "unknown"
+            dur = row.get("dur_ms")
+            if dur is None and isinstance(row.get("kv"), dict):
+                dur = row["kv"].get("ms") or row["kv"].get("dur_ms")
+            if isinstance(dur, (int, float)):
+                stages.setdefault(stage, []).append(float(dur))
+            payload = row.get("payload_bytes")
+            if payload is None and isinstance(row.get("kv"), dict):
+                payload = row["kv"].get("payload_bytes")
+            if isinstance(payload, (int, float)):
+                payloads.setdefault(stage, []).append(float(payload))
+
+summary = {
+    "profile_path": str(path),
+    "days": days,
+    "rows_total": total,
+    "rows_in_window": kept,
+    "stages": {
+        k: {
+            "count": len(v),
+            "p50_ms": percentile(v, 0.50),
+            "p95_ms": percentile(v, 0.95),
+            "max_ms": max(v),
+        }
+        for k, v in sorted(stages.items())
+    },
+    "payloads": {
+        k: {
+            "count": len(v),
+            "p50_bytes": percentile(v, 0.50),
+            "p95_bytes": percentile(v, 0.95),
+            "max_bytes": max(v),
+        }
+        for k, v in sorted(payloads.items())
+    },
+}
+
+if fmt == "json":
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
+    sys.exit(0)
+
+print(f"profile: {path}")
+print(f"window:  past {days}d, rows {kept}/{total}")
+if not path.exists():
+    print("status:  no profile.jsonl yet; enable IMPRINT_PROFILE=1")
+    sys.exit(0)
+print()
+print("latency:")
+if summary["stages"]:
+    print(f"{'stage':<32} {'n':>5} {'p50':>8} {'p95':>8} {'max':>8}")
+    for stage, s in summary["stages"].items():
+        print(f"{stage:<32} {s['count']:>5} {s['p50_ms']:>8.1f} {s['p95_ms']:>8.1f} {s['max_ms']:>8.1f}")
+else:
+    print("  <no duration samples>")
+print()
+print("payload:")
+if summary["payloads"]:
+    print(f"{'stage':<32} {'n':>5} {'p50':>8} {'p95':>8} {'max':>8}")
+    for stage, s in summary["payloads"].items():
+        print(f"{stage:<32} {s['count']:>5} {s['p50_bytes']:>8.0f} {s['p95_bytes']:>8.0f} {s['max_bytes']:>8.0f}")
+else:
+    print("  <no payload samples>")
+PY
+}
+
 cmd_forget() {
   local id="${1:-}"
   if [[ -z "$id" ]]; then
@@ -526,6 +684,7 @@ main() {
     inject)   cmd_inject "$@" ;;
     show)     cmd_show "$@" ;;
     stats)    cmd_stats "$@" ;;
+    profile)  cmd_profile "$@" ;;
     pin)      cmd_pin "$@" 1 ;;
     unpin)    cmd_pin "$@" 0 ;;
     list)     cmd_list "$@" ;;

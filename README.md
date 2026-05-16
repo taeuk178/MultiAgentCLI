@@ -87,7 +87,7 @@ pip install -r requirements-optional.txt
 | hook | matcher | 시점 | 동기 경로 | 비동기 경로 |
 |---|---|---|---|---|
 | **SessionStart** | `startup\|resume\|clear\|compact` | 세션 진입 / 재개 / clear / compact 직후 | SQLite 스키마 idempotent 적용 + 현재 프로젝트 row upsert + `<project>/.imprint/soul.md` 컨텍스트 prepend (timeout 5 s) | — |
-| **UserPromptSubmit** | `*` | 프롬프트 진입 직전 (매 turn) | redaction → `events.user_message` 기록 → `.imprint/UserPromptSubmit.md` routing 룰 advisory prepend → `memory_chunks` recency fallback (primary: `ingestion.py prefill` LIMIT 8, legacy shell fallback: LIMIT 5) → `[Project memory context]` 블록 prepend (< 50 ms). **풀 하이브리드 retrieval 은 `/retrieve` 디스패처 명시 호출 경로로만 진입** | redacted prompt 를 `claude -p haiku` 로 키워드·모호도 추출 → prompt 의 Notion/Slack URL 또는 `sources.json` 기반 lazy-fetch → 외부 chunk redaction 후 INSERT (≈30~60 초, timeout 30 s) |
+| **UserPromptSubmit** | `*` | 프롬프트 진입 직전 (매 turn) | redaction → `events.user_message` 기록(`noise` soft flag 포함) → `.imprint/UserPromptSubmit.md` routing 룰 advisory prepend → `memory_chunks` recency fallback (primary: `ingestion.py prefill` LIMIT 8, legacy shell fallback: LIMIT 5) → `[Project memory context]` 블록 prepend (< 50 ms). **풀 하이브리드 retrieval 은 `/retrieve` 디스패처 명시 호출 경로로만 진입** | redacted prompt 를 `claude -p haiku` 로 키워드·모호도 추출 → prompt 의 Notion/Slack URL 또는 `sources.json` 기반 lazy-fetch → 외부 chunk redaction 후 INSERT, 실패/누락 상태는 `source_status` marker 로 기록 (≈30~60 초, timeout 30 s) |
 | **Stop** | `*` | 응답 종료 직후 (매 turn) | redaction → `events.llm_response` 로 응답 텍스트 archive | redacted 응답을 `claude -p haiku` 가 9 가지 `chunk_type` (`decision` · `error` · `fix` · `command` · `test_result` · `summary` · `todo` · `code_context` · `note`) 로 분류해 `memory_chunks` 에 redaction 후 누적. 외부 source (Slack · Notion) 는 UPS lazy-fetch 경로에서 `spec` · `message` · `thread` 로 직접 INSERT (timeout 30 s) |
 
 서브프로세스가 다시 hook 을 타며 자기 자신을 spawn 하는 무한 재귀는 `IMPRINT_BYPASS_HOOKS=1` 을 환경에 박아 차단합니다.
@@ -237,12 +237,13 @@ UPS hook 자동 경로는 `LOG → ROUTE → PREFILL → CTX0` 만 실행해 < 5
 | 자연어 예시 | dispatcher 서브커맨드 | 동작 · 효과 |
 |---|---|---|
 | `어제 결제 어떻게 처리했어?` | `search <query>` | FTS5 trigram 검색 — 결과가 없으면 짧은 한국어 토큰용 fallback 검색 — matching chunk 목록 (id · type · 발췌) |
-| `이 chunk 자세히 보여줘 / metadata` | `show <id>` (`--json`) | 단일 chunk text + `metadata_json` 디버그 — 외부 source sectioning · `url` · `section_title` 확인 |
+| `이 chunk 자세히 보여줘 / metadata` | `show <id>` (`--json`) | 단일 chunk text + `metadata_json` 디버그 — 외부 source sectioning · `url` · `section_title` · `source_status` 확인 |
 | `이걸 prompt 에 넣어` | `inject <id>` | chunk text 를 stdout 으로 — Claude Code 가 현재 turn 컨텍스트 포함 |
 | `이거 기억해줘 / 결정 사항 저장` | `remember <text>` (`--type` / `--pin` / `--redact`) | 사용자 chunk 를 redaction 후 `memory_chunks` 에 즉시 저장 — 다음 turn 부터 검색·prepend 후보. `--redact` 는 redacted metadata 표시를 명시적으로 남김 |
 | `이 chunk 항상 위로 / pin 풀어` | `pin` / `unpin <id>` | pinned 플래그 토글 — `BOOST` 에서 우선 노출 |
-| `최근 chunk / pinned 만 / 다른 프로젝트` | `list` (`--recent` · `--pinned` · `--type` · `--source` · `--since` · `--limit` · `--project`) | 필터링된 chunk 표. `--project` 는 절대경로 또는 id-prefix |
+| `최근 chunk / pinned 만 / 다른 프로젝트` | `list` (`--recent` · `--pinned` · `--type` · `--source` · `--since` · `--limit` · `--project`) | 필터링된 chunk 표. `ok/stale/fetch_failed/skipped_by_cap` 상태 포함. `--project` 는 절대경로 또는 id-prefix |
 | `지금 뭐가 얼마나 쌓여 있어?` | `stats` (`--all` · `--json`) | 총 chunk 수 · `chunk_type` · `source` 분포 · 외부 unique URL 수 |
+| `profile 봐줘 / 느린 지점 확인` | `profile` (`--days` · `--json`) | `IMPRINT_PROFILE=1` 로 쌓인 `profile.jsonl` 의 stage 별 p50/p95/max latency 와 payload bytes 요약 |
 | `이거 잊어줘` (id 포함) | `forget <id>` | DB row + FTS 인덱스 영구 제거 (trigger 자동 동기) |
 | `노션 페이지 갱신 / slack 다시 fetch` | `refresh <url\|source slack\|source notion\|project>` | 외부 chunk 무효화 + 다음 prefill 에 재 fetch (수동 trigger only) |
 

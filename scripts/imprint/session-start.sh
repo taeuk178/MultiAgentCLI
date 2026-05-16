@@ -30,6 +30,11 @@ if command -v sqlite3 >/dev/null 2>&1; then
   # session context, so any stray output would pollute the model input.
   sqlite3 "$IMPRINT_DB" < "$SCRIPT_DIR/lib/schema.sql" >/dev/null 2>>"$IMPRINT_LOG" \
     || log_error "schema apply failed"
+  # Existing DB migration: CREATE TABLE IF NOT EXISTS won't add new columns.
+  db_exec "ALTER TABLE events ADD COLUMN noise INTEGER NOT NULL DEFAULT 0;" \
+    >/dev/null 2>>"$IMPRINT_LOG" || true
+  db_exec "CREATE INDEX IF NOT EXISTS idx_events_project_noise ON events (project_id, noise, created_at DESC);" \
+    >/dev/null 2>>"$IMPRINT_LOG" || true
 
   ROOT=$(project_root)
   PID=$(project_id)

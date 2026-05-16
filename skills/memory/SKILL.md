@@ -69,7 +69,7 @@ Output a specific chunk's text so Claude Code includes it in context.
 ### `/memory show <chunk-id> [--json]`
 Pretty-print a chunk's full text + `metadata_json` for **debugging**. 외부
 소스(Slack/Notion)가 어떻게 sectioning됐는지, `url`·`section_title`·
-`last_edited_at` 같은 메타데이터가 정확히 어떻게 채워졌는지 확인할 때
+`last_edited_at`, `source_status` 같은 메타데이터가 정확히 어떻게 채워졌는지 확인할 때
 사용합니다. `<chunk-id>`는 정확한 ID 또는 unique prefix를 받습니다.
 
 ```bash
@@ -95,6 +95,17 @@ imprint memory stats --json       # 자동화/대시보드용 JSON
 `/memory list`는 chunk를 행 단위로 나열하지만 분포는 보여주지 않습니다.
 `stats`는 그 반대 — 분포만 보여주고 개별 chunk는 안 찍습니다.
 
+### `/memory profile [--days <n>] [--json]`
+Summarize `~/.claude/imprint/profile.jsonl` after running sessions with
+`IMPRINT_PROFILE=1`. Shows stage-level latency p50/p95/max and external fetch
+payload sizes, which is the first input for daemon split or threshold tuning.
+
+```bash
+export IMPRINT_PROFILE=1
+imprint memory profile --days 7
+imprint memory profile --days 7 --json
+```
+
 ### `/memory pin <chunk-id>`
 Mark chunk as pinned so the prefill hook always includes it.
 
@@ -109,6 +120,9 @@ List memory chunks for the current project (또는 `--project`로 다른 프로�
 | `--since <YYYY-MM-DD>` | `created_at >= ?` |
 | `--limit <n>` | 결과 행 수 (기본 50, 정수 아니면 50으로 폴백) |
 | `--project <path|id-prefix>` | 다른 프로젝트 검색. 절대경로면 sha256으로 project_id 변환, 아니면 `LIKE 'prefix%'` |
+
+출력은 `id|chunk_type|pinned|source|status|text` 순서입니다. `status`는
+`ok`, `stale`, `fetch_failed`, `fetch_empty`, `skipped_by_cap` 등을 표시합니다.
 
 `--project`는 `/memory stats --all`로 본 짧은 id를 그대로 붙여넣어 다른 프로젝트의 chunk를 빠르게 훑을 때 유용합니다.
 
@@ -157,6 +171,9 @@ Project is identified by git root (`git rev-parse --show-toplevel`) or current w
   - prompt에 Notion URL이 들어 있으면 페이지 전체를 섹션 단위로 분해해 chunk화
   - 모호한 prompt에서는 sources.json 채널·페이지를 키워드로 검색
 - 캐시: `metadata_json.url` 기반 dedup, TTL 무한. 갱신은 `/memory refresh` 명시 명령으로만.
+- 상태 표시: fetch 실패, URL cap 초과, 빈 keyword 결과는 `source_status`
+  marker chunk로 남아 `/memory list/show`에서 확인할 수 있습니다. 오래된 외부
+  chunk는 `IMPRINT_STALE_DAYS`(기본 14일) 기준으로 `stale` 표시됩니다.
 
 `scripts/imprint/lib/ingestion.py`가 Python 단일 모듈로 모든 ingestion 단계를 처리하며, 실패는 plugin.log에만 기록되고 사용자 세션을 차단하지 않습니다.
 

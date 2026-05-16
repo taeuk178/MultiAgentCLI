@@ -30,11 +30,14 @@ CREATE TABLE IF NOT EXISTS events (
   kind            TEXT NOT NULL,
   text_clean      TEXT NOT NULL,
   metadata_json   TEXT NOT NULL DEFAULT '{}',
+  noise           INTEGER NOT NULL DEFAULT 0,
   created_at      TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_events_project_created
   ON events (project_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_events_project_noise
+  ON events (project_id, noise, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS memory_chunks (
   id              TEXT PRIMARY KEY,

@@ -697,7 +697,7 @@ def chunk_url_exists(conn: sqlite3.Connection, project_id: str, url: str) -> boo
         "WHERE project_id = ? AND ("
         "  json_extract(metadata_json, '$.url') = ? "
         "  OR json_extract(metadata_json, '$.url') LIKE ? "
-        ") LIMIT 1;",
+        ") AND chunk_type != 'source_status' LIMIT 1;",
         (project_id, url, url + "#%"),
     )
     return cur.fetchone() is not None
@@ -741,6 +741,30 @@ def insert_extracted_chunk(
         "(id, project_id, source_event_id, chunk_type, text, metadata_json, created_at, pinned) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, 0);",
         (cid, project_id, source_event_id, chunk_type, text, json.dumps(md, ensure_ascii=False), now_iso()),
+    )
+    return cid
+
+
+def insert_source_status_chunk(
+    conn: sqlite3.Connection,
+    project_id: str,
+    *,
+    source: str,
+    status: str,
+    text: str,
+    metadata: dict,
+) -> str:
+    """Visible marker for external-source fetch state. Excluded from prefill."""
+    md = dict(metadata or {})
+    md.update({"source": source, "status": status, "fetched_at": now_iso()})
+    text = redact_text(text)
+    md = redact_json_value(md)
+    cid = str(uuid.uuid4())
+    conn.execute(
+        "INSERT INTO memory_chunks "
+        "(id, project_id, source_event_id, chunk_type, text, metadata_json, created_at, pinned) "
+        "VALUES (?, ?, NULL, 'source_status', ?, ?, ?, 0);",
+        (cid, project_id, text, json.dumps(md, ensure_ascii=False), now_iso()),
     )
     return cid
 
@@ -933,7 +957,16 @@ def lazy_fetch(
         return sum(len((c.get("text") or "").encode("utf-8")) for c in cs)
 
     # 1) URL-explicit Slack permalinks in prompt
-    for url in list(dict.fromkeys(SLACK_PERMALINK_RE.findall(prompt)))[:3]:
+    slack_urls = list(dict.fromkeys(SLACK_PERMALINK_RE.findall(prompt)))
+    for url in slack_urls[3:]:
+        insert_source_status_chunk(
+            conn, project_id,
+            source="slack", status="skipped_by_cap",
+            text=f"Slack URL skipped by per-turn cap: {url}",
+            metadata={"url": url, "cap": 3},
+        )
+        inserted += 1
+    for url in slack_urls[:3]:
         if chunk_url_exists(conn, project_id, url):
             log("INFO", f"slack url cache hit, skip fetch: {url}")
             continue
@@ -948,6 +981,13 @@ def lazy_fetch(
                       url=url, chunks=len(chunks or []),
                       payload_bytes=_payload_bytes(chunks))
         if not chunks:
+            insert_source_status_chunk(
+                conn, project_id,
+                source="slack", status="fetch_failed",
+                text=f"Slack fetch failed or returned no usable content: {url}",
+                metadata={"url": url},
+            )
+            inserted += 1
             continue
         ct = "thread" if is_slack_thread_url(url) else "message"
         for c in chunks:
@@ -955,7 +995,16 @@ def lazy_fetch(
             inserted += 1
 
     # 2) Notion URLs in prompt
-    for url in list(dict.fromkeys(NOTION_URL_RE.findall(prompt)))[:3]:
+    notion_urls = list(dict.fromkeys(NOTION_URL_RE.findall(prompt)))
+    for url in notion_urls[3:]:
+        insert_source_status_chunk(
+            conn, project_id,
+            source="notion", status="skipped_by_cap",
+            text=f"Notion URL skipped by per-turn cap: {url}",
+            metadata={"url": url, "cap": 3},
+        )
+        inserted += 1
+    for url in notion_urls[:3]:
         if chunk_url_exists(conn, project_id, url):
             continue
         chunks = None
@@ -969,6 +1018,13 @@ def lazy_fetch(
                       url=url, chunks=len(chunks or []),
                       payload_bytes=_payload_bytes(chunks))
         if not chunks:
+            insert_source_status_chunk(
+                conn, project_id,
+                source="notion", status="fetch_failed",
+                text=f"Notion fetch failed or returned no usable content: {url}",
+                metadata={"url": url},
+            )
+            inserted += 1
             continue
         for c in chunks:
             url_dedup = c["metadata"].get("url")
@@ -993,6 +1049,14 @@ def lazy_fetch(
             _profile_emit("fetch_slack_keywords.payload",
                           chunks=len(slack_chunks),
                           payload_bytes=_payload_bytes(slack_chunks))
+            if not slack_chunks:
+                insert_source_status_chunk(
+                    conn, project_id,
+                    source="slack", status="fetch_empty",
+                    text="Slack keyword search returned no usable content.",
+                    metadata={"channels": channels[:10], "keywords": keywords[:12]},
+                )
+                inserted += 1
             for c in slack_chunks:
                 url = c["metadata"].get("url")
                 if url and chunk_url_exists(conn, project_id, url):
@@ -1014,6 +1078,14 @@ def lazy_fetch(
             _profile_emit("fetch_notion_keywords.payload",
                           chunks=len(notion_chunks),
                           payload_bytes=_payload_bytes(notion_chunks))
+            if not notion_chunks:
+                insert_source_status_chunk(
+                    conn, project_id,
+                    source="notion", status="fetch_empty",
+                    text="Notion keyword search returned no usable content.",
+                    metadata={"pages": pages[:10], "keywords": keywords[:12]},
+                )
+                inserted += 1
             for c in notion_chunks:
                 url = c["metadata"].get("url")
                 if url and chunk_url_exists(conn, project_id, url):

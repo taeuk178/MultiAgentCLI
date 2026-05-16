@@ -10,21 +10,15 @@
 
 ## RAG 기본 동작 안정화 우선순위
 
-목표는 기능 확장보다 먼저 **실제 프로젝트에서 기억이 저장되고, 다시 검색되며, 사용자가 답변 근거로 참고할 수 있는지**를 확인하는 것. 2026-05-16 에 redaction coverage, 자동 memory loop smoke test, 기본 읽기 경로 안내, 검색 fixture 는 1차 적용 완료. 다음 PR 은 아래 순서로 진행.
+목표는 기능 확장보다 먼저 **실제 프로젝트에서 기억이 저장되고, 다시 검색되며, 사용자가 답변 근거로 참고할 수 있는지**를 확인하는 것. 2026-05-16 에 redaction coverage, 자동 memory loop smoke test, 기본 읽기 경로 안내, 검색 fixture, 외부 source 상태 표시, events noise flag, profile summary 는 1차 적용 완료. 다음 PR 은 아래 순서로 진행.
 
-1. **외부 source 갱신/누락 가시화**
-   Slack/Notion URL cap 초과, stale `fetched_at`, fetch 실패를 사용자가 볼 수 있게 `plugin.log` 또는 `/memory show/list` 에 표시. 자동 refresh 보다 “지금 참조한 기억이 낡았는지 알기”가 먼저.
-
-2. **읽기 경로 수렴**
+1. **읽기 경로 수렴**
    단기 안내는 적용 완료: 기본 사용자 RAG는 자동 prefill + `/memory search/inject`, `/retrieve` 는 `chunks_v2` 문서 retrieval. 남은 결정은 `memory_chunks → chunks_v2` bridge 또는 `/retrieve` 의 legacy `memory_chunks` fallback 중 하나.
 
-3. **노이즈 turn soft filter**
-   `events.noise=1` 플래그부터 도입. 삭제가 아니라 표식만 붙여 RAG 후보 품질과 DB 증가량을 관찰한다.
+2. **운영 정책 캘리브레이션**
+   `/memory profile`, `events.noise` 비율, `source_status` marker 누적량을 1~2주 관찰한 뒤 stale 기준, marker TTL, daemon 분리 여부를 판단한다.
 
-4. **측정 후 캘리브레이션**
-   `IMPRINT_PROFILE=1` 로 한 주 데이터 수집 후 latency budget, contradiction 임계, daemon 분리, summary 생성 품질을 판단한다.
-
-5. **후순위 기능 확장**
+3. **후순위 기능 확장**
    Workflow skill(`/commit-message`, `/pr-draft`, `/recap`, `/handoff`), registry, entity merge/split UI 는 RAG 기본 저장/검색 루프가 안정된 뒤 진행.
 
 ## 보안 — Redaction coverage 갭 (2026-05-11 관찰)
@@ -431,8 +425,6 @@ CREATE INDEX idx_chunks_page ON memory_chunks(project_id, meta_page_id);
 
 ## 다음 세션 시작 시 추천 픽업 지점
 
-1. **외부 source stale/누락 가시화** — URL cap, stale fetched_at, fetch 실패를 사용자 관찰 가능하게 만들기.
-2. **읽기 경로 수렴 결정** — `memory_chunks → chunks_v2` bridge 와 `/retrieve` legacy fallback 중 어떤 경로가 더 단순한지 비교.
-3. **events noise soft filter** — `events.noise=1` 컬럼 + backchannel rule filter 를 별도 PR 로 적용.
-4. **retrieval 측정** — `IMPRINT_PROFILE=1` 데이터 수집으로 임계 캘리브레이션 / daemon 분리 결정.
-5. **후순위** — Workflow skill, registry, entity merge/split UI, Chunk 분류 2단계는 RAG 기본 동작 안정 후 진입.
+1. **읽기 경로 수렴 결정** — `memory_chunks → chunks_v2` bridge 와 `/retrieve` legacy fallback 중 어떤 경로가 더 단순한지 비교.
+2. **운영 데이터 관찰** — `/memory profile`, `events.noise` 비율, `source_status` marker 누적량으로 stale 기준/marker TTL/daemon 분리 판단.
+3. **후순위** — Workflow skill, registry, entity merge/split UI, Chunk 분류 2단계는 RAG 기본 동작 안정 후 진입.

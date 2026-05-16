@@ -602,6 +602,93 @@ def tc_12_memory_search_fixture(env: dict, home: str, case: CaseResult) -> None:
         case.detail += f" search_err={search_err[:120]}"
 
 
+def tc_13_source_noise_profile(env: dict, home: str, case: CaseResult) -> None:
+    """External source status, events.noise, profile summary."""
+    env_h = hook_env(env)
+    rc, _, err = run_cmd(env_h, ["bash", "scripts/imprint/session-start.sh"])
+    if rc != 0:
+        case.passed = False
+        case.detail = f"session-start rc={rc} err={err[:120]}"
+        return
+
+    old_fetch = "2026-01-01T00:00:00Z"
+    now = "2026-05-16T00:00:00Z"
+    rows = [
+        ("tc13-stale", "spec", "오래된 Notion chunk", '{"source":"notion","url":"https://notion.so/x","fetched_at":"%s"}' % old_fetch),
+        ("tc13-failed", "source_status", "Slack fetch failed", '{"source":"slack","status":"fetch_failed","url":"https://x.slack.com/archives/C/p1","fetched_at":"%s"}' % now),
+        ("tc13-cap", "source_status", "Notion URL skipped", '{"source":"notion","status":"skipped_by_cap","url":"https://notion.so/y","fetched_at":"%s"}' % now),
+    ]
+    conn = sqlite3.connect(str(Path(home) / "app.sqlite"))
+    try:
+        for rid, ctype, text, metadata in rows:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO memory_chunks
+                  (id, project_id, source_event_id, chunk_type, text, metadata_json, created_at, pinned)
+                VALUES (?, ?, NULL, ?, ?, ?, ?, 0)
+                """,
+                (rid, ROOT_PROJECT_ID, ctype, text, metadata, now),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+    memory = ["bash", "scripts/imprint/memory.sh"]
+    env_status = dict(env_h)
+    env_status["IMPRINT_STALE_DAYS"] = "30"
+    rc_l, list_out, _ = run_cmd(env_status, memory + ["list", "--limit", "20"])
+    rc_show, show_out, _ = run_cmd(env_status, memory + ["show", "tc13-stale", "--json"])
+
+    noise_input = json.dumps({"prompt": "응", "session_id": "tc13"}, ensure_ascii=False)
+    rc_n, _, _ = run_cmd(env_h, ["bash", "scripts/imprint/user-prompt-submit.sh"], input_text=noise_input)
+    conn = sqlite3.connect(str(Path(home) / "app.sqlite"))
+    try:
+        noise_count = conn.execute(
+            "SELECT COUNT(*) FROM events WHERE project_id = ? AND noise = 1",
+            (ROOT_PROJECT_ID,),
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    profile_path = Path(home) / "profile.jsonl"
+    profile_path.write_text(
+        "\n".join([
+            json.dumps({"ts": "2026-05-16T00:00:00Z", "stage": "cmd_prefill", "dur_ms": 10}),
+            json.dumps({"ts": "2026-05-16T00:00:01Z", "stage": "cmd_prefill", "dur_ms": 20}),
+            json.dumps({"ts": "2026-05-16T00:00:02Z", "stage": "fetch_notion_url.payload", "payload_bytes": 1234}),
+        ]) + "\n",
+        encoding="utf-8",
+    )
+    rc_p, profile_out, _ = run_cmd(env_h, memory + ["profile", "--days", "9999", "--json"])
+    try:
+        profile = json.loads(profile_out)
+    except json.JSONDecodeError:
+        profile = {}
+    try:
+        shown = json.loads(show_out)
+    except json.JSONDecodeError:
+        shown = {}
+
+    checks = {
+        "list_stale": rc_l == 0 and "tc13-stale|spec|0|notion|stale|" in list_out,
+        "list_failed": "tc13-failed|source_status|0|slack|fetch_failed|" in list_out,
+        "list_cap": "tc13-cap|source_status|0|notion|skipped_by_cap|" in list_out,
+        "show_status": rc_show == 0 and shown.get("source_status") == "stale",
+        "noise": rc_n == 0 and noise_count >= 1,
+        "profile": (
+            rc_p == 0
+            and profile.get("stages", {}).get("cmd_prefill", {}).get("count") == 2
+            and profile.get("payloads", {}).get("fetch_notion_url.payload", {}).get("max_bytes") == 1234
+        ),
+    }
+    case.metrics = checks
+    case.passed = all(checks.values())
+    case.detail = (
+        f"stale={checks['list_stale']} failed={checks['list_failed']} "
+        f"noise={checks['noise']} profile={checks['profile']}"
+    )
+
+
 # -----------------------------------------------------------------------------
 # 러너
 # -----------------------------------------------------------------------------
@@ -619,6 +706,7 @@ CASES: list[tuple[str, str, callable]] = [
     ("TC-10", "동시 ingest priority drain", tc_10_priority_drain),
     ("TC-11", "Hook memory loop + redaction", tc_11_hook_memory_loop),
     ("TC-12", "Memory search/list/inject fixture", tc_12_memory_search_fixture),
+    ("TC-13", "Source status + noise + profile", tc_13_source_noise_profile),
 ]
 
 

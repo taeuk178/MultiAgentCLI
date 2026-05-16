@@ -37,6 +37,14 @@ if [[ -z "${PROMPT// }" ]]; then
   exit 0
 fi
 SAFE_PROMPT=$(redact_text "$PROMPT")
+NOISE=0
+NOISE=$(SAFE_PROMPT="$SAFE_PROMPT" python3 - <<'PY' 2>>"$IMPRINT_LOG" || echo 0
+import os, re
+s = (os.environ.get("SAFE_PROMPT") or "").strip().lower()
+backchannel = re.compile(r"^(응|네|넵|ㅇㅇ|좋아|그래|맞아|확인|커밋해줘|오케이|ok|yes|yeah|yep|sure)[\\s.!?~]*$", re.I)
+print(1 if len(s) <= 20 and backchannel.match(s) else 0)
+PY
+)
 
 # --- 1. Persist user_message event ------------------------------------------
 
@@ -46,8 +54,8 @@ if command -v sqlite3 >/dev/null 2>&1; then
   EVENT_ID=$(new_id)
   ESC_PROMPT=$(sql_escape "$SAFE_PROMPT")
   db_exec "
-    INSERT INTO events (id, project_id, source, kind, text_clean, created_at)
-    VALUES ('$EVENT_ID', '$PID', 'claude_code', 'user_message', '$ESC_PROMPT', '$NOW');
+    INSERT INTO events (id, project_id, source, kind, text_clean, noise, created_at)
+    VALUES ('$EVENT_ID', '$PID', 'claude_code', 'user_message', '$ESC_PROMPT', $NOISE, '$NOW');
   " 2>>"$IMPRINT_LOG" || true
 else
   log_error "sqlite3 missing; user-prompt-submit DB write skipped"

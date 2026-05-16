@@ -9,6 +9,14 @@
 
 기록 순서는 **최신이 위**. 항목당 한 단락 안에 변경/사유/대안 폐기 근거를 묶는다.
 
+## 2026-05-16 — RAG 운영 관찰성 1차 적용: source status, noise flag, profile summary
+
+**무엇:** RAG 기본 동작 안정화의 남은 관찰성 항목을 1차 적용. Slack/Notion lazy-fetch 에서 URL cap 초과는 `skipped_by_cap`, explicit URL 실패는 `fetch_failed`, keyword 결과 없음은 `fetch_empty` 로 `source_status` marker chunk 를 남긴다. `/memory list` 는 `ok/stale/fetch_failed/skipped_by_cap` 상태 컬럼을 표시하고, `/memory show --json` 은 계산된 `source_status` 를 반환한다. `events` 테이블에 `noise INTEGER DEFAULT 0` 을 추가하고, `UserPromptSubmit` 에서 짧은 backchannel prompt 를 `noise=1` 로 표식한다. `/memory profile` 은 `IMPRINT_PROFILE=1` 로 누적된 `profile.jsonl` 의 stage 별 p50/p95/max latency 와 payload bytes 를 요약한다.
+
+**왜:** 외부 문서 기반 RAG는 “무엇을 못 가져왔는지”, “지금 보는 기억이 낡았는지”가 보여야 사용자가 답변 근거를 신뢰할 수 있다. 자동 refresh 는 트래픽과 stale 판단 정책이 필요하므로 보류하고, 먼저 관찰 가능한 상태 marker 를 남긴다. Noise turn 은 삭제하지 않고 표식만 붙여 raw 보존 철학을 유지하면서 나중에 감쇠/삭제 정책을 측정 기반으로 결정할 수 있게 한다. Latency/threshold/daemon 분리는 추정으로 고치기보다 `/memory profile` 로 1주 데이터를 본 뒤 판단한다.
+
+**남은 점:** `source_status` marker 가 너무 많이 쌓이면 TTL 또는 dedupe 정책을 추가한다. `events.noise` 는 user_message 에만 붙이며 assistant response 중요도 평가는 보류한다. `/memory profile` 은 요약만 제공하고 자동 튜닝은 하지 않는다.
+
 ## 2026-05-16 — RAG 기본 기능 1차 안정화: redaction, hook loop, 읽기 경로, 검색 fixture
 
 **무엇:** RAG 기본 동작 안정화 우선순위 1~4를 1차 적용. `user-prompt-submit.sh` 는 user prompt를 `events`에 저장하기 전 redaction 하고, lazy-fetch/prefill 입력도 redacted text를 사용한다. `stop.sh` 는 마지막 assistant 응답을 `events.llm_response`에 저장하기 전 redaction 하고, response extract worker에도 redacted text를 넘긴다. `ingestion.py` 는 external source chunk/text/metadata 와 extracted response chunk를 `memory_chunks`에 INSERT 하기 직전 Python 쪽 redaction을 한 번 더 적용한다. `/memory remember` 도 secret-shaped text를 기본 redaction 하며, default 룰셋에 fine-grained GitHub PAT, bearer/authorization, password assignment, 주민등록번호, card-like 패턴을 추가했다. 테스트에는 `TC-11 Hook memory loop + redaction`, `TC-12 Memory search/list/inject fixture` 를 추가해 자동 hook 루프와 기본 `/memory` 검색 경로를 고정했다.
