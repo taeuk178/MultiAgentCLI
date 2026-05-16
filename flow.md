@@ -224,6 +224,23 @@ flowchart TB
 
 confirmed contradiction 에 연결된 chunk 는 BOOST 단계에서 강하게 감점합니다. candidate contradiction 은 약하게 감점하고, routed output 의 conflict 섹션은 기존처럼 유지합니다.
 
+## 운영 정책 수치
+
+자동 prefill gate 는 결정적 rule 기반입니다. `noise=1`, 짧은 backchannel, 단순 확인/감사/커밋 요청은 durable query search 를 생략하고, `어떻게/왜/어디/동작/정리/찾아줘` 계열 표현이나 UI/code/source 키워드가 있으면 durable/external memory 검색을 엽니다. gate 결과는 working chunk metadata 의 `need_retrieval`, `retrieval_reason` 과 `IMPRINT_PROFILE=1` 의 `cmd_prefill` record 에 남습니다.
+
+| 정책 | 현재 값 | 의미 |
+|---|---:|---|
+| working TTL | `IMPRINT_WORKING_TTL_HOURS=24` | working raw_turn 보관 시간 |
+| working cap | `IMPRINT_WORKING_MAX_PER_SESSION=20` | session 별 working 최신 row 제한 |
+| working overlay | `WORKING_OVERLAY_LIMIT=4`, score `0.12` | `/retrieve` clue soft union |
+| MEMFB top1 threshold | `LOW_CONFIDENCE_TOP1=0.13` | 이보다 낮으면 fallback open |
+| rerank 후보 수 | `RG_MIN_CANDIDATES=10` | 이보다 적으면 rerank skip |
+| rerank top1 threshold | `RG_TOP1_THRESHOLD=0.85` | top1 이 높으면 rerank skip |
+| confirmed contradiction | `-1.0` | BOOST 단계 강한 penalty |
+| candidate contradiction | `-0.20` | BOOST 단계 약한 penalty |
+
+`retrieve_json` / `routed_json` 은 `trace.query_surfaces`, `fallback_reasons`, `rerank_gate_reason` 과 candidate 별 `lane`, `evidence_level`, `grounded`, `source_uri`, `text_hash`, `penalties` 를 노출합니다. 이 값은 context 품질 회고와 gate/MEMFB/rerank threshold 튜닝에 사용합니다.
+
 ## latency budget
 
 UPS hook 자동 경로는 `LOG → ROUTE → PREFILL → CTX0` 만 실행해 < 50 ms 를 목표로 합니다. 아래 budget 은 사용자가 `/retrieve` 를 명시 호출했을 때 기준입니다.

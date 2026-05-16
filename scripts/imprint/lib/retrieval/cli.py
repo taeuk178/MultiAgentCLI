@@ -29,6 +29,40 @@ from .scope import classify
 from .version import find_supersede_candidates
 
 
+def _candidate_json(c):
+    return {
+        "chunk_id": c.chunk_id,
+        "document_id": c.document_id,
+        "section_path": c.section_path,
+        "source_type": c.source_type,
+        "source_updated_at": c.source_updated_at,
+        "is_current": bool(c.is_current),
+        "raw_chunk_type": c.raw_chunk_type,
+        "normalized_chunk_type": c.normalized_chunk_type,
+        "rrf_score": round(c.rrf_score, 6),
+        "boost_score": round(c.boost_score, 6),
+        "final_score": round(c.final_score, 6),
+        "matched_entities": c.matched_entities,
+        "lane": c.lane,
+        "evidence_level": c.evidence_level,
+        "grounded": c.grounded,
+        "source_uri": c.source_uri,
+        "text_hash": c.text_hash,
+        "penalties": c.penalties,
+        "chunk_text": c.chunk_text,
+    }
+
+
+def _retrieval_trace_json(result):
+    return {
+        "query_surfaces": result.query_surfaces,
+        "fallback_triggered": result.fallback_triggered,
+        "fallback_reasons": result.fallback_reasons,
+        "low_confidence_reasons": result.low_confidence_reasons,
+        "rerank_gate_reason": result.rerank_gate_reason,
+    }
+
+
 def cmd_retrieve(argv: list[str]) -> int:
     if len(argv) < 2:
         print("usage: retrieve <project_id> <query> [top_k]", file=sys.stderr)
@@ -57,24 +91,8 @@ def cmd_retrieve_json(argv: list[str]) -> int:
         "rerank_used": result.rerank_used,
         "rerank_timeout": result.rerank_timeout,
         "embedding_used": result.embedding_used,
-        "candidates": [
-            {
-                "chunk_id": c.chunk_id,
-                "document_id": c.document_id,
-                "section_path": c.section_path,
-                "source_type": c.source_type,
-                "source_updated_at": c.source_updated_at,
-                "is_current": bool(c.is_current),
-                "raw_chunk_type": c.raw_chunk_type,
-                "normalized_chunk_type": c.normalized_chunk_type,
-                "rrf_score": round(c.rrf_score, 6),
-                "boost_score": round(c.boost_score, 6),
-                "final_score": round(c.final_score, 6),
-                "matched_entities": c.matched_entities,
-                "chunk_text": c.chunk_text,
-            }
-            for c in result.candidates
-        ],
+        "trace": _retrieval_trace_json(result),
+        "candidates": [_candidate_json(c) for c in result.candidates],
     }
     print(json.dumps(out, ensure_ascii=False))
     return 0
@@ -146,14 +164,9 @@ def cmd_routed_json(argv: list[str]) -> int:
             } for s in result.summaries
         ],
         "chunks": [
-            {
-                "chunk_id": c.chunk_id, "section_path": c.section_path,
-                "source_type": c.source_type, "is_current": bool(c.is_current),
-                "final_score": round(c.final_score, 6),
-                "matched_entities": c.matched_entities,
-                "chunk_text": c.chunk_text,
-            } for c in result.chunks
+            _candidate_json(c) for c in result.chunks
         ],
+        "trace": result.trace,
         "ground_chunks": result.ground_chunks,
         "contradictions": result.contradictions,
     }

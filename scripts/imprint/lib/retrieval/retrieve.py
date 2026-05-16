@@ -75,6 +75,12 @@ class RetrievalCandidate:
     boost_score: float = 0.0
     final_score: float = 0.0
     matched_entities: list[str] = field(default_factory=list)
+    lane: str | None = None
+    evidence_level: str | None = None
+    grounded: bool | None = None
+    source_uri: str | None = None
+    text_hash: str | None = None
+    penalties: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -86,6 +92,11 @@ class RetrievalResult:
     rerank_used: bool = False
     rerank_timeout: bool = False
     embedding_used: bool = False
+    query_surfaces: list[dict[str, str]] = field(default_factory=list)
+    fallback_triggered: bool = False
+    fallback_reasons: list[str] = field(default_factory=list)
+    low_confidence_reasons: list[str] = field(default_factory=list)
+    rerank_gate_reason: str = "not_evaluated"
 
 
 _TOKEN_RE = re.compile(r"[가-힣A-Za-z0-9]+")
@@ -152,24 +163,60 @@ def _contradiction_penalty_ids(
     return confirmed, candidate
 
 
-def _needs_memory_fallback(
+def _memory_fallback_reasons(
     ordered: list[RetrievalCandidate],
     resolved_terms: set[str],
-) -> bool:
+) -> list[str]:
+    reasons: list[str] = []
     if not ordered:
-        return True
+        return ["no_candidates"]
     if ordered[0].final_score < LOW_CONFIDENCE_TOP1:
-        return True
+        reasons.append("top1_below_threshold")
     if ordered and all(c.source_type == "working" for c in ordered[: min(3, len(ordered))]):
-        return True
+        reasons.append("working_only")
     if resolved_terms:
         top = ordered[: min(3, len(ordered))]
         if top and not any(
             any(term and term in normalize_alias(c.retrieval_text) for term in resolved_terms)
             for c in top
         ):
-            return True
-    return False
+            reasons.append("entity_mismatch")
+    return reasons
+
+
+def _needs_memory_fallback(
+    ordered: list[RetrievalCandidate],
+    resolved_terms: set[str],
+) -> bool:
+    return bool(_memory_fallback_reasons(ordered, resolved_terms))
+
+
+def _candidate_lane(cand: RetrievalCandidate) -> str:
+    if cand.source_type == "working":
+        return "current_turn_clues"
+    if cand.evidence_level == "raw_source" or cand.source_type in {"slack", "notion", "spec", "message", "thread"}:
+        return "external_fetched_context"
+    return "durable_evidence"
+
+
+def _dedupe_candidates(candidates: list[RetrievalCandidate]) -> list[RetrievalCandidate]:
+    """동일 source_uri/text_hash 후보가 반복되면 가장 높은 점수 후보만 남긴다."""
+    by_key: dict[tuple[str, str], RetrievalCandidate] = {}
+    passthrough: list[RetrievalCandidate] = []
+    for cand in candidates:
+        key: tuple[str, str] | None = None
+        if cand.source_uri:
+            key = ("source_uri", cand.source_uri)
+        elif cand.text_hash:
+            key = ("text_hash", cand.text_hash)
+        if key is None:
+            passthrough.append(cand)
+            continue
+        prev = by_key.get(key)
+        if prev is None or cand.final_score > prev.final_score:
+            by_key[key] = cand
+    merged = passthrough + list(by_key.values())
+    return sorted(merged, key=lambda c: -c.final_score)
 
 
 def _build_fts_query(query: str) -> str | None:
@@ -348,6 +395,10 @@ def _memory_chunks_fallback_search(
             metadata = {}
         source_type = metadata.get("source") or "memory"
         section_path = metadata.get("section_title") or metadata.get("section_path")
+        evidence_level = metadata.get("evidence_level")
+        source_uri = metadata.get("source_uri") or metadata.get("url")
+        text_hash = metadata.get("text_hash")
+        grounded = metadata.get("grounded")
         hits = 0
         if tokens:
             haystack = (row["text"] or "").lower()
@@ -375,8 +426,13 @@ def _memory_chunks_fallback_search(
                 rrf_score=rrf_score,
                 boost_score=boost,
                 final_score=rrf_score + boost,
+                evidence_level=str(evidence_level) if evidence_level else None,
+                grounded=bool(grounded) if grounded is not None else None,
+                source_uri=str(source_uri) if source_uri else None,
+                text_hash=str(text_hash) if text_hash else None,
             )
         )
+        candidates[-1].lane = _candidate_lane(candidates[-1])
     return sorted(candidates, key=lambda c: -c.final_score)
 
 
@@ -461,6 +517,11 @@ def _working_memory_overlay(
                 rrf_score=WORKING_OVERLAY_SCORE,
                 boost_score=0.0,
                 final_score=WORKING_OVERLAY_SCORE,
+                lane="current_turn_clues",
+                evidence_level=md.get("evidence_level") or "raw_turn",
+                grounded=bool(md.get("grounded")) if md.get("grounded") is not None else False,
+                source_uri=md.get("source_uri") or md.get("url"),
+                text_hash=md.get("text_hash"),
             )
         )
     return out
@@ -494,7 +555,7 @@ def _vector_search(
 
 
 def _row_to_candidate(row: sqlite3.Row) -> RetrievalCandidate:
-    return RetrievalCandidate(
+    cand = RetrievalCandidate(
         chunk_id=row["id"],
         document_id=row["document_id"],
         retrieval_text=row["retrieval_text"],
@@ -506,6 +567,10 @@ def _row_to_candidate(row: sqlite3.Row) -> RetrievalCandidate:
         raw_chunk_type=row["raw_chunk_type"],
         normalized_chunk_type=row["normalized_chunk_type"],
     )
+    cand.evidence_level = "raw_source" if cand.source_type in {"slack", "notion"} else None
+    cand.grounded = True if cand.evidence_level == "raw_source" else None
+    cand.lane = _candidate_lane(cand)
+    return cand
 
 
 def _is_recent(source_updated_at: str | None) -> bool:
@@ -535,6 +600,11 @@ def retrieve(
 
         conn = db_connect()
         try:
+            surfaces: list[tuple[str, str]] = []
+            fallback_reasons: list[str] = []
+            fallback_triggered = False
+            low_confidence_reasons: list[str] = []
+            rerank_gate_reason = "not_evaluated"
             with Span("RES"):
                 resolved = resolve_in_query(project_id, query, conn=conn)
                 expanded = normalized
@@ -624,14 +694,18 @@ def retrieve(
                         boost += BOOST_RECENT
                     if cand.chunk_id in confirmed_penalty:
                         boost += BOOST_CONTRADICTION_CONFIRMED
+                        cand.penalties.append("confirmed_contradiction")
                     elif cand.chunk_id in candidate_penalty:
                         boost += BOOST_CONTRADICTION_CANDIDATE
+                        cand.penalties.append("candidate_contradiction")
                     cand.boost_score = boost
                     cand.final_score = cand.rrf_score + boost
-                ordered = sorted(merged.values(), key=lambda c: -c.final_score)[
-                    :FUSION_CANDIDATES
-                ]
-                if _needs_memory_fallback(ordered, resolved_terms):
+                    cand.lane = cand.lane or _candidate_lane(cand)
+                ordered = _dedupe_candidates(list(merged.values()))[:FUSION_CANDIDATES]
+                low_confidence_reasons = _memory_fallback_reasons(ordered, resolved_terms)
+                if low_confidence_reasons:
+                    fallback_triggered = True
+                    fallback_reasons = low_confidence_reasons[:]
                     with Span("MEMFB"):
                         fallback = _memory_chunks_fallback_search(
                             conn, project_id, query, expanded, FUSION_CANDIDATES,
@@ -639,14 +713,20 @@ def retrieve(
                         by_id = {c.chunk_id: c for c in ordered}
                         for cand in fallback:
                             by_id.setdefault(cand.chunk_id, cand)
-                        ordered = sorted(by_id.values(), key=lambda c: -c.final_score)[
-                            :FUSION_CANDIDATES
-                        ]
+                        ordered = _dedupe_candidates(list(by_id.values()))[:FUSION_CANDIDATES]
 
             # RG
             rerank_used = False
             rerank_timeout = False
             top1_score = ordered[0].final_score if ordered else 0.0
+            if len(ordered) < RG_MIN_CANDIDATES:
+                rerank_gate_reason = "too_few_candidates"
+            elif top1_score >= RG_TOP1_THRESHOLD:
+                rerank_gate_reason = "top1_confident"
+            elif not rerank_mod.is_available():
+                rerank_gate_reason = "rerank_unavailable"
+            else:
+                rerank_gate_reason = "eligible"
             rg_pass = (
                 len(ordered) >= RG_MIN_CANDIDATES
                 and top1_score < RG_TOP1_THRESHOLD
@@ -664,6 +744,7 @@ def retrieve(
                         rerank_timeout = True
                     reranked_top = [ordered[i] for i in new_order]
                     ordered = reranked_top + ordered[len(rerank_input) :]
+                    rerank_gate_reason = "used_timeout" if rerank_timeout else "used"
 
             # CTX (top-K 자르기 — assembly 는 별도 모듈)
             with Span("CTX"):
@@ -678,6 +759,10 @@ def retrieve(
             candidates=len(final),
             embedding=embedding_used,
             rerank=rerank_used,
+            surfaces=len(surfaces),
+            fallback=fallback_triggered,
+            fallback_reasons=",".join(fallback_reasons),
+            rerank_gate_reason=rerank_gate_reason,
         )
         return RetrievalResult(
             query=query,
@@ -687,4 +772,9 @@ def retrieve(
             rerank_used=rerank_used,
             rerank_timeout=rerank_timeout,
             embedding_used=embedding_used,
+            query_surfaces=[{"kind": kind, "text": text} for kind, text in surfaces],
+            fallback_triggered=fallback_triggered,
+            fallback_reasons=fallback_reasons,
+            low_confidence_reasons=low_confidence_reasons,
+            rerank_gate_reason=rerank_gate_reason,
         )

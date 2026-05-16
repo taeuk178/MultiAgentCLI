@@ -58,6 +58,7 @@ class RoutedResult:
     chunks: list[RetrievalCandidate] = field(default_factory=list)
     ground_chunks: list[dict] = field(default_factory=list)
     contradictions: list[dict] = field(default_factory=list)
+    trace: dict[str, Any] = field(default_factory=dict)
 
 
 def _build_fts_query(query: str) -> str | None:
@@ -268,6 +269,13 @@ def routed_retrieve(query: str, project_id: str) -> RoutedResult:
                 resolved_entities=resolved_entities,
                 chunks=base.candidates,
                 contradictions=contradictions,
+                trace={
+                    "query_surfaces": base.query_surfaces,
+                    "fallback_triggered": base.fallback_triggered,
+                    "fallback_reasons": base.fallback_reasons,
+                    "low_confidence_reasons": base.low_confidence_reasons,
+                    "rerank_gate_reason": base.rerank_gate_reason,
+                },
             )
 
         # feature / global 은 summary retrieval 동반.
@@ -295,6 +303,13 @@ def routed_retrieve(query: str, project_id: str) -> RoutedResult:
                     chunks=base.candidates,
                     ground_chunks=ground,
                     contradictions=contradictions,
+                    trace={
+                        "query_surfaces": base.query_surfaces,
+                        "fallback_triggered": base.fallback_triggered,
+                        "fallback_reasons": base.fallback_reasons,
+                        "low_confidence_reasons": base.low_confidence_reasons,
+                        "rerank_gate_reason": base.rerank_gate_reason,
+                    },
                 )
 
             # global
@@ -329,6 +344,13 @@ def routed_retrieve(query: str, project_id: str) -> RoutedResult:
                 chunks=base.candidates,
                 ground_chunks=ground,
                 contradictions=contradictions,
+                trace={
+                    "query_surfaces": base.query_surfaces,
+                    "fallback_triggered": base.fallback_triggered,
+                    "fallback_reasons": base.fallback_reasons,
+                    "low_confidence_reasons": base.low_confidence_reasons,
+                    "rerank_gate_reason": base.rerank_gate_reason,
+                },
             )
         finally:
             conn.close()

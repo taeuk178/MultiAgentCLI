@@ -132,9 +132,14 @@ def make_fake_claude(home: str) -> str:
     path.write_text(
         f"""#!/bin/sh
 joined="$*"
+stdin="$(cat)"
+joined="$joined $stdin"
 case "$joined" in
   *"Extract durable knowledge chunks"*)
     printf '%s\\n' '[{{"chunk_type":"decision","text":"A 버튼 클릭은 {raw_token} 없이 테스트 모드를 시작합니다.","keywords":["A 버튼","{raw_token}"]}}]'
+    ;;
+  *"contradiction judge"*)
+    printf '%s\\n' '{{"verdict":"contradiction","score":0.95,"reason":"새 결정이 기존 즉시 진입 결정을 대체합니다."}}'
     ;;
   *"Return STRICT JSON with EXACTLY these keys"*)
     printf '%s\\n' '{{"ambiguity_score":0.1,"keywords":["A 버튼","클릭","button click"],"refined_prompt":null}}'
@@ -337,9 +342,10 @@ C 슬롯 본문 v2 (변경됨) 입니다.
 
 
 def tc_08_contradiction_llm(env: dict, home: str, case: CaseResult) -> None:
-    """LLM judge 활성. claude CLI 호출이 11~28s 소요."""
+    """LLM judge 활성 경로를 fake claude 로 결정적으로 검증."""
     env_llm = dict(env)
     env_llm.pop("IMPRINT_DISABLE_LLM_JUDGE", None)
+    env_llm["IMPRINT_CLAUDE_BIN"] = make_fake_claude(home)
 
     code = ("import sys; sys.path.insert(0, %r)\n"
             "from retrieval.entity import upsert_entity\n"
@@ -1102,6 +1108,104 @@ with db() as conn:
         case.detail += f" prov_err={err_prov[:120]}"
 
 
+def tc_17_observability_dedup_status(env: dict, home: str, case: CaseResult) -> None:
+    """retrieve trace JSON + text_hash dedup + /memory status."""
+    env_p = dict(env)
+    env_p["IMPRINT_PROFILE"] = "1"
+    code = """
+import sys; sys.path.insert(0, %r)
+from ingestion import db, insert_external_chunk, insert_extracted_chunk
+from ingestion import now_iso
+with db() as conn:
+    conn.execute(
+        "INSERT OR REPLACE INTO events "
+        "(id, project_id, conversation_id, source, kind, text_clean, metadata_json, noise, created_at) "
+        "VALUES ('tc17-event', %r, NULL, 'test', 'llm_response', 'assistant', '{}', 0, ?)",
+        (now_iso(),),
+    )
+    insert_external_chunk(conn, %r, 'spec', '관측 원문 근거', {'source':'notion','url':'https://notion.so/tc17'})
+    insert_external_chunk(conn, %r, 'spec', '관측 원문 근거', {'source':'notion','url':'https://notion.so/tc17'})
+    insert_extracted_chunk(conn, %r, 'tc17-event', 'decision', '관측 플래그는 fallback memory에서 확인합니다.', ['관측'])
+    insert_extracted_chunk(conn, %r, 'tc17-event', 'decision', '관측 플래그는 fallback memory에서 확인합니다.', ['관측'])
+    conn.commit()
+""" % (str(LIB_DIR), PROJECT_ID, PROJECT_ID, PROJECT_ID, PROJECT_ID, PROJECT_ID)
+    rc_setup, _, err_setup = run_python(env_p, code)
+
+    conn = sqlite3.connect(str(Path(home) / "app.sqlite"))
+    try:
+        external_count = conn.execute(
+            """
+            SELECT COUNT(*) FROM memory_chunks
+            WHERE project_id = ?
+              AND json_extract(metadata_json, '$.source_uri') = 'https://notion.so/tc17'
+            """,
+            (PROJECT_ID,),
+        ).fetchone()[0]
+        extracted_count = conn.execute(
+            """
+            SELECT COUNT(*) FROM memory_chunks
+            WHERE project_id = ? AND source_event_id = 'tc17-event'
+            """,
+            (PROJECT_ID,),
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    plain = _retrieve_plain_json(env_p, "관측 플래그 알려줘")
+    routed = _retrieve_json(env_p, "관측 플래그 알려줘")
+    trace = plain.get("trace") or {}
+    candidates = plain.get("candidates") or []
+    assistant_candidate = next(
+        (c for c in candidates if c.get("evidence_level") == "assistant_extracted"),
+        {},
+    )
+    routed_trace = routed.get("trace") or {}
+
+    rc_status, status_out, status_err = run_cmd(
+        env_p, ["bash", "scripts/imprint/memory.sh", "status", "--json"],
+    )
+    try:
+        status_json = json.loads(status_out) if status_out else {}
+    except json.JSONDecodeError:
+        status_json = {}
+
+    profile_path = Path(home) / "profile.jsonl"
+    profile_text = profile_path.read_text(encoding="utf-8") if profile_path.exists() else ""
+
+    checks = {
+        "dedup": rc_setup == 0 and external_count == 1 and extracted_count == 1,
+        "trace": (
+            bool(trace.get("query_surfaces"))
+            and trace.get("fallback_triggered") is True
+            and bool(trace.get("fallback_reasons"))
+            and bool(trace.get("rerank_gate_reason"))
+        ),
+        "candidate_meta": (
+            assistant_candidate.get("lane") == "durable_evidence"
+            and assistant_candidate.get("text_hash")
+            and isinstance(assistant_candidate.get("penalties"), list)
+        ),
+        "routed_trace": bool(routed_trace.get("query_surfaces")),
+        "status": rc_status == 0 and (status_json.get("db") or {}).get("ok") is True,
+        "profile": "retrieve_done" in profile_text,
+    }
+    case.metrics = checks | {
+        "external_count": external_count,
+        "extracted_count": extracted_count,
+        "fallback_reasons": trace.get("fallback_reasons"),
+        "status_rc": rc_status,
+    }
+    case.passed = all(checks.values())
+    case.detail = (
+        f"dedup={checks['dedup']} trace={checks['trace']} "
+        f"candidate_meta={checks['candidate_meta']} status={checks['status']}"
+    )
+    if not case.passed:
+        extra = err_setup or status_err or plain.get("_error") or routed.get("_error")
+        if extra:
+            case.detail += f" err={str(extra)[:160]}"
+
+
 # -----------------------------------------------------------------------------
 # 러너
 # -----------------------------------------------------------------------------
@@ -1123,6 +1227,7 @@ CASES: list[tuple[str, str, callable]] = [
     ("TC-14", "Retrieve memory_chunks fallback", tc_14_retrieve_memory_fallback),
     ("TC-15", "First-turn working overlay", tc_15_first_turn_working_overlay),
     ("TC-16", "Memory lane policy", tc_16_memory_lane_policy),
+    ("TC-17", "Observability dedup status", tc_17_observability_dedup_status),
 ]
 
 

@@ -22,6 +22,7 @@ imprint memory <subcommand> [args]
   inject <id>                Print a chunk's text for context injection
   show <id> [--json]         Pretty-print a chunk's text + metadata (debug)
   stats [--all] [--json]     Memory 분포·통계 요약(현 프로젝트 또는 전 프로젝트)
+  status [--json]            DB/log/profile 기반 hook health 진단 요약
   profile [--days <n>] [--json]
                               Summarize IMPRINT_PROFILE=1 latency/payload data
   pin <id>                   Mark chunk as pinned (always prefilled)
@@ -667,6 +668,135 @@ else:
 PY
 }
 
+cmd_status() {
+  local fmt="pretty"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --json) fmt="json"; shift ;;
+      *)      shift ;;
+    esac
+  done
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "python3 not found in PATH" >&2
+    exit 1
+  fi
+  local pid; pid=$(project_id)
+  IMPRINT_HOME="$IMPRINT_HOME" \
+  IMPRINT_DB="$IMPRINT_DB" \
+  STATUS_PROJECT_ID="$pid" \
+  STATUS_FMT="$fmt" \
+  IMPRINT_WORKING_TTL_HOURS="${IMPRINT_WORKING_TTL_HOURS:-24}" \
+  IMPRINT_WORKING_MAX_PER_SESSION="${IMPRINT_WORKING_MAX_PER_SESSION:-20}" \
+  python3 - <<'PY'
+import json, os, sqlite3, sys
+from collections import Counter
+from pathlib import Path
+
+home = Path(os.environ["IMPRINT_HOME"])
+db_path = Path(os.environ["IMPRINT_DB"])
+project_id = os.environ["STATUS_PROJECT_ID"]
+fmt = os.environ.get("STATUS_FMT", "pretty")
+log_path = home / "plugin.log"
+profile_path = home / "profile.jsonl"
+
+db_ok = False
+db_error = None
+memory_chunks = 0
+working_chunks = 0
+try:
+    conn = sqlite3.connect(str(db_path), timeout=2.0)
+    try:
+        conn.execute("SELECT 1").fetchone()
+        db_ok = True
+        memory_chunks = conn.execute(
+            "SELECT COUNT(*) FROM memory_chunks WHERE project_id = ?",
+            (project_id,),
+        ).fetchone()[0] or 0
+        working_chunks = conn.execute(
+            """
+            SELECT COUNT(*) FROM memory_chunks
+            WHERE project_id = ?
+              AND json_extract(metadata_json, '$.memory_tier') = 'working'
+            """,
+            (project_id,),
+        ).fetchone()[0] or 0
+    finally:
+        conn.close()
+except Exception as exc:  # noqa: BLE001 - diagnostic only
+    db_error = repr(exc)
+
+def tail_lines(path, limit=200):
+    if not path.exists():
+        return []
+    try:
+        return path.read_text(encoding="utf-8", errors="replace").splitlines()[-limit:]
+    except OSError:
+        return []
+
+log_lines = tail_lines(log_path)
+warn_error = sum(1 for line in log_lines if " WARN:" in line or " ERROR:" in line)
+last_log = log_lines[-1] if log_lines else None
+
+profile_lines = tail_lines(profile_path)
+stage_counts = Counter()
+last_profile = None
+for line in profile_lines:
+    try:
+        row = json.loads(line)
+    except json.JSONDecodeError:
+        continue
+    stage = row.get("stage") or "unknown"
+    stage_counts[stage] += 1
+    last_profile = {"ts": row.get("ts"), "stage": stage}
+
+out = {
+    "home": str(home),
+    "db": {"path": str(db_path), "ok": db_ok, "error": db_error},
+    "project_id": project_id,
+    "memory_chunks": memory_chunks,
+    "working_chunks": working_chunks,
+    "working_policy": {
+        "ttl_hours": int(os.environ.get("IMPRINT_WORKING_TTL_HOURS", "24")),
+        "max_per_session": int(os.environ.get("IMPRINT_WORKING_MAX_PER_SESSION", "20")),
+    },
+    "log": {
+        "path": str(log_path),
+        "exists": log_path.exists(),
+        "recent_warn_error": warn_error,
+        "last_line": last_log,
+    },
+    "profile": {
+        "path": str(profile_path),
+        "exists": profile_path.exists(),
+        "recent_stage_counts": dict(stage_counts.most_common(12)),
+        "last": last_profile,
+    },
+}
+
+if fmt == "json":
+    print(json.dumps(out, ensure_ascii=False, indent=2))
+    sys.exit(0)
+
+print(f"home:          {out['home']}")
+print(f"db:            {'ok' if db_ok else 'error'} ({db_path})")
+if db_error:
+    print(f"db error:      {db_error}")
+print(f"project:       {project_id}")
+print(f"chunks:        {memory_chunks} total, {working_chunks} working")
+print(f"working:       ttl={out['working_policy']['ttl_hours']}h max/session={out['working_policy']['max_per_session']}")
+print(f"log:           {'yes' if log_path.exists() else 'no'} warn/error_recent={warn_error}")
+if last_log:
+    print(f"last log:      {last_log[:160]}")
+print(f"profile:       {'yes' if profile_path.exists() else 'no'}")
+if last_profile:
+    print(f"last profile:  {last_profile['ts']} {last_profile['stage']}")
+if stage_counts:
+    print("profile stages:")
+    for stage, count in stage_counts.most_common(8):
+        print(f"  {stage:<28} {count}")
+PY
+}
+
 cmd_forget() {
   local id="${1:-}"
   if [[ -z "$id" ]]; then
@@ -700,6 +830,7 @@ main() {
     inject)   cmd_inject "$@" ;;
     show)     cmd_show "$@" ;;
     stats)    cmd_stats "$@" ;;
+    status)   cmd_status "$@" ;;
     profile)  cmd_profile "$@" ;;
     pin)      cmd_pin "$@" 1 ;;
     unpin)    cmd_pin "$@" 0 ;;

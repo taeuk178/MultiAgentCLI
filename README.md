@@ -94,6 +94,11 @@ Slack/Notion lazy-fetch 를 쓰려면 Claude Code 쪽에 해당 MCP 가 별도�
 
 fetch 실패, URL cap 초과, stale 상태는 `source_status` marker 로 남고 `/memory list/show` 에서 확인할 수 있습니다. 자동 refresh 는 하지 않으며, 필요할 때 `/memory refresh` 로 명시 갱신합니다.
 
+운영 상태는 `/memory status` 로 확인합니다. DB 접근, 최근 log/profile stage, WARN/ERROR 수,
+working TTL/max 설정을 요약합니다. retrieval 근거를 디버깅할 때는 `/retrieve --json`
+출력에서 lane, provenance, fallback/rerank trace 를 확인합니다. latency/payload 추이는
+`IMPRINT_PROFILE=1` 로 수집한 뒤 `/memory profile` 로 요약합니다.
+
 ## Memory lane
 
 자동 prefill 은 raw 질문을 근거처럼 취급하지 않도록 lane 을 나눠 출력합니다.

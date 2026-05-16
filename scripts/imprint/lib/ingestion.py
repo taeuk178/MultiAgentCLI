@@ -12,12 +12,13 @@ Design constraints:
   timeout; every JSON parse is wrapped; every failure path returns silently.
 - External-source chunks (slack/notion) bypass the events table and are
   inserted directly into memory_chunks with source_event_id NULL (D11, AC7).
-- Dedup key = metadata_json.url. If a chunk with the same url already exists
-  for this project, fetch is skipped entirely (D22, AC15).
+- Dedup key = source_uri/url + evidence_level + text_hash where possible.
+  Legacy URL/page-level dedup remains for broad external refresh avoidance.
 - All claude -p calls use --model haiku for latency + cost (D19, AC13).
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -719,6 +720,55 @@ def chunk_url_exists(conn: sqlite3.Connection, project_id: str, url: str) -> boo
     return cur.fetchone() is not None
 
 
+def stable_text_hash(text: str) -> str:
+    """chunk dedup 용 짧은 안정 hash. redaction 후 text 에 대해 계산한다."""
+    normalized = " ".join((text or "").split())
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
+
+
+def chunk_dedup_exists(
+    conn: sqlite3.Connection,
+    project_id: str,
+    *,
+    source_uri: str | None,
+    evidence_level: str | None,
+    text_hash: str,
+    source_event_id: str | None = None,
+    chunk_type: str | None = None,
+) -> bool:
+    """새 metadata text_hash 기준 dedup. 기존 row 에 hash 가 없으면 건드리지 않는다."""
+    if source_uri and evidence_level:
+        cur = conn.execute(
+            """
+            SELECT 1 FROM memory_chunks
+            WHERE project_id = ?
+              AND chunk_type != 'source_status'
+              AND json_extract(metadata_json, '$.source_uri') = ?
+              AND json_extract(metadata_json, '$.evidence_level') = ?
+              AND json_extract(metadata_json, '$.text_hash') = ?
+            LIMIT 1
+            """,
+            (project_id, source_uri, evidence_level, text_hash),
+        )
+        if cur.fetchone() is not None:
+            return True
+    if source_event_id and chunk_type:
+        cur = conn.execute(
+            """
+            SELECT 1 FROM memory_chunks
+            WHERE project_id = ?
+              AND source_event_id = ?
+              AND chunk_type = ?
+              AND json_extract(metadata_json, '$.text_hash') = ?
+            LIMIT 1
+            """,
+            (project_id, source_event_id, chunk_type, text_hash),
+        )
+        if cur.fetchone() is not None:
+            return True
+    return False
+
+
 def insert_external_chunk(
     conn: sqlite3.Connection,
     project_id: str,
@@ -736,7 +786,16 @@ def insert_external_chunk(
         metadata["source_uri"] = metadata["url"]
     metadata.setdefault("fetched_at", now_iso())
     text = redact_text(text)
+    metadata.setdefault("text_hash", stable_text_hash(text))
     metadata = redact_json_value(metadata)
+    if chunk_dedup_exists(
+        conn,
+        project_id,
+        source_uri=metadata.get("source_uri"),
+        evidence_level=metadata.get("evidence_level"),
+        text_hash=str(metadata.get("text_hash") or ""),
+    ):
+        return ""
     cid = str(uuid.uuid4())
     conn.execute(
         "INSERT INTO memory_chunks "
@@ -758,12 +817,24 @@ def insert_extracted_chunk(
     cid = str(uuid.uuid4())
     text = redact_text(text)
     keywords = [redact_text(k) for k in keywords]
+    text_hash = stable_text_hash(text)
+    if chunk_dedup_exists(
+        conn,
+        project_id,
+        source_uri=None,
+        evidence_level="assistant_extracted",
+        text_hash=text_hash,
+        source_event_id=source_event_id,
+        chunk_type=chunk_type,
+    ):
+        return ""
     md = {
         "source": "llm_response",
         "source_type": "chat",
         "evidence_level": "assistant_extracted",
         "grounded": False,
         "keywords": keywords,
+        "text_hash": text_hash,
     }
     conn.execute(
         "INSERT INTO memory_chunks "
@@ -796,6 +867,7 @@ def insert_source_status_chunk(
     if md.get("url") and not md.get("source_uri"):
         md["source_uri"] = md["url"]
     text = redact_text(text)
+    md.setdefault("text_hash", stable_text_hash(text))
     md = redact_json_value(md)
     cid = str(uuid.uuid4())
     conn.execute(
@@ -1044,6 +1116,7 @@ def insert_working_turn_chunk(
     text = prompt.strip()
     if rewrite_terms:
         text = f"{text}\nSearch surface: {' '.join(rewrite_terms)}"
+    safe_text = redact_text(text)
     metadata = {
         "memory_tier": "working",
         "memory_kind": "raw_turn",
@@ -1061,6 +1134,7 @@ def insert_working_turn_chunk(
         "query_surfaces": query_surfaces,
         "query_rewrite": " ".join(rewrite_terms),
         "keywords": prefill_keywords(prompt),
+        "text_hash": stable_text_hash(safe_text),
     }
     conn.execute(
         "INSERT INTO memory_chunks "
@@ -1070,7 +1144,7 @@ def insert_working_turn_chunk(
             cid,
             project_id,
             source_event_id,
-            redact_text(text),
+            safe_text,
             json.dumps(redact_json_value(metadata), ensure_ascii=False),
             now,
         ),
@@ -1325,8 +1399,8 @@ def lazy_fetch(
             continue
         ct = "thread" if is_slack_thread_url(url) else "message"
         for c in chunks:
-            insert_external_chunk(conn, project_id, ct, c["text"], c["metadata"])
-            inserted += 1
+            if insert_external_chunk(conn, project_id, ct, c["text"], c["metadata"]):
+                inserted += 1
 
     # 2) Notion URLs in prompt
     notion_urls = list(dict.fromkeys(NOTION_URL_RE.findall(prompt)))
@@ -1364,8 +1438,8 @@ def lazy_fetch(
             url_dedup = c["metadata"].get("url")
             if url_dedup and chunk_url_exists(conn, project_id, url_dedup):
                 continue
-            insert_external_chunk(conn, project_id, "spec", c["text"], c["metadata"])
-            inserted += 1
+            if insert_external_chunk(conn, project_id, "spec", c["text"], c["metadata"]):
+                inserted += 1
 
     # 3) Keyword mode — sources.json channels/pages
     if keywords:
@@ -1395,8 +1469,8 @@ def lazy_fetch(
                 url = c["metadata"].get("url")
                 if url and chunk_url_exists(conn, project_id, url):
                     continue
-                insert_external_chunk(conn, project_id, "message", c["text"], c["metadata"])
-                inserted += 1
+                if insert_external_chunk(conn, project_id, "message", c["text"], c["metadata"]):
+                    inserted += 1
 
         notion_cfg = (sources.get("notion") or {}) if isinstance(sources, dict) else {}
         pages = notion_cfg.get("pages") or []
@@ -1424,8 +1498,8 @@ def lazy_fetch(
                 url = c["metadata"].get("url")
                 if url and chunk_url_exists(conn, project_id, url):
                     continue
-                insert_external_chunk(conn, project_id, "spec", c["text"], c["metadata"])
-                inserted += 1
+                if insert_external_chunk(conn, project_id, "spec", c["text"], c["metadata"]):
+                    inserted += 1
 
     if inserted:
         conn.commit()
@@ -1461,6 +1535,8 @@ def cmd_prefill(argv: list[str]) -> int:
 
     t0 = time.monotonic()
     chunks: list[dict] = []
+    working_count = 0
+    durable_count = 0
     need_retrieval, retrieval_reason = retrieval_gate(prompt)
     try:
         try:
@@ -1468,12 +1544,14 @@ def cmd_prefill(argv: list[str]) -> int:
                 working = load_working_context(
                     conn, project_id, session_id, limit=WORKING_CONTEXT_LIMIT,
                 )
+                working_count = len(working)
                 durable = []
                 if need_retrieval:
                     durable = search_memory(
                         conn, project_id, prefill_keywords(prompt), prompt,
                         limit=PREFILL_CONTEXT_LIMIT,
                     )
+                durable_count = len(durable)
                 seen: set[str] = set()
                 chunks = []
                 for c in working + durable:
@@ -1493,11 +1571,19 @@ def cmd_prefill(argv: list[str]) -> int:
                       project_id=project_id,
                       dur_ms=int((time.monotonic() - t0) * 1000),
                       chunks=len(chunks),
+                      working_chunks=working_count,
+                      durable_chunks=durable_count,
+                      durable_search_skipped=not need_retrieval,
                       need_retrieval=need_retrieval,
                       retrieval_reason=retrieval_reason,
                       prompt_bytes=len(prompt))
 
     if not chunks:
+        _profile_emit("cmd_prefill.lanes",
+                      project_id=project_id,
+                      current=0, recent=0, durable=0, external=0,
+                      need_retrieval=need_retrieval,
+                      retrieval_reason=retrieval_reason)
         return 0
 
     lanes: dict[str, list[dict]] = {
@@ -1516,6 +1602,15 @@ def cmd_prefill(argv: list[str]) -> int:
         if lane == "current" and request_id and md.get("request_id") != request_id:
             lane = "recent"
         lanes[lane].append(c)
+
+    _profile_emit("cmd_prefill.lanes",
+                  project_id=project_id,
+                  current=len(lanes["current"]),
+                  recent=len(lanes["recent"]),
+                  durable=len(lanes["durable"]),
+                  external=len(lanes["external"]),
+                  need_retrieval=need_retrieval,
+                  retrieval_reason=retrieval_reason)
 
     out_lines = ["[Project memory context]"]
     if not need_retrieval:
@@ -1632,13 +1727,15 @@ def cmd_extract(argv: list[str]) -> int:
             return 0
         try:
             with db() as conn:
+                inserted_count = 0
                 for c in chunks:
-                    insert_extracted_chunk(
+                    if insert_extracted_chunk(
                         conn, project_id, source_event_id,
                         c["chunk_type"], c["text"], c["keywords"],
-                    )
+                    ):
+                        inserted_count += 1
                 conn.commit()
-            log("INFO", f"extracted {len(chunks)} chunks for project={project_id}")
+            log("INFO", f"extracted {inserted_count}/{len(chunks)} chunks for project={project_id}")
         except sqlite3.Error as exc:
             log("WARN", f"extract insert: {exc}")
         return 0
@@ -1688,8 +1785,8 @@ def cmd_refresh(argv: list[str]) -> int:
                     ct = "note"
                 if chunks:
                     for c in chunks:
-                        insert_external_chunk(conn, project_id, ct, c["text"], c["metadata"])
-                        fetched += 1
+                        if insert_external_chunk(conn, project_id, ct, c["text"], c["metadata"]):
+                            fetched += 1
                     conn.commit()
             elif spec == "source" and rest and rest[0] in ("slack", "notion"):
                 src = rest[0]
