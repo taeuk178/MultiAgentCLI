@@ -39,7 +39,7 @@ pip install -r requirements-optional.txt
 
 ## 어떻게 동작하는가
 
-매 turn마다 turn 사이클 hook 2개(`UserPromptSubmit` · `Stop`)가 **동기·비동기 두 경로**로 작동합니다(세션 진입 시점에는 별도로 `SessionStart` 가 1회 발동 — 스키마 적용 + soul.md prepend). UPS hook 의 **자동 동기 경로**는 `events.user_message` 기록 + routing 룰 매칭 + `memory_chunks` recency fallback(LIMIT 8) 만 emit 해서 < 50 ms 안에 끝납니다. LLM 호출(`claude -p haiku`)·외부 fetch·응답 chunk 추출 같은 무거운 작업은 백그라운드로 분리되며, 현재 자동 hook 경로는 결과를 `memory_chunks` 에 직접 저장합니다. **풀 하이브리드 retrieval**(`QN → RES → QEMB → HYB → RRF → BOOST → RG → RR → CTX`, routed 경로는 `SC → GROUND → CCHECK` 포함)은 hook 이 자동으로 부르지 않고, 사용자가 `/retrieve` 또는 `/retrieve --routed` 디스패처를 명시 호출했을 때만 실행됩니다.
+매 turn마다 turn 사이클 hook 2개(`UserPromptSubmit` · `Stop`)가 **동기·비동기 두 경로**로 작동합니다(세션 진입 시점에는 별도로 `SessionStart` 가 1회 발동 — 스키마 적용 + soul.md prepend). UPS hook 의 **자동 동기 경로**는 `events.user_message` 기록 + routing 룰 매칭 + `memory_chunks` recency fallback(LIMIT 8) 만 emit 해서 < 50 ms 안에 끝납니다. LLM 호출(`claude -p haiku`)·외부 fetch·응답 chunk 추출 같은 무거운 작업은 백그라운드로 분리되며, 현재 자동 hook 경로는 결과를 `memory_chunks` 에 직접 저장합니다. **풀 하이브리드 retrieval**(`QN → RES → QEMB → HYB → RRF → BOOST → MEMFB → RG → RR → CTX`, routed 경로는 `SC → GROUND → CCHECK` 포함)은 hook 이 자동으로 부르지 않고, 사용자가 `/retrieve` 또는 `/retrieve --routed` 디스패처를 명시 호출했을 때만 실행됩니다.
 
 ### 전체 플로우
 
@@ -74,9 +74,9 @@ pip install -r requirements-optional.txt
 [/retrieve 명시 호출 경로]
   1. routed: entity resolve 선행 → scope classifier(local/feature/global)
   2. local: chunk retrieval 경로 호출
-     - QN → RES → QEMB → HYB(chunks_v2 FTS5 + vector, 미가용 시 FTS/짧은 토큰 fallback) → RRF → BOOST → RG/RR → CTX
-     - 후보가 0개면 memory_chunks read-only fallback → CTX
-  3. feature/global: summaries 검색 + chunk retrieval + summary_links grounding
+     - QN → RES → QEMB → HYB(chunks_v2 FTS5 + vector, 미가용 시 FTS/짧은 토큰 fallback) → RRF → BOOST → MEMFB → RG/RR → CTX
+     - MEMFB: 후보가 0개면 memory_chunks read-only fallback
+  3. feature/global: summaries 검색 + chunk retrieval(동일 MEMFB 포함) + summary_links grounding
   4. resolved entity 의 confirmed contradiction 조회
   5. 구조화 context block 또는 JSON 반환
 ```
@@ -159,21 +159,23 @@ flowchart TB
     RRF --> BOOST["is_current + recency<br/>+ entity coverage boost<br/>(sync)"]
     BOOST --> MEMFB{"후보 없음?"}
     MEMFB -->|yes| MCHUNK["memory_chunks read-only fallback<br/>(sync)"]
-    MCHUNK --> CTX
+    MCHUNK --> CANDCTX["retrieval candidates<br/>(sync)"]
     MEMFB -->|no| RG{"rerank 조건"}
     RG -->|yes| RR["cross-encoder rerank<br/>(sync/daemon-ready)"]
-    RG -->|no| CTX["context block / JSON<br/>(sync)"]
-    RR --> CTX
+    RG -->|no| CANDCTX
+    RR --> CANDCTX
+    CANDCTX -->|chunk-only| CTX["context block / JSON<br/>(sync)"]
 
     ROUTED -->|yes| RRES["entity resolve 선행<br/>(sync)"]
     RRES --> SCOPE["scope classifier<br/>local/feature/global<br/>(sync)"]
     SCOPE -->|local| QN
     SCOPE -->|feature| FSUM["feature summaries 검색<br/>(sync/daemon-ready)"]
     SCOPE -->|global| GSUM["project/document/feature summaries 검색<br/>(sync/daemon-ready)"]
-    FSUM --> FCHUNK["chunk retrieval<br/>top feature chunks"]
-    GSUM --> GCHUNK["chunk retrieval<br/>key chunks"]
+    FSUM --> FCHUNK["chunk retrieval<br/>top feature chunks<br/>empty → memory fallback"]
+    GSUM --> GCHUNK["chunk retrieval<br/>key chunks<br/>empty → memory fallback"]
     FCHUNK --> GROUND["summary_links grounding<br/>(sync)"]
     GCHUNK --> GROUND
+    CANDCTX -.routed local.-> CCHECK["confirmed contradiction 조회<br/>(sync)"]
     GROUND --> CCHECK["confirmed contradiction 조회<br/>(sync)"]
     CCHECK --> CTX
 
@@ -200,7 +202,7 @@ flowchart TB
 | 라벨 | 의미 | 노드 |
 |---|---|---|
 | `(sync)` SessionStart / UPS / Stop | 세션 시작과 매 turn hook 동기 경로 | `SCHEMA` · `SEED` · `SOUL` · `LOG` · `ROUTE` · `PREFILL` · `CTX0` · `LOG2` |
-| `(sync)` /retrieve 진입 | `/retrieve` 디스패처 동기 경로 | `QN` · `RES` · `RRES` · `SCOPE` · `RRF` · `BOOST` · `MEMFB` · `MCHUNK` · `GROUND` · `CCHECK` · `CTX` |
+| `(sync)` /retrieve 진입 | `/retrieve` 디스패처 동기 경로 | `QN` · `RES` · `RRES` · `SCOPE` · `RRF` · `BOOST` · `MEMFB` · `MCHUNK` · `CANDCTX` · `GROUND` · `CCHECK` · `CTX` |
 | `(sync/daemon-ready)` | `/retrieve` 동기 경로 중 무거운 후보 — daemon 분리 1순위 | `QEMB` · `HYB` · `FSUM` · `GSUM` · `RR` |
 | `(async)` 자동 hook 백그라운드 | 사용자 turn 차단 없이 `memory_chunks` 에 직접 저장 | `LF` · `ANL` · `FETCH` · `SRCSEARCH` · `SPLIT_EXT` · `EXTRACT` · `CLASSIFY` |
 | `ingest_queue` | retrieval v2 문서 ingestion 뒤 후속 작업을 순차 drain | `ENQ` · `DRAIN` · `J4` · `J5` · `J6` |
