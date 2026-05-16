@@ -31,8 +31,13 @@ if command -v sqlite3 >/dev/null 2>&1; then
   sqlite3 "$IMPRINT_DB" < "$SCRIPT_DIR/lib/schema.sql" >/dev/null 2>>"$IMPRINT_LOG" \
     || log_error "schema apply failed"
   # Existing DB migration: CREATE TABLE IF NOT EXISTS won't add new columns.
-  db_exec "ALTER TABLE events ADD COLUMN noise INTEGER NOT NULL DEFAULT 0;" \
-    >/dev/null 2>>"$IMPRINT_LOG" || true
+  # Check first so new DBs do not emit duplicate-column noise into plugin.log.
+  HAS_NOISE_COL=$(db_exec "SELECT COUNT(*) FROM pragma_table_info('events') WHERE name = 'noise';" \
+    2>>"$IMPRINT_LOG" || echo 0)
+  if [[ "$HAS_NOISE_COL" == "0" ]]; then
+    db_exec "ALTER TABLE events ADD COLUMN noise INTEGER NOT NULL DEFAULT 0;" \
+      >/dev/null 2>>"$IMPRINT_LOG" || true
+  fi
   db_exec "CREATE INDEX IF NOT EXISTS idx_events_project_noise ON events (project_id, noise, created_at DESC);" \
     >/dev/null 2>>"$IMPRINT_LOG" || true
 
