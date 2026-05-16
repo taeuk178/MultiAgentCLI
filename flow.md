@@ -206,7 +206,7 @@ flowchart TB
 | Notion 페이지 | H1/H2/H3 section chunk 로 저장 |
 | Slack thread | 관련 reply selection + summary |
 | Slack 단일 메시지 | 1 chunk |
-| dedup | `metadata_json.url` 기준 |
+| dedup | `source_uri/url + evidence_level + text_hash` 기준, 기존 page URL cache hit 도 유지 |
 | 갱신 | TTL 무한, `/memory refresh` 명시 명령 |
 | URL cap | source 별 turn 당 3개, 초과분은 `source_status=skipped_by_cap` |
 | 실패 표시 | `fetch_failed`, `fetch_empty`, `skipped_by_cap` marker |

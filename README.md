@@ -78,6 +78,7 @@ Slack/Notion lazy-fetch 를 쓰려면 Claude Code 쪽에 해당 MCP 가 별도�
 | pin 해제 | `/memory unpin <id>` |
 | 최근/pinned/source별 목록 | `/memory list --recent`, `/memory list --pinned`, `/memory list --source notion`, `/memory list --working` |
 | 외부 source 갱신 | `/memory refresh <url>` |
+| hook/DB 상태 진단 | `/memory status --json` |
 | 느린 지점 요약 | `/memory profile --json` |
 | 문서 RAG 명시 조회 | `/retrieve --routed "<question>"` |
 
