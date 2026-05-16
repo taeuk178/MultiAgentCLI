@@ -1,8 +1,9 @@
 #!/bin/bash
 # UserPromptSubmit hook:
 #   1) log user input to events
-#   2) inject pinned + recent memory chunks (project memory context block)
-#   3) evaluate keyword routing rules from .imprint/UserPromptSubmit.md and
+#   2) write a sync working mini-chunk for first-turn visibility
+#   3) inject working + query-aware memory chunks (project memory context block)
+#   4) evaluate keyword routing rules from .imprint/UserPromptSubmit.md and
 #      prepend any matched advisories
 #
 # stdin: JSON with { "prompt": "...", "session_id": "...", ... }
@@ -32,6 +33,14 @@ try:
 except Exception:
     pass
 ' 2>>"$IMPRINT_LOG" || true)
+SESSION_ID=$(printf '%s' "$INPUT" | python3 -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    print(data.get("session_id", ""))
+except Exception:
+    pass
+' 2>>"$IMPRINT_LOG" || true)
 
 if [[ -z "${PROMPT// }" ]]; then
   exit 0
@@ -57,6 +66,11 @@ if command -v sqlite3 >/dev/null 2>&1; then
     INSERT INTO events (id, project_id, source, kind, text_clean, noise, created_at)
     VALUES ('$EVENT_ID', '$PID', 'claude_code', 'user_message', '$ESC_PROMPT', $NOISE, '$NOW');
   " 2>>"$IMPRINT_LOG" || true
+  if [[ "$NOISE" == "0" && -x "$(command -v python3)" ]]; then
+    printf '%s' "$SAFE_PROMPT" \
+      | python3 "$SCRIPT_DIR/lib/ingestion.py" mini-ingest "$PID" "$EVENT_ID" "$SESSION_ID" \
+        2>>"$IMPRINT_LOG" || true
+  fi
 else
   log_error "sqlite3 missing; user-prompt-submit DB write skipped"
   PID=""
@@ -204,7 +218,7 @@ fi
 PREFILL_OUT=""
 if [[ -n "$PID" && -x "$(command -v python3)" ]]; then
   PREFILL_OUT=$(printf '%s' "$SAFE_PROMPT" \
-    | python3 "$SCRIPT_DIR/lib/ingestion.py" prefill "$PID" 2>>"$IMPRINT_LOG" || true)
+    | python3 "$SCRIPT_DIR/lib/ingestion.py" prefill "$PID" "$SESSION_ID" 2>>"$IMPRINT_LOG" || true)
 fi
 
 # Fallback: if ingestion.py produced nothing (claude CLI missing, OAuth not
@@ -216,6 +230,7 @@ if [[ -z "${PREFILL_OUT// }" && -n "$PID" ]] && command -v sqlite3 >/dev/null 2>
     FROM memory_chunks
     WHERE project_id = '$PID'
       AND chunk_type IN ('decision', 'fix', 'todo', 'note')
+      AND coalesce(json_extract(metadata_json, '$.memory_tier'), '') != 'working'
     ORDER BY pinned DESC, created_at DESC
     LIMIT 5;
   " 2>>"$IMPRINT_LOG" || true)

@@ -26,7 +26,7 @@ imprint memory <subcommand> [args]
                               Summarize IMPRINT_PROFILE=1 latency/payload data
   pin <id>                   Mark chunk as pinned (always prefilled)
   unpin <id>                 Remove pinned status
-  list [--recent|--pinned|--type <t>|--source <slack|notion|internal>]
+  list [--recent|--pinned|--type <t>|--source <slack|notion|internal>|--working]
        [--since <YYYY-MM-DD>] [--limit <n>] [--project <path|id-prefix>]
   forget <id>                Delete a chunk
   refresh <spec>             Drop cached external chunks matching spec
@@ -80,6 +80,7 @@ try:
                 FROM memory_chunks_fts f
                 JOIN memory_chunks m ON m.rowid = f.rowid
                 WHERE f.text MATCH ? AND m.project_id = ?
+                  AND coalesce(json_extract(m.metadata_json, '$.memory_tier'), '') != 'working'
                 ORDER BY m.pinned DESC, m.created_at DESC
                 LIMIT 20;
                 """,
@@ -106,7 +107,9 @@ try:
                 f"""
                 SELECT id, chunk_type, substr(text, 1, 200), pinned, created_at
                 FROM memory_chunks
-                WHERE project_id = ? AND ({' OR '.join(clauses)})
+                WHERE project_id = ?
+                  AND coalesce(json_extract(metadata_json, '$.memory_tier'), '') != 'working'
+                  AND ({' OR '.join(clauses)})
                 ORDER BY pinned DESC, created_at DESC
                 LIMIT 20;
                 """,
@@ -188,6 +191,7 @@ cmd_list() {
   local since_filter=""
   local limit="50"
   local project_filter=""
+  local include_working=0
   local stale_days="${IMPRINT_STALE_DAYS:-14}"
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -195,6 +199,7 @@ cmd_list() {
       --pinned)  mode="pinned"; shift ;;
       --type)    type_filter="${2:-}"; shift 2 ;;
       --source)  source_filter="${2:-}"; shift 2 ;;
+      --working) include_working=1; shift ;;
       --since)   since_filter="${2:-}"; shift 2 ;;
       --limit)   limit="${2:-50}"; shift 2 ;;
       --project) project_filter="${2:-}"; shift 2 ;;
@@ -246,9 +251,18 @@ cmd_list() {
     local esc_since; esc_since=$(sql_escape "$since_filter")
     where+=" AND created_at >= '$esc_since'"
   fi
+  if [[ "$include_working" == "1" ]]; then
+    where+=" AND json_extract(metadata_json, '\$.memory_tier') = 'working'"
+  else
+    where+=" AND coalesce(json_extract(metadata_json, '\$.memory_tier'), '') != 'working'"
+  fi
   db_exec "
     SELECT id, chunk_type, pinned,
-           coalesce(json_extract(metadata_json, '\$.source'), 'internal') AS src,
+           CASE
+             WHEN json_extract(metadata_json, '\$.memory_tier') = 'working'
+               THEN 'working'
+             ELSE coalesce(json_extract(metadata_json, '\$.source'), 'internal')
+           END AS src,
            CASE
              WHEN json_extract(metadata_json, '\$.status') IS NOT NULL
                THEN json_extract(metadata_json, '\$.status')
@@ -365,7 +379,9 @@ print()
 print("Metadata:")
 if metadata:
     # Stable ordering: source/url first, then everything else alphabetically.
-    priority = ["source", "url", "channel", "author", "posted_at", "edited_at",
+    priority = ["memory_tier", "memory_kind", "session_visible", "session_id",
+                "request_id", "searchable_at", "query_rewrite",
+                "source", "url", "channel", "author", "posted_at", "edited_at",
                 "page_id", "page_title", "section_title", "last_edited_at",
                 "fetched_at", "keywords", "kind"]
     seen = set()

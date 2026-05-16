@@ -766,6 +766,160 @@ def tc_14_retrieve_memory_fallback(env: dict, home: str, case: CaseResult) -> No
     )
 
 
+def tc_15_first_turn_working_overlay(env: dict, home: str, case: CaseResult) -> None:
+    """UserPromptSubmit sync mini-chunk + prefill/retrieve working overlay."""
+    env_h = hook_env(env)
+    env_h["IMPRINT_CLAUDE_BIN"] = make_fake_claude(home)
+    rc, _, err = run_cmd(env_h, ["bash", "scripts/imprint/session-start.sh"])
+    if rc != 0:
+        case.passed = False
+        case.detail = f"session-start rc={rc} err={err[:120]}"
+        return
+
+    now = "2026-05-16T00:00:00Z"
+    conn = sqlite3.connect(str(Path(home) / "app.sqlite"))
+    try:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO memory_chunks
+              (id, project_id, source_event_id, chunk_type, text, metadata_json, created_at, pinned)
+            VALUES (?, ?, NULL, ?, ?, ?, ?, 0)
+            """,
+            (
+                "tc15-durable",
+                ROOT_PROJECT_ID,
+                "decision",
+                "A 버튼 클릭은 테스트 모드를 시작합니다.",
+                "{}",
+                now,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    ups_input = json.dumps({"prompt": "A 버튼 클릭 동작 알려줘", "session_id": "tc15"}, ensure_ascii=False)
+    rc_ups, ups_out, ups_err = run_cmd(
+        env_h, ["bash", "scripts/imprint/user-prompt-submit.sh"], input_text=ups_input,
+    )
+
+    noise_input = json.dumps({"prompt": "응", "session_id": "tc15"}, ensure_ascii=False)
+    rc_noise, _, _ = run_cmd(
+        env_h, ["bash", "scripts/imprint/user-prompt-submit.sh"], input_text=noise_input,
+    )
+
+    conn = sqlite3.connect(str(Path(home) / "app.sqlite"))
+    try:
+        working_rows = conn.execute(
+            """
+            SELECT id, chunk_type, text, metadata_json
+            FROM memory_chunks
+            WHERE project_id = ?
+              AND json_extract(metadata_json, '$.memory_tier') = 'working'
+            ORDER BY created_at
+            """,
+            (ROOT_PROJECT_ID,),
+        ).fetchall()
+        noise_working = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM memory_chunks
+            WHERE project_id = ?
+              AND json_extract(metadata_json, '$.memory_tier') = 'working'
+              AND text LIKE '%응%'
+            """,
+            (ROOT_PROJECT_ID,),
+        ).fetchone()[0]
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO documents
+              (id, project_id, source_type, source_ref, title, raw_text,
+               source_created_at, source_updated_at, created_at, updated_at, checksum)
+            VALUES (?, ?, 'notion', 'tc15-doc', 'TC15', ?, ?, ?, ?, ?, 'tc15hash')
+            """,
+            (
+                "tc15-doc",
+                ROOT_PROJECT_ID,
+                "A 버튼 클릭 문서",
+                now,
+                now,
+                now,
+                now,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO chunks_v2
+              (id, project_id, document_id, chunk_index, section_path, chunk_text,
+               retrieval_text, raw_chunk_type, normalized_chunk_type,
+               source_updated_at, valid_from, is_current, created_at)
+            VALUES (?, ?, ?, 0, 'TC15', ?, ?, 'spec', 'spec', ?, ?, 1, ?)
+            """,
+            (
+                "tc15-cv2",
+                ROOT_PROJECT_ID,
+                "tc15-doc",
+                "A 버튼 클릭 시 문서 기반 테스트 모드가 시작됩니다.",
+                "A 버튼 클릭 button click handler action onClick onTap",
+                now,
+                now,
+                now,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    env_r = dict(env)
+    env_r["IMPRINT_SESSION_ID"] = "tc15"
+    proc = subprocess.run(
+        [sys.executable, "-m", "retrieval.cli", "retrieve_json", ROOT_PROJECT_ID, "A 버튼 클릭 동작 알려줘"],
+        env=env_r, capture_output=True, text=True, cwd=str(LIB_DIR),
+    )
+    try:
+        retrieved = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        retrieved = {}
+    candidates = retrieved.get("candidates") or []
+    chunk_ids = {c.get("chunk_id") for c in candidates}
+    working_ok = False
+    rewrite_ok = False
+    if working_rows:
+        try:
+            md = json.loads(working_rows[0][3] or "{}")
+        except json.JSONDecodeError:
+            md = {}
+        working_ok = (
+            working_rows[0][1] == "raw_turn"
+            and md.get("memory_tier") == "working"
+            and md.get("memory_kind") == "raw_turn"
+            and md.get("session_visible") is True
+        )
+        rewrite_ok = "onclick" in (md.get("query_rewrite") or "")
+
+    checks = {
+        "ups": rc_ups == 0,
+        "working_chunk": working_ok,
+        "rewrite": rewrite_ok,
+        "prefill_working": "[working] A 버튼 클릭 동작 알려줘" in ups_out,
+        "prefill_durable": "테스트 모드" in ups_out,
+        "noise_no_working": rc_noise == 0 and noise_working == 0,
+        "retrieve_union_working": any(c.get("source_type") == "working" for c in candidates),
+        "retrieve_keeps_chunks_v2": "tc15-cv2" in chunk_ids,
+    }
+    case.metrics = checks | {
+        "working_rows": len(working_rows),
+        "retrieved": len(candidates),
+    }
+    case.passed = all(checks.values())
+    case.detail = (
+        f"working={len(working_rows)} prefill={checks['prefill_working']}/{checks['prefill_durable']} "
+        f"retrieve={len(candidates)} union={checks['retrieve_union_working']} cv2={checks['retrieve_keeps_chunks_v2']}"
+    )
+    if not case.passed and ups_err:
+        case.detail += f" ups_err={ups_err[:120]}"
+
+
 # -----------------------------------------------------------------------------
 # 러너
 # -----------------------------------------------------------------------------
@@ -785,6 +939,7 @@ CASES: list[tuple[str, str, callable]] = [
     ("TC-12", "Memory search/list/inject fixture", tc_12_memory_search_fixture),
     ("TC-13", "Source status + noise + profile", tc_13_source_noise_profile),
     ("TC-14", "Retrieve memory_chunks fallback", tc_14_retrieve_memory_fallback),
+    ("TC-15", "First-turn working overlay", tc_15_first_turn_working_overlay),
 ]
 
 

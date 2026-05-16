@@ -36,7 +36,7 @@ Slack/Notion lazy-fetch 를 쓰려면 Claude Code 쪽에 해당 MCP 가 별도�
 | 영역 | 설명 |
 |---|---|
 | Memory | prompt, assistant response, `/memory remember`, Slack/Notion fetch 결과를 redaction 후 `memory_chunks` 에 저장합니다. |
-| Prefill | 매 prompt 전에 관련 memory 를 `[Project memory context]` 로 자동 prepend 합니다. |
+| Prefill | 매 prompt 전에 현재 turn working context 와 관련 memory 를 `[Project memory context]` 로 자동 prepend 합니다. |
 | `/memory` | 저장된 memory 를 검색, 확인, 주입, pin, 삭제, refresh 합니다. |
 | `/retrieve` | 문서 RAG(`chunks_v2`/`summaries`)를 우선 검색하고, 결과가 없으면 `memory_chunks` 를 read-only fallback 으로 조회합니다. |
 | Routing | `<project>/.imprint/UserPromptSubmit.md` 의 키워드 룰을 보고 routing advisory 를 prepend 합니다. |
@@ -49,8 +49,9 @@ Slack/Notion lazy-fetch 를 쓰려면 Claude Code 쪽에 해당 MCP 가 별도�
 사용자 prompt
   -> UserPromptSubmit hook
        events.user_message 저장
+       현재 질문 working mini-chunk 저장
        routing rule 평가
-       memory_chunks prefill
+       working overlay + 관련 memory prefill
        lazy-fetch background spawn
   -> Claude 응답
   -> Stop hook
@@ -74,7 +75,7 @@ Slack/Notion lazy-fetch 를 쓰려면 Claude Code 쪽에 해당 MCP 가 별도�
 | 직접 기억 저장 | `/memory remember <text> --type decision` |
 | 항상 위로 올리기 | `/memory pin <id>` |
 | pin 해제 | `/memory unpin <id>` |
-| 최근/pinned/source별 목록 | `/memory list --recent`, `/memory list --pinned`, `/memory list --source notion` |
+| 최근/pinned/source별 목록 | `/memory list --recent`, `/memory list --pinned`, `/memory list --source notion`, `/memory list --working` |
 | 외부 source 갱신 | `/memory refresh <url>` |
 | 느린 지점 요약 | `/memory profile --json` |
 | 문서 RAG 명시 조회 | `/retrieve --routed "<question>"` |

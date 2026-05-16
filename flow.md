@@ -6,9 +6,9 @@
 
 - hook 은 사용자 세션을 끊지 않습니다. 실패는 silent skip + `plugin.log` 로 처리합니다.
 - 동기 경로는 가볍게 유지합니다. LLM 호출, Slack/Notion fetch, response extract 는 background 로 분리합니다.
-- 자동 hook 경로는 `memory_chunks` 를 저장·prefill 합니다.
+- 자동 hook 경로는 현재 turn 을 working mini-chunk 로 먼저 저장하고 `memory_chunks` 를 prefill 합니다.
 - `/retrieve` 는 사용자가 명시 호출했을 때만 `chunks_v2`/`summaries` retrieval 을 수행합니다.
-- `/retrieve` 문서 후보가 0개이면 `memory_chunks` 를 read-only fallback 으로 조회합니다.
+- `/retrieve` 는 현재 세션 working chunk 를 soft union 하고, 문서 후보가 0개이면 `memory_chunks` 를 read-only fallback 으로 조회합니다.
 
 ## 전체 플로우
 
@@ -17,11 +17,16 @@
 
 [자동 hook 동기 경로]
   1. UserPromptSubmit: user_message event 저장
-  2. .imprint/UserPromptSubmit.md routing 룰 매칭
-  3. memory_chunks pinned/recent LIMIT 8 prefill
-  4. [Project memory context] + routing advisory prepend
-  5. Claude 응답 생성
-  6. Stop: 마지막 assistant 응답을 llm_response event 로 저장
+  2. noise=0 이면 현재 질문을 working mini-chunk 로 memory_chunks 에 즉시 저장
+     - metadata_json.memory_tier=working
+     - metadata_json.memory_kind=raw_turn
+     - metadata_json.session_visible=true
+     - deterministic query rewrite 를 Search surface 로 보강
+  3. .imprint/UserPromptSubmit.md routing 룰 매칭
+  4. working overlay + query-aware memory_chunks prefill + pinned/recent fallback
+  5. [Project memory context] + routing advisory prepend
+  6. Claude 응답 생성
+  7. Stop: 마지막 assistant 응답을 llm_response event 로 저장
 
 [자동 hook 백그라운드 경로]
   A. UserPromptSubmit lazy-fetch
@@ -41,9 +46,10 @@
 [/retrieve 명시 호출 경로]
   1. routed: entity resolve 선행 → scope classifier(local/feature/global)
   2. local: chunk retrieval 경로 호출
-     - QN → RES → QEMB → HYB(chunks_v2 FTS5 + vector, 미가용 시 FTS/짧은 토큰 fallback) → RRF → BOOST → MEMFB → RG/RR → CTX
+     - QN → RES → QEMB → HYB(chunks_v2 FTS5 + vector, 미가용 시 FTS/짧은 토큰 fallback) → RRF(+working overlay) → BOOST → MEMFB → RG/RR → CTX
+     - working overlay: 현재 세션 memory_tier=working, session_visible=true 후보를 soft union
      - MEMFB: 후보가 0개면 memory_chunks read-only fallback
-  3. feature/global: summaries 검색 + chunk retrieval(동일 MEMFB 포함) + summary_links grounding
+  3. feature/global: summaries 검색 + chunk retrieval(동일 working overlay/MEMFB 포함) + summary_links grounding
   4. resolved entity 의 confirmed contradiction 조회
   5. 구조화 context block 또는 JSON 반환
 ```
@@ -63,8 +69,10 @@ flowchart TB
     CC --> UPS{{UserPromptSubmit hook}}
 
     UPS -->|sync| LOG[("events.user_message 기록")]
+    UPS -->|sync| MINI[("working mini-chunk INSERT<br/>raw_turn + deterministic rewrite")]
     UPS -->|sync| ROUTE["routing 룰 매칭<br/>.imprint/UserPromptSubmit.md<br/>(sync)"]
-    UPS -->|sync| PREFILL["memory_chunks<br/>recency fallback<br/>(pinned/recent LIMIT 8)<br/>(sync)"]
+    UPS -->|sync| PREFILL["working overlay<br/>+ query-aware memory_chunks<br/>+ pinned/recent fallback<br/>(LIMIT 8)<br/>(sync)"]
+    MINI --> PREFILL
     ROUTE --> CTX0["[Project memory context]<br/>+ routing advisory prepend<br/>(sync)"]
     PREFILL --> CTX0
     CTX0 --> RESP["Claude 응답 생성"]
@@ -96,7 +104,8 @@ flowchart TB
     RES --> QEMB["query embedding<br/>BGE-M3 가용 시<br/>(sync/daemon-ready)"]
     QEMB --> HYB["chunk retrieval<br/>chunks_v2 FTS5 + cosine<br/>short-token fallback<br/>(sync/daemon-ready)"]
     HYB --> RRF["RRF fusion<br/>semantic 0.8 / BM25 0.2<br/>(sync)"]
-    RRF --> BOOST["is_current + recency<br/>+ entity coverage boost<br/>(sync)"]
+    RRF --> WUNION["working overlay soft union<br/>memory_tier=working<br/>(sync)"]
+    WUNION --> BOOST["is_current + recency<br/>+ entity coverage boost<br/>(sync)"]
     BOOST --> MEMFB{"후보 없음?"}
     MEMFB -->|yes| MCHUNK["memory_chunks read-only fallback<br/>(sync)"]
     MCHUNK --> CANDCTX["retrieval candidates<br/>(sync)"]
@@ -141,8 +150,8 @@ flowchart TB
 
 | 라벨 | 의미 | 노드 |
 |---|---|---|
-| `(sync)` SessionStart / UPS / Stop | 세션 시작과 매 turn hook 동기 경로 | `SCHEMA` · `SEED` · `SOUL` · `LOG` · `ROUTE` · `PREFILL` · `CTX0` · `LOG2` |
-| `(sync)` /retrieve 진입 | `/retrieve` 디스패처 동기 경로 | `QN` · `RES` · `RRES` · `SCOPE` · `RRF` · `BOOST` · `MEMFB` · `MCHUNK` · `CANDCTX` · `GROUND` · `CCHECK` · `CTX` |
+| `(sync)` SessionStart / UPS / Stop | 세션 시작과 매 turn hook 동기 경로 | `SCHEMA` · `SEED` · `SOUL` · `LOG` · `MINI` · `ROUTE` · `PREFILL` · `CTX0` · `LOG2` |
+| `(sync)` /retrieve 진입 | `/retrieve` 디스패처 동기 경로 | `QN` · `RES` · `RRES` · `SCOPE` · `RRF` · `WUNION` · `BOOST` · `MEMFB` · `MCHUNK` · `CANDCTX` · `GROUND` · `CCHECK` · `CTX` |
 | `(sync/daemon-ready)` | `/retrieve` 동기 경로 중 무거운 후보 | `QEMB` · `HYB` · `FSUM` · `GSUM` · `RR` |
 | `(async)` 자동 hook 백그라운드 | 사용자 turn 차단 없이 `memory_chunks` 에 직접 저장 | `LF` · `ANL` · `FETCH` · `SRCSEARCH` · `SPLIT_EXT` · `EXTRACT` · `CLASSIFY` |
 | `ingest_queue` | retrieval v2 문서 ingestion 뒤 후속 작업 drain | `ENQ` · `DRAIN` · `J4` · `J5` · `J6` |
@@ -164,6 +173,7 @@ flowchart TB
 |---|---|---|
 | prompt redaction | `python3`, redact rules | 실패 시 원문 대신 가능한 경로만 진행, 로그 기록 |
 | `events.user_message` 저장 | `sqlite3`, `uuidgen` | event archive 누락 |
+| working mini-chunk | `python3`, `sqlite3`, FTS5 | 첫 turn working overlay 누락, 기존 memory prefill 은 계속 시도 |
 | routing advisory | `python3`, `.imprint/UserPromptSubmit.md` | routing prepend 없음 |
 | memory prefill | `python3`, `sqlite3`, FTS5 | primary prefill 누락, legacy shell fallback 시도 |
 | lazy-fetch spawn | `python3`, `claude`, Slack/Notion MCP | 새 외부 chunk 누적 없음, 기존 chunk 는 계속 사용 |
@@ -199,7 +209,7 @@ flowchart TB
 | feature | feature summaries 검색 + feature chunk retrieval + summary_links grounding + contradiction 조회 |
 | global | project/document/feature summaries 검색 + key chunk retrieval + grounding + contradiction 조회 |
 
-`chunk_retrieve` 는 `chunks_v2` 후보가 없을 때만 `memory_chunks` fallback 을 탑니다. fallback 은 `source_status` marker 를 제외합니다.
+`chunk_retrieve` 는 `chunks_v2` 후보가 있어도 현재 세션 working mini-chunk 를 soft union 합니다. `chunks_v2` 후보가 없을 때만 `memory_chunks` fallback 을 탑니다. fallback 은 `source_status` marker 와 working chunk 를 제외합니다.
 
 ## latency budget
 

@@ -59,6 +59,9 @@ NOTION_URL_RE = re.compile(
     r"https://(?:www\.)?notion\.so/(?:[^\s/]+/)?[^\s?]+(?:\?[^\s]*)?",
     re.IGNORECASE,
 )
+TOKEN_RE = re.compile(r"[가-힣A-Za-z0-9_]+")
+WORKING_CONTEXT_LIMIT = int(os.environ.get("IMPRINT_WORKING_CONTEXT_LIMIT") or "4")
+PREFILL_CONTEXT_LIMIT = int(os.environ.get("IMPRINT_PREFILL_LIMIT") or "8")
 
 
 def now_iso() -> str:
@@ -842,6 +845,131 @@ def fts_escape(query: str) -> str:
     return " OR ".join(safe_terms)
 
 
+def deterministic_rewrite_terms(prompt: str) -> list[str]:
+    """동기 경로용 저비용 검색 표면형 보강.
+
+    LLM 호출 없이 UI/코드 질의에서 자주 필요한 영어 코드 표면형만 추가한다.
+    """
+    text = (prompt or "").lower()
+    terms: list[str] = []
+    if any(k in text for k in ("버튼", "button", "클릭", "click", "누르", "탭", "tap")):
+        terms.extend([
+            "button", "click", "handler", "action",
+            "onclick", "ontap", "navigation", "side", "effect",
+        ])
+    if any(k in text for k in ("화면", "view", "screen", "페이지", "page")):
+        terms.extend(["screen", "view", "page", "route", "navigation"])
+    if any(k in text for k in ("설정", "동기화", "sync", "저장", "save")):
+        terms.extend(["settings", "sync", "synchronize", "save", "state"])
+
+    seen: set[str] = set()
+    out: list[str] = []
+    for term in terms:
+        t = term.strip().lower()
+        if t and t not in seen:
+            seen.add(t)
+            out.append(t)
+    return out
+
+
+def prefill_keywords(prompt: str) -> list[str]:
+    """원문 token + deterministic rewrite terms 를 FTS/metadata 검색어로 사용."""
+    seen: set[str] = set()
+    out: list[str] = []
+    stopwords = {
+        "알려줘", "알려주세요", "설명해줘", "설명해주세요",
+        "어떻게", "뭐야", "무엇", "동작",
+    }
+    for tok in TOKEN_RE.findall(prompt or ""):
+        t = tok.strip().lower()
+        if len(t) < 2 or t in stopwords or t in seen:
+            continue
+        seen.add(t)
+        out.append(t)
+    for term in deterministic_rewrite_terms(prompt):
+        if term not in seen:
+            seen.add(term)
+            out.append(term)
+    return out[:16]
+
+
+def insert_working_turn_chunk(
+    conn: sqlite3.Connection,
+    project_id: str,
+    source_event_id: str,
+    session_id: str,
+    prompt: str,
+) -> str:
+    rewrite_terms = deterministic_rewrite_terms(prompt)
+    now = now_iso()
+    cid = str(uuid.uuid4())
+    text = prompt.strip()
+    if rewrite_terms:
+        text = f"{text}\nSearch surface: {' '.join(rewrite_terms)}"
+    metadata = {
+        "memory_tier": "working",
+        "memory_kind": "raw_turn",
+        "session_visible": True,
+        "session_id": session_id,
+        "request_id": source_event_id,
+        "source": "user_prompt_submit",
+        "write_ts": now,
+        "searchable_at": now,
+        "query_rewrite": " ".join(rewrite_terms),
+        "keywords": prefill_keywords(prompt),
+    }
+    conn.execute(
+        "INSERT INTO memory_chunks "
+        "(id, project_id, source_event_id, chunk_type, text, metadata_json, created_at, pinned) "
+        "VALUES (?, ?, ?, 'raw_turn', ?, ?, ?, 0);",
+        (
+            cid,
+            project_id,
+            source_event_id,
+            redact_text(text),
+            json.dumps(redact_json_value(metadata), ensure_ascii=False),
+            now,
+        ),
+    )
+    return cid
+
+
+def load_working_context(
+    conn: sqlite3.Connection,
+    project_id: str,
+    session_id: str,
+    limit: int = WORKING_CONTEXT_LIMIT,
+) -> list[dict]:
+    params: list[Any] = [project_id]
+    session_clause = ""
+    if session_id:
+        session_clause = "AND json_extract(metadata_json, '$.session_id') = ?"
+        params.append(session_id)
+    params.append(limit)
+    cur = conn.execute(
+        f"""
+        SELECT id, chunk_type, text, metadata_json, pinned, created_at
+        FROM memory_chunks
+        WHERE project_id = ?
+          AND chunk_type != 'source_status'
+          AND json_extract(metadata_json, '$.memory_tier') = 'working'
+          AND json_extract(metadata_json, '$.session_visible') = 1
+          {session_clause}
+        ORDER BY created_at DESC
+        LIMIT ?;
+        """,
+        params,
+    )
+    rows: list[dict] = []
+    for row in cur:
+        rows.append({
+            "id": row[0], "chunk_type": row[1], "text": row[2],
+            "metadata_json": row[3], "pinned": row[4], "created_at": row[5],
+            "score": 10.0,
+        })
+    return rows
+
+
 def search_memory(
     conn: sqlite3.Connection,
     project_id: str,
@@ -865,6 +993,8 @@ def search_memory(
                     "FROM memory_chunks_fts f "
                     "JOIN memory_chunks m ON m.rowid = f.rowid "
                     "WHERE f.text MATCH ? AND m.project_id = ? "
+                    "  AND m.chunk_type != 'source_status' "
+                    "  AND coalesce(json_extract(m.metadata_json, '$.memory_tier'), '') != 'working' "
                     "ORDER BY m.pinned DESC, m.created_at DESC LIMIT ?;",
                     (fts_query, project_id, limit * 2),
                 )
@@ -888,6 +1018,8 @@ def search_memory(
                        COUNT(DISTINCT je.value) AS hits
                 FROM memory_chunks m, json_each(json_extract(m.metadata_json, '$.keywords')) je
                 WHERE m.project_id = ?
+                  AND m.chunk_type != 'source_status'
+                  AND coalesce(json_extract(m.metadata_json, '$.memory_tier'), '') != 'working'
                   AND je.value IN ({placeholders})
                 GROUP BY m.id
                 ORDER BY hits DESC, m.pinned DESC, m.created_at DESC
@@ -910,6 +1042,47 @@ def search_memory(
         except sqlite3.OperationalError as exc:
             log("WARN", f"keywords search failed: {exc}")
 
+    # 2b. LIKE fallback for short Korean/UI tokens that trigram FTS misses.
+    if keywords and not seen:
+        tokens: list[str] = []
+        seen_tokens: set[str] = set()
+        for tok in keywords:
+            t = tok.strip().lower()
+            if len(t) < 2 or t in seen_tokens:
+                continue
+            seen_tokens.add(t)
+            tokens.append(t)
+        if tokens:
+            clauses = []
+            params: list[str] = []
+            for tok in tokens[:8]:
+                clauses.append("lower(m.text) LIKE ?")
+                params.append(f"%{tok}%")
+            try:
+                cur = conn.execute(
+                    f"""
+                    SELECT m.id, m.chunk_type, m.text, m.metadata_json, m.pinned, m.created_at
+                    FROM memory_chunks m
+                    WHERE m.project_id = ?
+                      AND m.chunk_type != 'source_status'
+                      AND coalesce(json_extract(m.metadata_json, '$.memory_tier'), '') != 'working'
+                      AND ({' OR '.join(clauses)})
+                    ORDER BY m.pinned DESC, m.created_at DESC
+                    LIMIT ?;
+                    """,
+                    [project_id, *params, limit * 2],
+                )
+                for row in cur:
+                    haystack = (row[2] or "").lower()
+                    hits = sum(1 for tok in tokens if tok in haystack)
+                    seen[row[0]] = {
+                        "id": row[0], "chunk_type": row[1], "text": row[2],
+                        "metadata_json": row[3], "pinned": row[4], "created_at": row[5],
+                        "score": 1.5 + min(0.5, hits * 0.1) + (1.0 if row[4] else 0.0),
+                    }
+            except sqlite3.OperationalError as exc:
+                log("WARN", f"like fallback search failed: {exc}")
+
     # 3. fallback: 최근 durable chunk (decision/fix/todo/note + 외부 source)
     # 외부 source chunk를 'note'에서 spec/message/thread로 분리한 뒤
     # fallback이 빈 결과를 내지 않도록 신규 타입도 포함시킨다.
@@ -920,6 +1093,7 @@ def search_memory(
                 "FROM memory_chunks "
                 "WHERE project_id = ? AND chunk_type IN "
                 "  ('decision','fix','todo','note','spec','message','thread') "
+                "  AND coalesce(json_extract(metadata_json, '$.memory_tier'), '') != 'working' "
                 "ORDER BY pinned DESC, created_at DESC LIMIT ?;",
                 (project_id, limit),
             )
@@ -1119,6 +1293,7 @@ def cmd_prefill(argv: list[str]) -> int:
     if not argv:
         return 1
     project_id = argv[0]
+    session_id = argv[1] if len(argv) > 1 else os.environ.get("IMPRINT_SESSION_ID", "")
     prompt = sys.stdin.read()
     if not prompt.strip():
         return 0
@@ -1128,8 +1303,24 @@ def cmd_prefill(argv: list[str]) -> int:
     try:
         try:
             with db() as conn:
-                # keywords는 비워서 search_memory의 recency-fallback 경로를 탄다.
-                chunks = search_memory(conn, project_id, [], prompt, limit=8)
+                working = load_working_context(
+                    conn, project_id, session_id, limit=WORKING_CONTEXT_LIMIT,
+                )
+                durable = search_memory(
+                    conn, project_id, prefill_keywords(prompt), prompt,
+                    limit=PREFILL_CONTEXT_LIMIT,
+                )
+                seen: set[str] = set()
+                chunks = []
+                for c in working + durable:
+                    cid = c.get("id")
+                    if cid in seen:
+                        continue
+                    if cid:
+                        seen.add(cid)
+                    chunks.append(c)
+                    if len(chunks) >= PREFILL_CONTEXT_LIMIT:
+                        break
         except sqlite3.Error as exc:
             log("WARN", f"db prefill: {exc}")
             chunks = []
@@ -1152,12 +1343,41 @@ def cmd_prefill(argv: list[str]) -> int:
             pass
         src = md.get("source")
         tag = c["chunk_type"]
+        if md.get("memory_tier") == "working":
+            tag = "working"
         if src in ("slack", "notion"):
             tag = src
         text = (c["text"] or "").replace("\n", " ").strip()
+        if md.get("memory_tier") == "working":
+            text = (c["text"] or "").split("\n", 1)[0].strip()
         out_lines.append(f"- [{tag}] {text[:300]}")
 
     sys.stdout.write("\n" + "\n".join(out_lines) + "\n")
+    return 0
+
+
+def cmd_mini_ingest(argv: list[str]) -> int:
+    """UserPromptSubmit 동기 경량 저장.
+
+    현재 turn 의 raw query 를 즉시 FTS-visible memory_chunks row 로 넣는다.
+    Haiku durable 분류는 기존처럼 Stop/lazy-fetch background 에 남긴다.
+    """
+    if len(argv) < 2:
+        return 1
+    project_id = argv[0]
+    source_event_id = argv[1]
+    session_id = argv[2] if len(argv) > 2 else ""
+    prompt = sys.stdin.read()
+    if not prompt.strip():
+        return 0
+    try:
+        with db() as conn:
+            insert_working_turn_chunk(
+                conn, project_id, source_event_id, session_id, prompt,
+            )
+            conn.commit()
+    except sqlite3.Error as exc:
+        log("WARN", f"mini-ingest skipped: {exc}")
     return 0
 
 
@@ -1308,6 +1528,7 @@ def cmd_refresh(argv: list[str]) -> int:
 
 COMMANDS = {
     "analyze-prompt": cmd_analyze_prompt,
+    "mini-ingest": cmd_mini_ingest,
     "prefill": cmd_prefill,
     "lazy-fetch": cmd_lazy_fetch,
     "extract": cmd_extract,

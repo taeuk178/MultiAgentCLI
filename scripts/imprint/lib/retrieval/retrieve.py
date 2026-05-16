@@ -6,6 +6,7 @@ embedding/sqlite-vec 미가용 시 FTS-only path 로 graceful degradation.
 from __future__ import annotations
 
 import json
+import os
 import re
 import sqlite3
 from dataclasses import dataclass, field
@@ -32,6 +33,8 @@ RRF_BM25_WEIGHT = 0.2
 BOOST_CURRENT = 0.15
 BOOST_ENTITY = 0.10
 BOOST_RECENT = 0.05
+WORKING_OVERLAY_SCORE = 0.12
+WORKING_OVERLAY_LIMIT = 4
 
 # RG 게이트 임계.
 RG_MIN_CANDIDATES = 10
@@ -195,6 +198,7 @@ def _memory_chunks_fallback_search(
             WHERE memory_chunks_fts MATCH ?
               AND m.project_id = ?
               AND m.chunk_type != 'source_status'
+              AND coalesce(json_extract(m.metadata_json, '$.memory_tier'), '') != 'working'
             ORDER BY m.pinned DESC, bm25_score, m.created_at DESC
             LIMIT ?
             """,
@@ -224,6 +228,7 @@ def _memory_chunks_fallback_search(
             FROM memory_chunks m
             WHERE m.project_id = ?
               AND m.chunk_type != 'source_status'
+              AND coalesce(json_extract(m.metadata_json, '$.memory_tier'), '') != 'working'
               AND ({' OR '.join(clauses)})
             ORDER BY m.created_at DESC
             LIMIT ?
@@ -280,6 +285,92 @@ def _memory_chunks_fallback_search(
             )
         )
     return sorted(candidates, key=lambda c: -c.final_score)
+
+
+def _working_memory_overlay(
+    conn: sqlite3.Connection,
+    project_id: str,
+    raw_query: str,
+    normalized_query: str,
+    top_n: int = WORKING_OVERLAY_LIMIT,
+) -> list[RetrievalCandidate]:
+    """현재 세션 working mini-chunk 를 retrieval 후보에 soft union.
+
+    session_id 를 알 수 있으면 해당 세션만, shell `/retrieve` 처럼 알 수 없으면
+    프로젝트의 최신 working chunk 중 query token 이 닿는 row 를 우선 사용한다.
+    """
+    session_id = os.environ.get("IMPRINT_SESSION_ID", "").strip()
+    params: list[Any] = [project_id]
+    session_clause = ""
+    if session_id:
+        session_clause = "AND json_extract(m.metadata_json, '$.session_id') = ?"
+        params.append(session_id)
+    params.append(max(top_n * 3, top_n))
+    cur = conn.execute(
+        f"""
+        SELECT m.id, m.chunk_type, m.text, m.metadata_json, m.created_at, m.pinned
+        FROM memory_chunks m
+        WHERE m.project_id = ?
+          AND m.chunk_type != 'source_status'
+          AND json_extract(m.metadata_json, '$.memory_tier') = 'working'
+          AND json_extract(m.metadata_json, '$.session_visible') = 1
+          {session_clause}
+        ORDER BY m.created_at DESC
+        LIMIT ?;
+        """,
+        params,
+    )
+    rows = list(cur.fetchall())
+
+    tokens: list[str] = []
+    seen_tokens: set[str] = set()
+    for source in (raw_query, normalized_query):
+        for tok in _TOKEN_RE.findall(source):
+            t = tok.strip().lower()
+            if len(t) < 2 or t in _LIKE_STOPWORDS or t in seen_tokens:
+                continue
+            seen_tokens.add(t)
+            tokens.append(t)
+
+    def hit_count(row: sqlite3.Row) -> int:
+        if not tokens:
+            return 0
+        haystack = (row["text"] or "").lower()
+        return sum(1 for tok in tokens if tok in haystack)
+
+    scored = [(row, hit_count(row)) for row in rows]
+    if not session_id and tokens:
+        scored = [(row, hits) for row, hits in scored if hits > 0]
+    scored.sort(key=lambda t: (t[1], t[0]["created_at"]), reverse=True)
+    selected = [row for row, _hits in scored[:top_n]]
+
+    out: list[RetrievalCandidate] = []
+    for row in selected:
+        try:
+            md = json.loads(row["metadata_json"] or "{}")
+            if not isinstance(md, dict):
+                md = {}
+        except (json.JSONDecodeError, TypeError):
+            md = {}
+        display_text = (row["text"] or "").split("\n", 1)[0].strip() or row["text"]
+        out.append(
+            RetrievalCandidate(
+                chunk_id=row["id"],
+                document_id="memory_chunks",
+                retrieval_text=row["text"],
+                chunk_text=display_text,
+                section_path=md.get("memory_kind") or "working",
+                source_type="working",
+                source_updated_at=row["created_at"],
+                is_current=0,
+                raw_chunk_type=row["chunk_type"],
+                normalized_chunk_type=normalize_chunk_type(row["chunk_type"]),
+                rrf_score=WORKING_OVERLAY_SCORE,
+                boost_score=0.0,
+                final_score=WORKING_OVERLAY_SCORE,
+            )
+        )
+    return out
 
 
 def _vector_search(
@@ -391,6 +482,8 @@ def retrieve(
                     cand.vector_rank = rank
                     cand.rrf_score += RRF_VECTOR_WEIGHT * (1.0 / (RRF_K + rank))
                     merged[cid] = cand
+                for cand in _working_memory_overlay(conn, project_id, query, expanded):
+                    merged.setdefault(cand.chunk_id, cand)
 
             # BOOST
             with Span("BOOST"):
