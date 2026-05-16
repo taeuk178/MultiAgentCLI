@@ -180,33 +180,15 @@ GitHub repo (imprint-skills)
 
 ### RAG 기본 동작 안정화
 
-#### RAG-1. 안전한 저장 경로
+> 2026-05-16 기준 1차 기본선(redaction coverage, hook loop smoke test,
+> `/memory` 기본 읽기 경로 안내, 검색 fixture, `/retrieve` memory fallback,
+> 외부 source 상태 표시, events noise flag, profile summary)은 적용 완료. 왜 그렇게
+> 정리했는지는 `HISTORY.md` 참조. 이 섹션에는 남은 수렴 과제만 둔다.
 
-- user prompt, assistant response, extracted chunk, external source chunk 가 DB/FTS 에 들어가기 전 redaction 적용
-- default redact 룰셋 보강
-- 과거 raw row 청소는 사용자 승인 액션으로 분리
+#### RAG-8. 운영 정책 캘리브레이션
 
-#### RAG-2. 자동 memory loop 검증
-
-- `SessionStart → UserPromptSubmit → Stop → 다음 UserPromptSubmit` 를 임시 DB와 fixture 로 직접 검증
-- `memory_chunks` INSERT, FTS trigger, `[Project memory context]` prepend, `/memory search/inject` 확인
-- 실패해도 hook 이 세션을 끊지 않는지 확인
-
-#### RAG-3. 읽기 경로 정합성
-
-- 현재 `memory_chunks` 기반 자동 prefill 과 `chunks_v2` 기반 `/retrieve` 의 역할을 명확히 분리
-- 단기 문서화: 기본 사용자 RAG는 자동 prefill + `/memory` 검색으로 안내
-- 중기 구현: `memory_chunks → chunks_v2` bridge 또는 `/retrieve` 의 legacy fallback 검토
-
-#### RAG-4. 검색 품질 최소 기준
-
-- 한국어 부분일치, pinned 우선순위, chunk_type/source 필터, external source section metadata 를 fixture 로 검증
-- "저장됐는데 못 찾는" 문제를 먼저 줄이고, rerank/summary 품질 개선은 그 다음 단계로 둠
-
-#### RAG-5. 외부 source 신뢰성
-
-- URL cap 초과, fetch 실패, stale `fetched_at` 을 사용자에게 보이게 함
-- 자동 refresh 보다 stale 표시와 명시 refresh 를 우선
+- `/memory profile` 과 `events.noise` 비율을 1~2주 관찰
+- source_status marker 누적량, stale 기준(`IMPRINT_STALE_DAYS`), daemon 분리 여부 판단
 
 ### 후순위 확장
 
@@ -322,13 +304,8 @@ export IMPRINT_PROFILE=1
 
 ## 우선순위 — 남은 단계
 
-1. **RAG-1 안전한 저장 경로** — redaction coverage 부터 닫기. 민감정보가 raw DB/FTS 로 들어가면 실제 프로젝트 사용이 불가능합니다.
-2. **RAG-2 자동 memory loop 검증** — hook 직접 호출 fixture 로 저장·추출·다음 turn prefill 을 확인합니다.
-3. **RAG-3 읽기 경로 정합성** — `memory_chunks` 와 `chunks_v2` 가 분리된 현재 구조를 사용자 경로 기준으로 정리합니다.
-4. **RAG-4 검색 품질 최소 기준** — 한국어 FTS, pinned, type/source 필터, inject 를 fixture 로 고정합니다.
-5. **RAG-5 외부 source 신뢰성** — stale/누락/실패를 관찰 가능하게 만듭니다.
-6. **측정 후 캘리브레이션** — latency budget, contradiction 임계, daemon 분리, summary 품질은 1주 데이터 뒤 판단합니다.
-7. **후순위 기능 확장** — Workflow skill, registry, entity merge/split UI 는 RAG 기본 동작이 안정된 뒤 진행합니다.
+1. **RAG-8 운영 정책 캘리브레이션** — source_status/noise/profile 데이터를 1~2주 본 뒤 stale 기준, marker TTL, daemon 분리를 판단합니다.
+2. **후순위 기능 확장** — Workflow skill, registry, entity merge/split UI 는 RAG 기본 동작이 안정된 뒤 진행합니다.
 
 ## 최종 목표
 

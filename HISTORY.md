@@ -9,6 +9,32 @@
 
 기록 순서는 **최신이 위**. 항목당 한 단락 안에 변경/사유/대안 폐기 근거를 묶는다.
 
+## 2026-05-16 — `/retrieve` memory_chunks read-only fallback 적용
+
+**무엇:** `/retrieve` 의 문서 retrieval 결과가 0개일 때 `memory_chunks` 를 read-only fallback 으로 조회하도록 연결했다. 기본 경로는 그대로 `chunks_v2`/`summaries` 우선이며, fallback 은 `source_status` marker 를 제외하고 `decision/spec/message/thread/...` 같은 실제 memory chunk 만 후보로 만든다. `TC-14 Retrieve memory_chunks fallback` 으로 direct `/retrieve` 와 routed `/retrieve --routed` 모두에서 자동 hook·`/memory remember` 계열 기억이 보이는지 고정했다.
+
+**왜:** 실제 프로젝트 사용성 테스트에 들어가기 전, “자동 hook 이 저장한 기억을 다음 turn prefill 뿐 아니라 명시 조회에서도 확인할 수 있는가”가 먼저 필요했다. `memory_chunks → chunks_v2` bridge 는 복제·dedup·versioning 정책까지 같이 건드리므로 아직 무겁다. 빈 결과일 때만 fallback 하는 방식은 기존 문서 retrieval 품질을 건드리지 않으면서 기본 RAG 신뢰성을 빠르게 올린다.
+
+**남은 점:** fallback 은 수렴을 위한 최소 연결이며, `chunks_v2` 의 entity grounding·summary link·contradiction scan 품질을 `memory_chunks` 에 그대로 제공하지는 않는다. 실제 사용성 테스트에서 memory fallback 이 자주 주 경로가 되면 bridge 또는 unified storage 를 다시 검토한다.
+
+## 2026-05-16 — RAG 운영 관찰성 1차 적용: source status, noise flag, profile summary
+
+**무엇:** RAG 기본 동작 안정화의 남은 관찰성 항목을 1차 적용. Slack/Notion lazy-fetch 에서 URL cap 초과는 `skipped_by_cap`, explicit URL 실패는 `fetch_failed`, keyword 결과 없음은 `fetch_empty` 로 `source_status` marker chunk 를 남긴다. `/memory list` 는 `ok/stale/fetch_failed/skipped_by_cap` 상태 컬럼을 표시하고, `/memory show --json` 은 계산된 `source_status` 를 반환한다. `events` 테이블에 `noise INTEGER DEFAULT 0` 을 추가하고, `UserPromptSubmit` 에서 짧은 backchannel prompt 를 `noise=1` 로 표식한다. `/memory profile` 은 `IMPRINT_PROFILE=1` 로 누적된 `profile.jsonl` 의 stage 별 p50/p95/max latency 와 payload bytes 를 요약한다.
+
+**왜:** 외부 문서 기반 RAG는 “무엇을 못 가져왔는지”, “지금 보는 기억이 낡았는지”가 보여야 사용자가 답변 근거를 신뢰할 수 있다. 자동 refresh 는 트래픽과 stale 판단 정책이 필요하므로 보류하고, 먼저 관찰 가능한 상태 marker 를 남긴다. Noise turn 은 삭제하지 않고 표식만 붙여 raw 보존 철학을 유지하면서 나중에 감쇠/삭제 정책을 측정 기반으로 결정할 수 있게 한다. Latency/threshold/daemon 분리는 추정으로 고치기보다 `/memory profile` 로 1주 데이터를 본 뒤 판단한다.
+
+**남은 점:** `source_status` marker 가 너무 많이 쌓이면 TTL 또는 dedupe 정책을 추가한다. `events.noise` 는 user_message 에만 붙이며 assistant response 중요도 평가는 보류한다. `/memory profile` 은 요약만 제공하고 자동 튜닝은 하지 않는다.
+
+## 2026-05-16 — RAG 기본 기능 1차 안정화: redaction, hook loop, 읽기 경로, 검색 fixture
+
+**무엇:** RAG 기본 동작 안정화 우선순위 1~4를 1차 적용. `user-prompt-submit.sh` 는 user prompt를 `events`에 저장하기 전 redaction 하고, lazy-fetch/prefill 입력도 redacted text를 사용한다. `stop.sh` 는 마지막 assistant 응답을 `events.llm_response`에 저장하기 전 redaction 하고, response extract worker에도 redacted text를 넘긴다. `ingestion.py` 는 external source chunk/text/metadata 와 extracted response chunk를 `memory_chunks`에 INSERT 하기 직전 Python 쪽 redaction을 한 번 더 적용한다. `/memory remember` 도 secret-shaped text를 기본 redaction 하며, default 룰셋에 fine-grained GitHub PAT, bearer/authorization, password assignment, 주민등록번호, card-like 패턴을 추가했다. 테스트에는 `TC-11 Hook memory loop + redaction`, `TC-12 Memory search/list/inject fixture` 를 추가해 자동 hook 루프와 기본 `/memory` 검색 경로를 고정했다.
+
+**왜:** 실제 프로젝트에서 RAG를 쓰려면 기능 수보다 “안전하게 저장되고, 다음 turn에 다시 보이며, 사용자가 근거로 꺼내볼 수 있음”이 먼저다. Redaction 누락은 DB/FTS raw 누출로 바로 이어져 사용 불가 리스크가 가장 크다. Hook loop smoke test는 `SessionStart → UserPromptSubmit → Stop → 다음 UserPromptSubmit` 생명선을 직접 검증한다. 읽기 경로는 단기적으로 기본 사용자 RAG를 자동 prefill + `/memory search/inject` 로 명확히 하고, `/retrieve` 는 별도 `chunks_v2`/`summaries` 문서 retrieval 경로로 유지한다. 검색 품질 fixture는 decision/fix/todo/note/spec/message/thread, pinned 우선순위, type/source 필터, inject 출력을 고정해 “저장됐는데 못 찾는” 회귀를 먼저 잡기 위함이다.
+
+**남은 점:** `memory_chunks → chunks_v2` bridge 또는 `/retrieve` legacy fallback 은 아직 중기 과제다. 과거에 이미 raw 로 저장된 row 청소는 사용자 승인 액션으로 분리한다. Credit-card-like 정규식은 단순 패턴이라 false positive 가능성이 있어, 필요하면 Luhn callback 기반 redaction helper 로 고도화한다.
+
+**추가 실측 반영:** 실제 `claude -p haiku` 검증에서 Stop extract 가 한국어 응답을 영어 chunk text 로 번역하는 사례가 있어 extract prompt 에 원문 언어 보존 지시를 추가했다. 같은 검증에서 `/memory search "버튼"` 이 FTS5 trigram 의 2자 한글 토큰 제약으로 빈 결과가 되는 것이 확인되어, FTS 결과가 없을 때만 짧은 토큰 `LIKE` fallback 을 타도록 보강했다. `TC-12` 는 이 fallback 을 회귀 검증한다.
+
 ## 2026-05-16 — 완료 단계 기록 이관: Phase 1~4.5, 7a/7b, NER, ML opt-in
 
 **무엇:** `HANDOFF.md` 와 `LoadMap.md` 에 남아 있던 완료 단계 요약을 본 결정 사유 로그로 이관. 완료로 분류한 항목은 Phase 1(SQLite memory 저장소 + FTS5 trigram), Phase 2(SessionStart/UserPromptSubmit/Stop hook 통합), Phase 3(`/memory` skill: search/remember/pin/list/stats/forget/refresh/inject), Phase 4.5(Slack/Notion lazy fetch + `sources.json`), Phase 7a(chunk-level hybrid retrieval: SQLite/FTS5/sqlite-vec, BGE-M3 opt-in, contextual prefix, entity alias canonicalization, versioning, RRF + conditional rerank, single-writer ingest queue), Phase 7b(project-level interpretation: feature/document/project summaries, rule-based scope classifier, grounding drill-down, contradiction detection), chunk_entities 자동 NER, ML 의존성 opt-in(`requirements-optional.txt`, `IMPRINT_MODEL_CACHE_DIR`, FTS-only + LLM judge fallback) 이다.
