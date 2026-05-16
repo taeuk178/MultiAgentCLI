@@ -181,15 +181,9 @@ GitHub repo (imprint-skills)
 ### RAG 기본 동작 안정화
 
 > 2026-05-16 기준 1차 기본선(redaction coverage, hook loop smoke test,
-> `/memory` 기본 읽기 경로 안내, 검색 fixture, 외부 source 상태 표시,
-> events noise flag, profile summary)은 적용 완료. 왜 그렇게
+> `/memory` 기본 읽기 경로 안내, 검색 fixture, `/retrieve` memory fallback,
+> 외부 source 상태 표시, events noise flag, profile summary)은 적용 완료. 왜 그렇게
 > 정리했는지는 `HISTORY.md` 참조. 이 섹션에는 남은 수렴 과제만 둔다.
-
-#### RAG-3b. 읽기 경로 수렴
-
-- 현재 기본 사용자 RAG는 자동 prefill + `/memory search/inject`
-- `/retrieve` 는 `documents`/`chunks_v2`/`summaries` 기반 문서 retrieval 경로
-- 중기 구현: `memory_chunks → chunks_v2` bridge 또는 `/retrieve` 의 legacy fallback 검토
 
 #### RAG-8. 운영 정책 캘리브레이션
 
@@ -310,9 +304,8 @@ export IMPRINT_PROFILE=1
 
 ## 우선순위 — 남은 단계
 
-1. **RAG-3b 읽기 경로 수렴** — `memory_chunks` 와 `chunks_v2` 의 bridge/fallback 구현 여부를 결정합니다.
-2. **RAG-8 운영 정책 캘리브레이션** — source_status/noise/profile 데이터를 1~2주 본 뒤 stale 기준, marker TTL, daemon 분리를 판단합니다.
-3. **후순위 기능 확장** — Workflow skill, registry, entity merge/split UI 는 RAG 기본 동작이 안정된 뒤 진행합니다.
+1. **RAG-8 운영 정책 캘리브레이션** — source_status/noise/profile 데이터를 1~2주 본 뒤 stale 기준, marker TTL, daemon 분리를 판단합니다.
+2. **후순위 기능 확장** — Workflow skill, registry, entity merge/split UI 는 RAG 기본 동작이 안정된 뒤 진행합니다.
 
 ## 최종 목표
 

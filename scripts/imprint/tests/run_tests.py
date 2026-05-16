@@ -223,6 +223,17 @@ def _retrieve_json(env: dict, query: str) -> dict:
     return json.loads(proc.stdout)
 
 
+def _retrieve_plain_json(env: dict, query: str) -> dict:
+    proc = subprocess.run(
+        [sys.executable, "-m", "retrieval.cli", "retrieve_json", PROJECT_ID, query],
+        env=env, capture_output=True, text=True, cwd=str(LIB_DIR),
+    )
+    if proc.returncode != 0:
+        return {"_error": proc.stderr.strip()}
+    import json
+    return json.loads(proc.stdout)
+
+
 def tc_03_retrieve_short(env: dict, home: str, case: CaseResult) -> None:
     out = _retrieve_json(env, "A 버튼 클릭 동작 알려줘")
     scope = (out.get("scope") or {}).get("scope")
@@ -689,6 +700,72 @@ def tc_13_source_noise_profile(env: dict, home: str, case: CaseResult) -> None:
     )
 
 
+def tc_14_retrieve_memory_fallback(env: dict, home: str, case: CaseResult) -> None:
+    """chunks_v2 결과가 없으면 /retrieve 가 memory_chunks 를 read-only fallback."""
+    now = "2026-05-16T00:00:00Z"
+    conn = sqlite3.connect(str(Path(home) / "app.sqlite"))
+    try:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO memory_chunks
+              (id, project_id, source_event_id, chunk_type, text, metadata_json, created_at, pinned)
+            VALUES (?, ?, NULL, ?, ?, ?, ?, 0)
+            """,
+            (
+                "tc14-memory",
+                PROJECT_ID,
+                "decision",
+                "제피르 루틴은 설정 동기화를 시작합니다.",
+                "{}",
+                now,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO memory_chunks
+              (id, project_id, source_event_id, chunk_type, text, metadata_json, created_at, pinned)
+            VALUES (?, ?, NULL, ?, ?, ?, ?, 1)
+            """,
+            (
+                "tc14-source-status",
+                PROJECT_ID,
+                "source_status",
+                "제피르 루틴 fetch failed marker 입니다.",
+                '{"source":"notion","status":"fetch_failed"}',
+                now,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    plain = _retrieve_plain_json(env, "제피르 루틴 설정동기화 알려줘")
+    routed = _retrieve_json(env, "제피르 루틴 설정동기화 알려줘")
+    plain_chunks = plain.get("candidates") or []
+    routed_chunks = routed.get("chunks") or []
+    plain_text = "\n".join(c.get("chunk_text", "") for c in plain_chunks)
+    routed_text = "\n".join(c.get("chunk_text", "") for c in routed_chunks)
+    status_leaked = any(
+        c.get("raw_chunk_type") == "source_status" or c.get("chunk_id") == "tc14-source-status"
+        for c in plain_chunks + routed_chunks
+    )
+    checks = {
+        "plain_memory": "설정 동기화" in plain_text,
+        "routed_memory": "설정 동기화" in routed_text,
+        "source_status_excluded": not status_leaked,
+    }
+    case.metrics = checks | {
+        "plain_chunks": len(plain_chunks),
+        "routed_chunks": len(routed_chunks),
+        "scope": (routed.get("scope") or {}).get("scope"),
+    }
+    case.passed = all(checks.values())
+    case.detail = (
+        f"plain={len(plain_chunks)} routed={len(routed_chunks)} "
+        f"status_excluded={checks['source_status_excluded']}"
+    )
+
+
 # -----------------------------------------------------------------------------
 # 러너
 # -----------------------------------------------------------------------------
@@ -707,6 +784,7 @@ CASES: list[tuple[str, str, callable]] = [
     ("TC-11", "Hook memory loop + redaction", tc_11_hook_memory_loop),
     ("TC-12", "Memory search/list/inject fixture", tc_12_memory_search_fixture),
     ("TC-13", "Source status + noise + profile", tc_13_source_noise_profile),
+    ("TC-14", "Retrieve memory_chunks fallback", tc_14_retrieve_memory_fallback),
 ]
 
 

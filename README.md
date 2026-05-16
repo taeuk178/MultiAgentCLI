@@ -34,7 +34,7 @@ pip install -r requirements-optional.txt
 | Soul (persona) | `SessionStart` hook이 `<project>/.imprint/soul.md` 내용을 컨텍스트 시작에 prepend. 압축 후에도 `compact` matcher로 자동 재주입 |
 | Routing | `UserPromptSubmit` hook이 `<project>/.imprint/UserPromptSubmit.md`의 키워드 → agent 룰을 평가, 매칭 시 권고 메시지 prepend |
 | Memory | 프롬프트·응답·외부 소스를 redaction 후 `~/.claude/imprint/app.sqlite`에 누적, FTS5 trigram으로 한국어 부분일치 검색. 매 prompt마다 관련 chunk를 `[Project memory context]` 블록으로 자동 prepend |
-| Retrieval | `/retrieve` 명시 호출 시 `chunks_v2`/`summaries` 를 대상으로 hybrid retrieval (FTS5 + sqlite-vec, 미가용 시 FTS/짧은 토큰 fallback) → RRF fusion → BOOST → 조건부 cross-encoder rerank → grounding/contradiction check. retrieval v2 문서 ingestion 은 `documents`/`chunks_v2` 를 갱신한 뒤 `ingest_queue` 로 NER·summary rebuild·contradiction scan 후속 작업을 예약 |
+| Retrieval | `/retrieve` 명시 호출 시 `chunks_v2`/`summaries` 를 대상으로 hybrid retrieval (FTS5 + sqlite-vec, 미가용 시 FTS/짧은 토큰 fallback) → RRF fusion → BOOST → 조건부 cross-encoder rerank → grounding/contradiction check. 문서 결과가 없으면 `memory_chunks` 를 read-only fallback 으로 조회. retrieval v2 문서 ingestion 은 `documents`/`chunks_v2` 를 갱신한 뒤 `ingest_queue` 로 NER·summary rebuild·contradiction scan 후속 작업을 예약 |
 | HUD | Claude Code statusline에 `5h: 25% (1h 49m) │ wk: 3% (1d 9h) │ ctx: 12% │ skills: 17 │ agents: 1` 형태로 잔여 시간과 활성 plugin의 skills/agents 수 표시 |
 
 ## 어떻게 동작하는가
@@ -43,7 +43,7 @@ pip install -r requirements-optional.txt
 
 ### 전체 플로우
 
-아래 예시는 현재 구현 기준의 두 저장/검색 경로를 분리해서 보여줍니다. 일반 prompt 입력(UPS hook 자동 경로)은 `memory_chunks` 를 읽고 쓰며, `/retrieve` 디스패처는 별도 `chunks_v2`/`summaries` 검색 경로를 사용합니다.
+아래 예시는 현재 구현 기준의 두 저장/검색 경로를 분리해서 보여줍니다. 일반 prompt 입력(UPS hook 자동 경로)은 `memory_chunks` 를 읽고 쓰며, `/retrieve` 디스패처는 우선 `chunks_v2`/`summaries` 검색 경로를 사용합니다. 단, 문서 retrieval 후보가 없으면 자동 hook 이 쌓은 `memory_chunks` 를 read-only fallback 으로 조회합니다.
 
 ```
 사용자: "A 버튼 클릭 동작 알려줘"
@@ -75,6 +75,7 @@ pip install -r requirements-optional.txt
   1. routed: entity resolve 선행 → scope classifier(local/feature/global)
   2. local: chunk retrieval 경로 호출
      - QN → RES → QEMB → HYB(chunks_v2 FTS5 + vector, 미가용 시 FTS/짧은 토큰 fallback) → RRF → BOOST → RG/RR → CTX
+     - 후보가 0개면 memory_chunks read-only fallback → CTX
   3. feature/global: summaries 검색 + chunk retrieval + summary_links grounding
   4. resolved entity 의 confirmed contradiction 조회
   5. 구조화 context block 또는 JSON 반환
@@ -107,7 +108,7 @@ sectioning 룰 · dedup · TTL · graceful degradation 명세는 [`flow.md`](flo
 
 ## 전체 플로우 다이어그램
 
-현재 구현은 세 경로가 분리되어 있습니다. **(1) 세션 시작**, **(2) 매 turn 자동 hook**은 `memory_chunks` 중심으로 동작하고, **(3) 사용자 명시 `/retrieve` 디스패처**는 `chunks_v2`/`summaries` 중심으로 검색합니다. `ingest_queue` 는 retrieval 문서 ingestion 이후 후속 작업(`summary_regen`, `contradiction_scan`, `ner_extract`)을 drain 할 때 사용되며, 자동 UPS/Stop hook 의 `memory_chunks` 저장 경로에는 끼지 않습니다.
+현재 구현은 저장 경로가 분리되어 있습니다. **(1) 세션 시작**, **(2) 매 turn 자동 hook**은 `memory_chunks` 중심으로 동작하고, **(3) 사용자 명시 `/retrieve` 디스패처**는 `chunks_v2`/`summaries` 중심으로 먼저 검색한 뒤 후보가 없을 때만 `memory_chunks` read-only fallback 을 사용합니다. `ingest_queue` 는 retrieval 문서 ingestion 이후 후속 작업(`summary_regen`, `contradiction_scan`, `ner_extract`)을 drain 할 때 사용되며, 자동 UPS/Stop hook 의 `memory_chunks` 저장 경로에는 끼지 않습니다.
 
 ```mermaid
 %%{init: {'flowchart': {'useMaxWidth': false, 'rankSpacing': 80, 'nodeSpacing': 50}, 'theme': 'default'}}%%
@@ -156,7 +157,10 @@ flowchart TB
     QEMB --> HYB["chunk retrieval<br/>chunks_v2 FTS5 + cosine<br/>short-token fallback<br/>(sync/daemon-ready)"]
     HYB --> RRF["RRF fusion<br/>semantic 0.8 / BM25 0.2<br/>(sync)"]
     RRF --> BOOST["is_current + recency<br/>+ entity coverage boost<br/>(sync)"]
-    BOOST --> RG{"rerank 조건"}
+    BOOST --> MEMFB{"후보 없음?"}
+    MEMFB -->|yes| MCHUNK["memory_chunks read-only fallback<br/>(sync)"]
+    MCHUNK --> CTX
+    MEMFB -->|no| RG{"rerank 조건"}
     RG -->|yes| RR["cross-encoder rerank<br/>(sync/daemon-ready)"]
     RG -->|no| CTX["context block / JSON<br/>(sync)"]
     RR --> CTX
@@ -196,7 +200,7 @@ flowchart TB
 | 라벨 | 의미 | 노드 |
 |---|---|---|
 | `(sync)` SessionStart / UPS / Stop | 세션 시작과 매 turn hook 동기 경로 | `SCHEMA` · `SEED` · `SOUL` · `LOG` · `ROUTE` · `PREFILL` · `CTX0` · `LOG2` |
-| `(sync)` /retrieve 진입 | `/retrieve` 디스패처 동기 경로 | `QN` · `RES` · `RRES` · `SCOPE` · `RRF` · `BOOST` · `GROUND` · `CCHECK` · `CTX` |
+| `(sync)` /retrieve 진입 | `/retrieve` 디스패처 동기 경로 | `QN` · `RES` · `RRES` · `SCOPE` · `RRF` · `BOOST` · `MEMFB` · `MCHUNK` · `GROUND` · `CCHECK` · `CTX` |
 | `(sync/daemon-ready)` | `/retrieve` 동기 경로 중 무거운 후보 — daemon 분리 1순위 | `QEMB` · `HYB` · `FSUM` · `GSUM` · `RR` |
 | `(async)` 자동 hook 백그라운드 | 사용자 turn 차단 없이 `memory_chunks` 에 직접 저장 | `LF` · `ANL` · `FETCH` · `SRCSEARCH` · `SPLIT_EXT` · `EXTRACT` · `CLASSIFY` |
 | `ingest_queue` | retrieval v2 문서 ingestion 뒤 후속 작업을 순차 drain | `ENQ` · `DRAIN` · `J4` · `J5` · `J6` |
@@ -228,7 +232,7 @@ UPS hook 자동 경로는 `LOG → ROUTE → PREFILL → CTX0` 만 실행해 < 5
 
 ### Memory
 
-매 prompt마다 hook이 자동으로 prepend·누적하는 게 기본 흐름이고, `/memory ...` skill 은 그 흐름에 **수동 개입**할 때만 사용합니다. 현재 기본 사용자 RAG 경로는 자동 prefill + `/memory search`/`inject` 입니다. `/retrieve` 는 별도 `documents`/`chunks_v2`/`summaries` 기반 문서 retrieval 경로입니다. 현재 `/memory` dispatcher 는 legacy `memory_chunks` 테이블을 직접 읽고 씁니다. 즉 `/memory remember` 는 redaction 후 즉시 INSERT, `pin`/`unpin` 은 플래그 UPDATE, `refresh` 는 외부 chunk DELETE 후 필요 시 재 fetch, `forget` 은 DELETE 입니다. 전체 플로우는 위 "전체 플로우 다이어그램" 참조.
+매 prompt마다 hook이 자동으로 prepend·누적하는 게 기본 흐름이고, `/memory ...` skill 은 그 흐름에 **수동 개입**할 때만 사용합니다. 현재 기본 사용자 RAG 경로는 자동 prefill + `/memory search`/`inject` 입니다. `/retrieve` 는 별도 `documents`/`chunks_v2`/`summaries` 기반 문서 retrieval 경로를 우선 사용하고, 후보가 없을 때 `memory_chunks` 를 read-only fallback 으로 조회합니다. 현재 `/memory` dispatcher 는 legacy `memory_chunks` 테이블을 직접 읽고 씁니다. 즉 `/memory remember` 는 redaction 후 즉시 INSERT, `pin`/`unpin` 은 플래그 UPDATE, `refresh` 는 외부 chunk DELETE 후 필요 시 재 fetch, `forget` 은 DELETE 입니다. 전체 플로우는 위 "전체 플로우 다이어그램" 참조.
 
 #### 자연어 → 서브커맨드 매핑
 
@@ -247,7 +251,7 @@ UPS hook 자동 경로는 `LOG → ROUTE → PREFILL → CTX0` 만 실행해 < 5
 | `이거 잊어줘` (id 포함) | `forget <id>` | DB row + FTS 인덱스 영구 제거 (trigger 자동 동기) |
 | `노션 페이지 갱신 / slack 다시 fetch` | `refresh <url\|source slack\|source notion\|project>` | 외부 chunk 무효화 + 다음 prefill 에 재 fetch (수동 trigger only) |
 
-현재 `/memory` write (`remember` · `pin` · `refresh` · `forget`) 는 `memory_chunks` 에 직접 반영됩니다. `search` · `show` · `inject` · `list` · `stats` 는 read-only 입니다. retrieval v2 의 `chunks_v2`/`summaries`/`ingest_queue` 경로와 `/memory` legacy 경로는 아직 자동으로 수렴하지 않습니다.
+현재 `/memory` write (`remember` · `pin` · `refresh` · `forget`) 는 `memory_chunks` 에 직접 반영됩니다. `search` · `show` · `inject` · `list` · `stats` 는 read-only 입니다. retrieval v2 의 `chunks_v2`/`summaries`/`ingest_queue` 저장 경로와 `/memory` legacy write 경로는 아직 분리되어 있지만, `/retrieve` 는 문서 후보가 없을 때 `memory_chunks` fallback 으로 기본 기억을 함께 조회합니다.
 
 `/memory remember` 로 사용자가 직접 박은 chunk 와 hook 이 응답에서 자동 추출한 chunk 는 같은 `memory_chunks` 테이블에 누적되어, 다음 turn 부터 동등한 자격으로 prefill 후보가 됩니다.
 

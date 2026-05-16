@@ -10,15 +10,12 @@
 
 ## RAG 기본 동작 안정화 우선순위
 
-목표는 기능 확장보다 먼저 **실제 프로젝트에서 기억이 저장되고, 다시 검색되며, 사용자가 답변 근거로 참고할 수 있는지**를 확인하는 것. 2026-05-16 에 redaction coverage, 자동 memory loop smoke test, 기본 읽기 경로 안내, 검색 fixture, 외부 source 상태 표시, events noise flag, profile summary 는 1차 적용 완료. 다음 PR 은 아래 순서로 진행.
+목표는 기능 확장보다 먼저 **실제 프로젝트에서 기억이 저장되고, 다시 검색되며, 사용자가 답변 근거로 참고할 수 있는지**를 확인하는 것. 2026-05-16 에 redaction coverage, 자동 memory loop smoke test, 기본 읽기 경로 안내, 검색 fixture, 외부 source 상태 표시, events noise flag, profile summary, `/retrieve` → `memory_chunks` read-only fallback 은 1차 적용 완료. 다음 PR 은 아래 순서로 진행.
 
-1. **읽기 경로 수렴**
-   단기 안내는 적용 완료: 기본 사용자 RAG는 자동 prefill + `/memory search/inject`, `/retrieve` 는 `chunks_v2` 문서 retrieval. 남은 결정은 `memory_chunks → chunks_v2` bridge 또는 `/retrieve` 의 legacy `memory_chunks` fallback 중 하나.
-
-2. **운영 정책 캘리브레이션**
+1. **운영 정책 캘리브레이션**
    `/memory profile`, `events.noise` 비율, `source_status` marker 누적량을 1~2주 관찰한 뒤 stale 기준, marker TTL, daemon 분리 여부를 판단한다.
 
-3. **후순위 기능 확장**
+2. **후순위 기능 확장**
    Workflow skill(`/commit-message`, `/pr-draft`, `/recap`, `/handoff`), registry, entity merge/split UI 는 RAG 기본 저장/검색 루프가 안정된 뒤 진행.
 
 ## 보안 — Redaction coverage 갭 (2026-05-11 관찰)
@@ -425,6 +422,6 @@ CREATE INDEX idx_chunks_page ON memory_chunks(project_id, meta_page_id);
 
 ## 다음 세션 시작 시 추천 픽업 지점
 
-1. **읽기 경로 수렴 결정** — `memory_chunks → chunks_v2` bridge 와 `/retrieve` legacy fallback 중 어떤 경로가 더 단순한지 비교.
-2. **운영 데이터 관찰** — `/memory profile`, `events.noise` 비율, `source_status` marker 누적량으로 stale 기준/marker TTL/daemon 분리 판단.
+1. **운영 데이터 관찰** — `/memory profile`, `events.noise` 비율, `source_status` marker 누적량으로 stale 기준/marker TTL/daemon 분리 판단.
+2. **실사용 RAG 검증** — 실제 프로젝트에서 자동 prefill, `/memory search/inject`, `/retrieve` memory fallback 이 답변 근거로 충분한지 확인.
 3. **후순위** — Workflow skill, registry, entity merge/split UI, Chunk 분류 2단계는 RAG 기본 동작 안정 후 진입.

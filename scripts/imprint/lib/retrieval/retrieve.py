@@ -5,6 +5,7 @@ embedding/sqlite-vec 미가용 시 FTS-only path 로 graceful degradation.
 """
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
 from dataclasses import dataclass, field
@@ -14,7 +15,7 @@ from . import embedding as emb_mod
 from . import rerank as rerank_mod
 from ._common import Span, db_connect, profile_emit
 from .entity import resolve_in_query
-from .normalize import normalize_alias, normalize_query
+from .normalize import normalize_alias, normalize_chunk_type, normalize_query
 
 # Hybrid search defaults — 명세 권장 값.
 VECTOR_TOPN = 100
@@ -169,6 +170,118 @@ def _like_fallback_search(
     return rows[:top_n]
 
 
+def _memory_chunks_fallback_search(
+    conn: sqlite3.Connection,
+    project_id: str,
+    raw_query: str,
+    normalized_query: str,
+    top_n: int,
+) -> list[RetrievalCandidate]:
+    """문서 retrieval 결과가 없을 때 legacy memory_chunks 를 read-only 후보로 사용.
+
+    자동 hook 과 `/memory remember` 는 아직 `memory_chunks` 에 직접 저장한다.
+    bridge 로 데이터를 복제하기 전까지는 `/retrieve` 가 빈 결과일 때만 이 fallback 을
+    타게 해, 기본 RAG 기억을 명시 조회에서도 확인할 수 있게 한다.
+    """
+    fts_query = _build_fts_query(f"{raw_query} {normalized_query}")
+    rows: list[sqlite3.Row] = []
+    if fts_query:
+        cur = conn.execute(
+            """
+            SELECT m.id, m.chunk_type, m.text, m.metadata_json, m.created_at, m.pinned,
+                   bm25(memory_chunks_fts) AS bm25_score
+            FROM memory_chunks_fts
+            JOIN memory_chunks m ON m.rowid = memory_chunks_fts.rowid
+            WHERE memory_chunks_fts MATCH ?
+              AND m.project_id = ?
+              AND m.chunk_type != 'source_status'
+            ORDER BY m.pinned DESC, bm25_score, m.created_at DESC
+            LIMIT ?
+            """,
+            (fts_query, project_id, top_n),
+        )
+        rows = list(cur.fetchall())
+
+    tokens: list[str] = []
+    seen: set[str] = set()
+    for source in (raw_query, normalized_query):
+        for tok in _TOKEN_RE.findall(source):
+            t = tok.strip().lower()
+            if len(t) < 2 or t in _LIKE_STOPWORDS or t in seen:
+                continue
+            seen.add(t)
+            tokens.append(t)
+
+    if not rows and tokens:
+        clauses = []
+        params: list[str] = []
+        for tok in tokens[:8]:
+            clauses.append("lower(m.text) LIKE ?")
+            params.append(f"%{tok}%")
+        cur = conn.execute(
+            f"""
+            SELECT m.id, m.chunk_type, m.text, m.metadata_json, m.created_at, m.pinned
+            FROM memory_chunks m
+            WHERE m.project_id = ?
+              AND m.chunk_type != 'source_status'
+              AND ({' OR '.join(clauses)})
+            ORDER BY m.created_at DESC
+            LIMIT ?
+            """,
+            (project_id, *params, max(top_n * 2, top_n)),
+        )
+        rows = list(cur.fetchall())
+
+        def hit_count(row: sqlite3.Row) -> int:
+            haystack = (row["text"] or "").lower()
+            return sum(1 for tok in tokens if tok in haystack)
+
+        rows.sort(key=lambda r: (-hit_count(r), -(r["pinned"] or 0)))
+        rows = rows[:top_n]
+
+    candidates: list[RetrievalCandidate] = []
+    for rank, row in enumerate(rows):
+        metadata: dict[str, Any]
+        try:
+            metadata = json.loads(row["metadata_json"] or "{}")
+            if not isinstance(metadata, dict):
+                metadata = {}
+        except (json.JSONDecodeError, TypeError):
+            metadata = {}
+        source_type = metadata.get("source") or "memory"
+        section_path = metadata.get("section_title") or metadata.get("section_path")
+        hits = 0
+        if tokens:
+            haystack = (row["text"] or "").lower()
+            hits = sum(1 for tok in tokens if tok in haystack)
+        rrf_score = RRF_BM25_WEIGHT * (1.0 / (RRF_K + rank))
+        boost = BOOST_CURRENT
+        if row["pinned"]:
+            boost += BOOST_RECENT
+        if hits:
+            boost += min(0.08, hits * 0.02)
+        candidates.append(
+            RetrievalCandidate(
+                chunk_id=row["id"],
+                document_id="memory_chunks",
+                retrieval_text=row["text"],
+                chunk_text=row["text"],
+                section_path=section_path,
+                source_type=str(source_type),
+                source_updated_at=row["created_at"],
+                is_current=1,
+                raw_chunk_type=row["chunk_type"],
+                normalized_chunk_type=normalize_chunk_type(row["chunk_type"]),
+                bm25_rank=rank,
+                vector_rank=None,
+                rrf_score=rrf_score,
+                boost_score=boost,
+                final_score=rrf_score + boost,
+            )
+        )
+    return sorted(candidates, key=lambda c: -c.final_score)
+
+
 def _vector_search(
     conn: sqlite3.Connection, project_id: str, query_embedding: bytes, top_n: int
 ) -> list[tuple[sqlite3.Row, float]]:
@@ -312,6 +425,11 @@ def retrieve(
                 ordered = sorted(merged.values(), key=lambda c: -c.final_score)[
                     :FUSION_CANDIDATES
                 ]
+                if not ordered:
+                    with Span("MEMFB"):
+                        ordered = _memory_chunks_fallback_search(
+                            conn, project_id, query, expanded, FUSION_CANDIDATES,
+                        )
 
             # RG
             rerank_used = False

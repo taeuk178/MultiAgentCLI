@@ -9,6 +9,14 @@
 
 기록 순서는 **최신이 위**. 항목당 한 단락 안에 변경/사유/대안 폐기 근거를 묶는다.
 
+## 2026-05-16 — `/retrieve` memory_chunks read-only fallback 적용
+
+**무엇:** `/retrieve` 의 문서 retrieval 결과가 0개일 때 `memory_chunks` 를 read-only fallback 으로 조회하도록 연결했다. 기본 경로는 그대로 `chunks_v2`/`summaries` 우선이며, fallback 은 `source_status` marker 를 제외하고 `decision/spec/message/thread/...` 같은 실제 memory chunk 만 후보로 만든다. `TC-14 Retrieve memory_chunks fallback` 으로 direct `/retrieve` 와 routed `/retrieve --routed` 모두에서 자동 hook·`/memory remember` 계열 기억이 보이는지 고정했다.
+
+**왜:** 실제 프로젝트 사용성 테스트에 들어가기 전, “자동 hook 이 저장한 기억을 다음 turn prefill 뿐 아니라 명시 조회에서도 확인할 수 있는가”가 먼저 필요했다. `memory_chunks → chunks_v2` bridge 는 복제·dedup·versioning 정책까지 같이 건드리므로 아직 무겁다. 빈 결과일 때만 fallback 하는 방식은 기존 문서 retrieval 품질을 건드리지 않으면서 기본 RAG 신뢰성을 빠르게 올린다.
+
+**남은 점:** fallback 은 수렴을 위한 최소 연결이며, `chunks_v2` 의 entity grounding·summary link·contradiction scan 품질을 `memory_chunks` 에 그대로 제공하지는 않는다. 실제 사용성 테스트에서 memory fallback 이 자주 주 경로가 되면 bridge 또는 unified storage 를 다시 검토한다.
+
 ## 2026-05-16 — RAG 운영 관찰성 1차 적용: source status, noise flag, profile summary
 
 **무엇:** RAG 기본 동작 안정화의 남은 관찰성 항목을 1차 적용. Slack/Notion lazy-fetch 에서 URL cap 초과는 `skipped_by_cap`, explicit URL 실패는 `fetch_failed`, keyword 결과 없음은 `fetch_empty` 로 `source_status` marker chunk 를 남긴다. `/memory list` 는 `ok/stale/fetch_failed/skipped_by_cap` 상태 컬럼을 표시하고, `/memory show --json` 은 계산된 `source_status` 를 반환한다. `events` 테이블에 `noise INTEGER DEFAULT 0` 을 추가하고, `UserPromptSubmit` 에서 짧은 backchannel prompt 를 `noise=1` 로 표식한다. `/memory profile` 은 `IMPRINT_PROFILE=1` 로 누적된 `profile.jsonl` 의 stage 별 p50/p95/max latency 와 payload bytes 를 요약한다.
