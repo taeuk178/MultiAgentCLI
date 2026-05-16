@@ -22,7 +22,8 @@ from .normalize import normalize_query
 from .retrieve import RetrievalCandidate, retrieve as chunk_retrieve
 from .scope import classify, ScopeDecision
 
-# Depth limit — 명세 기준.
+# Routed retrieval depth limits.
+# scope 별로 summary/chunk fan-out 을 제한해 context 폭과 latency 를 예측 가능하게 둔다.
 FEATURE_SUMMARY_LIMIT = 5
 FEATURE_CHUNK_LIMIT = 8
 GLOBAL_PROJECT_LIMIT = 1
@@ -31,6 +32,7 @@ GLOBAL_FEATURE_LIMIT = 5
 GLOBAL_CHUNK_LIMIT = 6
 GROUND_DRILLDOWN_LIMIT = 3
 
+# FTS query builder 에서 한국어/영문/숫자 token 을 뽑는 최소 tokenizer.
 _TOKEN_RE = re.compile(r"[가-힣A-Za-z0-9]+")
 
 

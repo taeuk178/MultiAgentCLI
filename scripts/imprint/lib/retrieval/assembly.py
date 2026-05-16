@@ -54,10 +54,23 @@ def format_for_claude(
             )
         lines.append("")
 
+    clues = [c for c in result.candidates if c.source_type == "working"]
+    evidence = [c for c in result.candidates if c.source_type != "working"]
+
+    if clues:
+        lines.append("[Current Turn Clues]")
+        for i, cand in enumerate(clues, 1):
+            lines.extend(_format_chunk_block(
+                i, source_type=cand.source_type, section_path=cand.section_path,
+                is_current=cand.is_current, source_updated_at=cand.source_updated_at,
+                chunk_text=cand.chunk_text,
+            ))
+            lines.append("")
+
     lines.append("[Retrieved Context]")
-    if not result.candidates:
+    if not evidence:
         lines.append("(검색 결과 없음)")
-    for i, cand in enumerate(result.candidates, 1):
+    for i, cand in enumerate(evidence, 1):
         lines.extend(_format_chunk_block(
             i, source_type=cand.source_type, section_path=cand.section_path,
             is_current=cand.is_current, source_updated_at=cand.source_updated_at,
@@ -122,10 +135,23 @@ def format_routed_for_claude(
             lines.append("")
 
     # grounding chunks — summary 별 drill-down + 본 검색 chunk 합쳐 보여줌.
-    if result.chunks or result.ground_chunks:
+    clues = [c for c in result.chunks if c.source_type == "working"]
+    chunks = [c for c in result.chunks if c.source_type != "working"]
+
+    if clues:
+        lines.append("[Current Turn Clues]")
+        for i, cand in enumerate(clues, 1):
+            lines.extend(_format_chunk_block(
+                i, source_type=cand.source_type, section_path=cand.section_path,
+                is_current=cand.is_current, source_updated_at=cand.source_updated_at,
+                chunk_text=cand.chunk_text,
+            ))
+        lines.append("")
+
+    if chunks or result.ground_chunks:
         lines.append("[Grounding Chunks]")
         i = 1
-        for cand in result.chunks:
+        for cand in chunks:
             lines.extend(_format_chunk_block(
                 i, source_type=cand.source_type, section_path=cand.section_path,
                 is_current=cand.is_current, source_updated_at=cand.source_updated_at,

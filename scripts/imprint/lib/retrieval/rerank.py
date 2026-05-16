@@ -15,6 +15,8 @@ from typing import Sequence
 
 from ._common import log
 
+# Cross-encoder runtime settings.
+# Rerank is optional and gated by retrieve.py, so timeout/cache keep latency bounded.
 CROSS_ENCODER_NAME = os.environ.get("IMPRINT_RERANK_MODEL") or "BAAI/bge-reranker-v2-m3"
 RERANK_TIMEOUT_MS = int(os.environ.get("IMPRINT_RERANK_TIMEOUT_MS") or "200")
 RERANK_CACHE_SIZE = int(os.environ.get("IMPRINT_RERANK_CACHE_SIZE") or "64")

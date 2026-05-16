@@ -21,10 +21,14 @@ from datetime import datetime, timedelta, timezone
 
 from ._common import db_connect, log, new_id, now_iso
 
+# Local NLI model and fallback judge runtime settings.
+# NLI is fast/optional; Haiku judge is slower but helps mid-confidence pairs.
 NLI_MODEL_NAME = os.environ.get("IMPRINT_NLI_MODEL") or "MoritzLaurer/mDeBERTa-v3-base-mnli-xnli"
 NLI_TIMEOUT_MS = int(os.environ.get("IMPRINT_NLI_TIMEOUT_MS") or "500")
 LLM_JUDGE_TIMEOUT_MS = int(os.environ.get("IMPRINT_LLM_JUDGE_TIMEOUT_MS") or "30000")
 CLAUDE_BIN = os.environ.get("IMPRINT_CLAUDE_BIN") or "claude"
+
+# Candidate generation only compares decisions close enough in source update time.
 TIME_GAP_DAYS = int(os.environ.get("IMPRINT_CONTRADICTION_TIME_GAP_DAYS") or "90")
 
 # 3구간 임계 — 명세 예시값. 측정 후 캘리브레이션.

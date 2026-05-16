@@ -894,14 +894,24 @@ def tc_15_first_turn_working_overlay(env: dict, home: str, case: CaseResult) -> 
             and md.get("memory_tier") == "working"
             and md.get("memory_kind") == "raw_turn"
             and md.get("session_visible") is True
+            and md.get("source_type") == "chat"
+            and md.get("evidence_level") == "raw_turn"
+            and md.get("grounded") is False
+            and md.get("need_retrieval") is True
         )
-        rewrite_ok = "onclick" in (md.get("query_rewrite") or "")
+        rewrite_ok = (
+            "onclick" in (md.get("query_rewrite") or "")
+            and len(md.get("query_surfaces") or []) >= 2
+        )
 
     checks = {
         "ups": rc_ups == 0,
         "working_chunk": working_ok,
         "rewrite": rewrite_ok,
-        "prefill_working": "[working] A 버튼 클릭 동작 알려줘" in ups_out,
+        "prefill_working": (
+            "[Current turn clues]" in ups_out
+            and "[working] A 버튼 클릭 동작 알려줘" in ups_out
+        ),
         "prefill_durable": "테스트 모드" in ups_out,
         "noise_no_working": rc_noise == 0 and noise_working == 0,
         "retrieve_union_working": any(c.get("source_type") == "working" for c in candidates),
@@ -918,6 +928,178 @@ def tc_15_first_turn_working_overlay(env: dict, home: str, case: CaseResult) -> 
     )
     if not case.passed and ups_err:
         case.detail += f" ups_err={ups_err[:120]}"
+
+
+def tc_16_memory_lane_policy(env: dict, home: str, case: CaseResult) -> None:
+    """working cleanup/gate/provenance + low-confidence MEMFB policy."""
+    env_h = hook_env(env)
+    env_h["IMPRINT_CLAUDE_BIN"] = make_fake_claude(home)
+    env_h["IMPRINT_WORKING_TTL_HOURS"] = "1"
+    env_h["IMPRINT_WORKING_MAX_PER_SESSION"] = "2"
+    rc, _, err = run_cmd(env_h, ["bash", "scripts/imprint/session-start.sh"])
+    if rc != 0:
+        case.passed = False
+        case.detail = f"session-start rc={rc} err={err[:120]}"
+        return
+
+    now = "2026-05-16T00:00:00Z"
+    old = "2026-05-15T00:00:00Z"
+    conn = sqlite3.connect(str(Path(home) / "app.sqlite"))
+    try:
+        for idx, created in enumerate([old, now, now, now]):
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO memory_chunks
+                  (id, project_id, source_event_id, chunk_type, text, metadata_json, created_at, pinned)
+                VALUES (?, ?, NULL, 'raw_turn', ?, ?, ?, 0)
+                """,
+                (
+                    f"tc16-working-{idx}",
+                    ROOT_PROJECT_ID,
+                    f"tc16 working {idx}",
+                    json.dumps({
+                        "memory_tier": "working",
+                        "memory_kind": "raw_turn",
+                        "session_visible": True,
+                        "session_id": "tc16-clean",
+                    }),
+                    created,
+                ),
+            )
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO memory_chunks
+              (id, project_id, source_event_id, chunk_type, text, metadata_json, created_at, pinned)
+            VALUES ('tc16-durable-keep', ?, NULL, 'decision', 'durable 유지', '{}', ?, 0)
+            """,
+            (ROOT_PROJECT_ID, old),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    cleanup_input = json.dumps({"prompt": "A 버튼 클릭 동작 알려줘", "session_id": "tc16-clean"}, ensure_ascii=False)
+    rc_clean, _, _ = run_cmd(
+        env_h, ["bash", "scripts/imprint/user-prompt-submit.sh"], input_text=cleanup_input,
+    )
+    gate_input = json.dumps({"prompt": "PR 올려줘", "session_id": "tc16-gate"}, ensure_ascii=False)
+    rc_gate, gate_out, _ = run_cmd(
+        env_h, ["bash", "scripts/imprint/user-prompt-submit.sh"], input_text=gate_input,
+    )
+
+    code = """
+import sys; sys.path.insert(0, %r)
+from ingestion import db, insert_external_chunk, insert_extracted_chunk, insert_source_status_chunk
+with db() as conn:
+    insert_external_chunk(conn, %r, 'spec', '외부 원문 근거', {'source':'notion','url':'https://notion.so/tc16'})
+    insert_extracted_chunk(conn, %r, None, 'decision', 'assistant 추출 근거', ['assistant'])
+    insert_source_status_chunk(conn, %r, source='slack', status='fetch_failed', text='slack failed', metadata={'url':'https://x.slack.com/archives/C/p1'})
+    conn.commit()
+""" % (str(LIB_DIR), ROOT_PROJECT_ID, ROOT_PROJECT_ID, ROOT_PROJECT_ID)
+    rc_prov, _, err_prov = run_python(env, code)
+
+    conn = sqlite3.connect(str(Path(home) / "app.sqlite"))
+    try:
+        working_clean_count = conn.execute(
+            """
+            SELECT COUNT(*) FROM memory_chunks
+            WHERE project_id = ?
+              AND json_extract(metadata_json, '$.memory_tier') = 'working'
+              AND json_extract(metadata_json, '$.session_id') = 'tc16-clean'
+            """,
+            (ROOT_PROJECT_ID,),
+        ).fetchone()[0]
+        durable_keep = conn.execute(
+            "SELECT COUNT(*) FROM memory_chunks WHERE id = 'tc16-durable-keep'",
+        ).fetchone()[0]
+        gate_md_raw = conn.execute(
+            """
+            SELECT metadata_json FROM memory_chunks
+            WHERE project_id = ?
+              AND json_extract(metadata_json, '$.session_id') = 'tc16-gate'
+            ORDER BY created_at DESC LIMIT 1
+            """,
+            (ROOT_PROJECT_ID,),
+        ).fetchone()
+        provenance_rows = conn.execute(
+            """
+            SELECT chunk_type, metadata_json FROM memory_chunks
+            WHERE text IN ('외부 원문 근거', 'assistant 추출 근거', 'slack failed')
+            ORDER BY chunk_type
+            """
+        ).fetchall()
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO memory_chunks
+              (id, project_id, source_event_id, chunk_type, text, metadata_json, created_at, pinned)
+            VALUES ('tc16-memfb', ?, NULL, 'decision', '청운 플래그는 fallback memory에서 확인합니다.', '{}', ?, 0)
+            """,
+            (PROJECT_ID, now),
+        )
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO memory_chunks
+              (id, project_id, source_event_id, chunk_type, text, metadata_json, created_at, pinned)
+            VALUES ('tc16-working-low', ?, NULL, 'raw_turn', '청운 플래그 알려줘', ?, ?, 0)
+            """,
+            (
+                PROJECT_ID,
+                json.dumps({
+                    "memory_tier": "working",
+                    "memory_kind": "raw_turn",
+                    "session_visible": True,
+                    "session_id": "tc16-low",
+                }),
+                now,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    gate_md = json.loads(gate_md_raw[0]) if gate_md_raw else {}
+    provenance = []
+    for _ctype, md_raw in provenance_rows:
+        try:
+            provenance.append(json.loads(md_raw))
+        except json.JSONDecodeError:
+            provenance.append({})
+
+    env_r = dict(env)
+    env_r["IMPRINT_SESSION_ID"] = "tc16-low"
+    low = _retrieve_plain_json(env_r, "청운 플래그 알려줘")
+    low_chunks = low.get("candidates") or []
+    low_text = "\n".join(c.get("chunk_text", "") for c in low_chunks)
+
+    checks = {
+        "cleanup": rc_clean == 0 and working_clean_count <= 2 and durable_keep == 1,
+        "gate": (
+            rc_gate == 0
+            and gate_md.get("need_retrieval") is False
+            and "durable search skipped" in gate_out
+        ),
+        "provenance": (
+            rc_prov == 0
+            and any(p.get("evidence_level") == "raw_source" and p.get("grounded") is True and p.get("source_uri") for p in provenance)
+            and any(p.get("evidence_level") == "assistant_extracted" and p.get("source_type") == "chat" for p in provenance)
+            and any(p.get("evidence_level") == "status_marker" and p.get("grounded") is False for p in provenance)
+        ),
+        "low_conf_memfb": (
+            any(c.get("source_type") == "working" for c in low_chunks)
+            and "fallback memory" in low_text
+        ),
+    }
+    case.metrics = checks | {
+        "working_clean_count": working_clean_count,
+        "low_chunks": len(low_chunks),
+    }
+    case.passed = all(checks.values())
+    case.detail = (
+        f"cleanup={checks['cleanup']} gate={checks['gate']} "
+        f"provenance={checks['provenance']} low_memfb={checks['low_conf_memfb']}"
+    )
+    if not case.passed and err_prov:
+        case.detail += f" prov_err={err_prov[:120]}"
 
 
 # -----------------------------------------------------------------------------
@@ -940,6 +1122,7 @@ CASES: list[tuple[str, str, callable]] = [
     ("TC-13", "Source status + noise + profile", tc_13_source_noise_profile),
     ("TC-14", "Retrieve memory_chunks fallback", tc_14_retrieve_memory_fallback),
     ("TC-15", "First-turn working overlay", tc_15_first_turn_working_overlay),
+    ("TC-16", "Memory lane policy", tc_16_memory_lane_policy),
 ]
 
 

@@ -26,15 +26,17 @@ import subprocess
 import sys
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+# Runtime paths. IMPRINT_HOME 으로 테스트/실사용 DB 를 쉽게 격리한다.
 IMPRINT_HOME = Path(os.environ.get("IMPRINT_HOME") or (Path.home() / ".claude" / "imprint"))
 IMPRINT_DB = IMPRINT_HOME / "app.sqlite"
 IMPRINT_LOG = IMPRINT_HOME / "plugin.log"
 DEFAULT_REDACT_RULES = Path(__file__).with_name("redact-rules.default.json")
 
+# Prompt 분석 결과가 이 값보다 애매하면 refined prompt 를 더 보수적으로 다룬다.
 AMBIGUITY_THRESHOLD = float(os.environ.get("IMPRINT_AMBIGUITY_THRESHOLD") or "0.5")
 # 실측: spawn된 claude -p haiku는 사용자 repo의 CLAUDE.md까지 로드하므로
 # 단순 prompt도 10~20초 걸린다. fetch는 MCP RTT까지 더해져 더 오래 걸림.
@@ -51,6 +53,8 @@ CHUNK_TYPES = (
 )
 EXTERNAL_CHUNK_TYPES = ("spec", "message", "thread")
 
+# External lazy-fetch trigger patterns.
+# prompt 안의 직접 URL 은 sources.json keyword mode 보다 우선 처리된다.
 SLACK_PERMALINK_RE = re.compile(
     r"https://[a-z0-9\-]+\.slack\.com/archives/[A-Z0-9]+/p\d+(?:\?[^\s]*)?",
     re.IGNORECASE,
@@ -59,9 +63,18 @@ NOTION_URL_RE = re.compile(
     r"https://(?:www\.)?notion\.so/(?:[^\s/]+/)?[^\s?]+(?:\?[^\s]*)?",
     re.IGNORECASE,
 )
+
+# Tokenizer shared by deterministic gate/rewrite/prefill search.
 TOKEN_RE = re.compile(r"[가-힣A-Za-z0-9_]+")
+
+# Foreground prefill limits. Hook latency 를 위해 working/durable context 크기를 제한한다.
 WORKING_CONTEXT_LIMIT = int(os.environ.get("IMPRINT_WORKING_CONTEXT_LIMIT") or "4")
 PREFILL_CONTEXT_LIMIT = int(os.environ.get("IMPRINT_PREFILL_LIMIT") or "8")
+
+# Working memory retention policy.
+# raw_turn 은 clue 용도라 오래 보관하지 않고 session 당 최신 N개만 유지한다.
+WORKING_TTL_HOURS = int(os.environ.get("IMPRINT_WORKING_TTL_HOURS") or "24")
+WORKING_MAX_PER_SESSION = int(os.environ.get("IMPRINT_WORKING_MAX_PER_SESSION") or "20")
 
 
 def now_iso() -> str:
@@ -714,6 +727,13 @@ def insert_external_chunk(
     metadata: dict,
 ) -> str:
     metadata = dict(metadata or {})
+    source = str(metadata.get("source") or ("slack" if chunk_type in ("message", "thread") else "notion"))
+    metadata.setdefault("source", source)
+    metadata.setdefault("source_type", source)
+    metadata.setdefault("evidence_level", "raw_source")
+    metadata.setdefault("grounded", True)
+    if metadata.get("url") and not metadata.get("source_uri"):
+        metadata["source_uri"] = metadata["url"]
     metadata.setdefault("fetched_at", now_iso())
     text = redact_text(text)
     metadata = redact_json_value(metadata)
@@ -738,7 +758,13 @@ def insert_extracted_chunk(
     cid = str(uuid.uuid4())
     text = redact_text(text)
     keywords = [redact_text(k) for k in keywords]
-    md = {"source": "llm_response", "keywords": keywords}
+    md = {
+        "source": "llm_response",
+        "source_type": "chat",
+        "evidence_level": "assistant_extracted",
+        "grounded": False,
+        "keywords": keywords,
+    }
     conn.execute(
         "INSERT INTO memory_chunks "
         "(id, project_id, source_event_id, chunk_type, text, metadata_json, created_at, pinned) "
@@ -759,7 +785,16 @@ def insert_source_status_chunk(
 ) -> str:
     """Visible marker for external-source fetch state. Excluded from prefill."""
     md = dict(metadata or {})
-    md.update({"source": source, "status": status, "fetched_at": now_iso()})
+    md.update({
+        "source": source,
+        "source_type": source,
+        "status": status,
+        "evidence_level": "status_marker",
+        "grounded": False,
+        "fetched_at": now_iso(),
+    })
+    if md.get("url") and not md.get("source_uri"):
+        md["source_uri"] = md["url"]
     text = redact_text(text)
     md = redact_json_value(md)
     cid = str(uuid.uuid4())
@@ -872,6 +907,62 @@ def deterministic_rewrite_terms(prompt: str) -> list[str]:
     return out
 
 
+def deterministic_query_surfaces(prompt: str) -> list[dict[str, str]]:
+    """원문 의미를 바꾸지 않는 검색 표면형 묶음."""
+    original = (prompt or "").strip()
+    terms = deterministic_rewrite_terms(original)
+    surfaces: list[dict[str, str]] = []
+    if original:
+        surfaces.append({"kind": "original", "text": original})
+    if terms:
+        action_terms = [
+            t for t in terms
+            if t in {"button", "click", "handler", "action", "onclick", "ontap", "navigation"}
+        ]
+        code_terms = [
+            t for t in terms
+            if t in {
+                "handler", "action", "onclick", "ontap", "state", "settings",
+                "sync", "synchronize", "save", "side", "effect",
+            }
+        ]
+        if action_terms:
+            surfaces.append({"kind": "action", "text": " ".join(action_terms)})
+        if code_terms:
+            surfaces.append({"kind": "code", "text": " ".join(code_terms)})
+    return surfaces[:3]
+
+
+def retrieval_gate(prompt: str) -> tuple[bool, str]:
+    """자동 prefill 에서 durable query search 를 열지 결정하는 deterministic gate."""
+    s = (prompt or "").strip().lower()
+    if not s:
+        return False, "empty"
+    backchannel = re.compile(
+        r"^(응|네|넵|ㅇㅇ|좋아|그래|맞아|확인|고마워|감사|오케이|ok|yes|yeah|yep|sure)[\s.!?~]*$",
+        re.IGNORECASE,
+    )
+    simple_action = re.compile(
+        r"^(커밋해줘|커밋 진행해줘|커밋|commit|pr 올려줘|푸시해줘|push)[\s.!?~]*$",
+        re.IGNORECASE,
+    )
+    if len(s) <= 24 and (backchannel.match(s) or simple_action.match(s)):
+        return False, "backchannel_or_simple_action"
+    if SLACK_PERMALINK_RE.search(prompt) or NOTION_URL_RE.search(prompt):
+        return True, "explicit_source_url"
+    knowledge_terms = (
+        "어떻게", "왜", "어디", "동작", "정리", "찾아", "알려", "설명",
+        "버튼", "화면", "코드", "함수", "에러", "오류", "버그", "테스트",
+        "노션", "슬랙", "문서", "기획", "notion", "slack", "source", "url",
+        "handler", "onclick", "ontap", "retrieve", "memory", "rag",
+    )
+    if any(term in s for term in knowledge_terms):
+        return True, "knowledge_keyword"
+    if len(TOKEN_RE.findall(s)) >= 5:
+        return True, "multi_token_prompt"
+    return False, "low_information_prompt"
+
+
 def prefill_keywords(prompt: str) -> list[str]:
     """원문 token + deterministic rewrite terms 를 FTS/metadata 검색어로 사용."""
     seen: set[str] = set()
@@ -886,11 +977,55 @@ def prefill_keywords(prompt: str) -> list[str]:
             continue
         seen.add(t)
         out.append(t)
-    for term in deterministic_rewrite_terms(prompt):
-        if term not in seen:
-            seen.add(term)
-            out.append(term)
+    for surface in deterministic_query_surfaces(prompt):
+        for term in TOKEN_RE.findall(surface["text"]):
+            t = term.strip().lower()
+            if len(t) >= 2 and t not in seen:
+                seen.add(t)
+                out.append(t)
     return out[:16]
+
+
+def cleanup_working_memory(
+    conn: sqlite3.Connection,
+    project_id: str,
+    session_id: str,
+    now: str,
+) -> None:
+    """working tier 만 TTL/max 정책으로 정리."""
+    try:
+        now_dt = datetime.fromisoformat(now.replace("Z", "+00:00"))
+    except ValueError:
+        now_dt = datetime.now(timezone.utc)
+    cutoff = (now_dt - timedelta(hours=WORKING_TTL_HOURS)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    conn.execute(
+        """
+        DELETE FROM memory_chunks
+        WHERE project_id = ?
+          AND json_extract(metadata_json, '$.memory_tier') = 'working'
+          AND created_at < ?;
+        """,
+        (project_id, cutoff),
+    )
+    if not session_id or WORKING_MAX_PER_SESSION <= 0:
+        return
+    conn.execute(
+        f"""
+        DELETE FROM memory_chunks
+        WHERE project_id = ?
+          AND json_extract(metadata_json, '$.memory_tier') = 'working'
+          AND json_extract(metadata_json, '$.session_id') = ?
+          AND id NOT IN (
+            SELECT id FROM memory_chunks
+            WHERE project_id = ?
+              AND json_extract(metadata_json, '$.memory_tier') = 'working'
+              AND json_extract(metadata_json, '$.session_id') = ?
+            ORDER BY created_at DESC, rowid DESC
+            LIMIT {WORKING_MAX_PER_SESSION}
+          );
+        """,
+        (project_id, session_id, project_id, session_id),
+    )
 
 
 def insert_working_turn_chunk(
@@ -900,8 +1035,11 @@ def insert_working_turn_chunk(
     session_id: str,
     prompt: str,
 ) -> str:
-    rewrite_terms = deterministic_rewrite_terms(prompt)
     now = now_iso()
+    cleanup_working_memory(conn, project_id, session_id, now)
+    query_surfaces = deterministic_query_surfaces(prompt)
+    rewrite_terms = deterministic_rewrite_terms(prompt)
+    need_retrieval, retrieval_reason = retrieval_gate(prompt)
     cid = str(uuid.uuid4())
     text = prompt.strip()
     if rewrite_terms:
@@ -913,8 +1051,14 @@ def insert_working_turn_chunk(
         "session_id": session_id,
         "request_id": source_event_id,
         "source": "user_prompt_submit",
+        "source_type": "chat",
+        "evidence_level": "raw_turn",
+        "grounded": False,
         "write_ts": now,
         "searchable_at": now,
+        "need_retrieval": need_retrieval,
+        "retrieval_reason": retrieval_reason,
+        "query_surfaces": query_surfaces,
         "query_rewrite": " ".join(rewrite_terms),
         "keywords": prefill_keywords(prompt),
     }
@@ -931,6 +1075,7 @@ def insert_working_turn_chunk(
             now,
         ),
     )
+    cleanup_working_memory(conn, project_id, session_id, now)
     return cid
 
 
@@ -968,6 +1113,21 @@ def load_working_context(
             "score": 10.0,
         })
     return rows
+
+
+def _chunk_lane(chunk: dict) -> str:
+    try:
+        md = json.loads(chunk.get("metadata_json") or "{}")
+        if not isinstance(md, dict):
+            md = {}
+    except (json.JSONDecodeError, TypeError):
+        md = {}
+    if md.get("memory_tier") == "working":
+        return "current"
+    source = md.get("source_type") or md.get("source")
+    if source in ("slack", "notion") or chunk.get("chunk_type") in EXTERNAL_CHUNK_TYPES:
+        return "external"
+    return "durable"
 
 
 def search_memory(
@@ -1294,22 +1454,26 @@ def cmd_prefill(argv: list[str]) -> int:
         return 1
     project_id = argv[0]
     session_id = argv[1] if len(argv) > 1 else os.environ.get("IMPRINT_SESSION_ID", "")
+    request_id = argv[2] if len(argv) > 2 else ""
     prompt = sys.stdin.read()
     if not prompt.strip():
         return 0
 
     t0 = time.monotonic()
     chunks: list[dict] = []
+    need_retrieval, retrieval_reason = retrieval_gate(prompt)
     try:
         try:
             with db() as conn:
                 working = load_working_context(
                     conn, project_id, session_id, limit=WORKING_CONTEXT_LIMIT,
                 )
-                durable = search_memory(
-                    conn, project_id, prefill_keywords(prompt), prompt,
-                    limit=PREFILL_CONTEXT_LIMIT,
-                )
+                durable = []
+                if need_retrieval:
+                    durable = search_memory(
+                        conn, project_id, prefill_keywords(prompt), prompt,
+                        limit=PREFILL_CONTEXT_LIMIT,
+                    )
                 seen: set[str] = set()
                 chunks = []
                 for c in working + durable:
@@ -1329,28 +1493,59 @@ def cmd_prefill(argv: list[str]) -> int:
                       project_id=project_id,
                       dur_ms=int((time.monotonic() - t0) * 1000),
                       chunks=len(chunks),
+                      need_retrieval=need_retrieval,
+                      retrieval_reason=retrieval_reason,
                       prompt_bytes=len(prompt))
 
     if not chunks:
         return 0
 
-    out_lines = ["[Project memory context]"]
+    lanes: dict[str, list[dict]] = {
+        "current": [],
+        "recent": [],
+        "durable": [],
+        "external": [],
+    }
     for c in chunks:
         md = {}
         try:
             md = json.loads(c.get("metadata_json") or "{}")
         except (json.JSONDecodeError, TypeError):
             pass
-        src = md.get("source")
-        tag = c["chunk_type"]
-        if md.get("memory_tier") == "working":
-            tag = "working"
-        if src in ("slack", "notion"):
-            tag = src
-        text = (c["text"] or "").replace("\n", " ").strip()
-        if md.get("memory_tier") == "working":
-            text = (c["text"] or "").split("\n", 1)[0].strip()
-        out_lines.append(f"- [{tag}] {text[:300]}")
+        lane = _chunk_lane(c)
+        if lane == "current" and request_id and md.get("request_id") != request_id:
+            lane = "recent"
+        lanes[lane].append(c)
+
+    out_lines = ["[Project memory context]"]
+    if not need_retrieval:
+        out_lines.append(f"(durable search skipped: {retrieval_reason})")
+
+    def append_lane(title: str, items: list[dict]) -> None:
+        if not items:
+            return
+        out_lines.append(f"[{title}]")
+        for c in items:
+            md = {}
+            try:
+                md = json.loads(c.get("metadata_json") or "{}")
+            except (json.JSONDecodeError, TypeError):
+                pass
+            src = md.get("source_type") or md.get("source")
+            tag = c["chunk_type"]
+            if md.get("memory_tier") == "working":
+                tag = "working"
+            if src in ("slack", "notion"):
+                tag = src
+            text = (c["text"] or "").replace("\n", " ").strip()
+            if md.get("memory_tier") == "working":
+                text = (c["text"] or "").split("\n", 1)[0].strip()
+            out_lines.append(f"- [{tag}] {text[:300]}")
+
+    append_lane("Current turn clues", lanes["current"])
+    append_lane("Recent session evidence", lanes["recent"])
+    append_lane("Durable evidence", lanes["durable"])
+    append_lane("External fetched context", lanes["external"])
 
     sys.stdout.write("\n" + "\n".join(out_lines) + "\n")
     return 0

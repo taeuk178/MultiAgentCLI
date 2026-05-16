@@ -218,7 +218,7 @@ fi
 PREFILL_OUT=""
 if [[ -n "$PID" && -x "$(command -v python3)" ]]; then
   PREFILL_OUT=$(printf '%s' "$SAFE_PROMPT" \
-    | python3 "$SCRIPT_DIR/lib/ingestion.py" prefill "$PID" "$SESSION_ID" 2>>"$IMPRINT_LOG" || true)
+    | python3 "$SCRIPT_DIR/lib/ingestion.py" prefill "$PID" "$SESSION_ID" "$EVENT_ID" 2>>"$IMPRINT_LOG" || true)
 fi
 
 # Fallback: if ingestion.py produced nothing (claude CLI missing, OAuth not

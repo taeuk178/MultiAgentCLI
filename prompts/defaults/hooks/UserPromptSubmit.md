@@ -6,7 +6,7 @@ Claude Code가 직접 읽지 않습니다 — 사람이 보는 참고 문서입�
 무엇을 함:
   1) 현재 prompt를 working mini-chunk로 즉시 저장
   2) 라우팅 룰(.imprint/UserPromptSubmit.md)을 평가해 매칭된 agent 권고 prepend
-  3) working context + 관련 메모리 청크를 [Project memory context] 블록으로 prepend
+  3) gate 결과에 따라 lane 별 메모리 청크를 [Project memory context] 블록으로 prepend
 사용자 손길이 닿는 곳: `<project>/.imprint/UserPromptSubmit.md`
 주의: 매 turn 토큰을 소모, 모델이 라우팅 권고를 거부할 수 있음
 -->
@@ -19,7 +19,7 @@ Claude Code가 직접 읽지 않습니다 — 사람이 보는 참고 문서입�
 
 1. **working 저장** — 현재 prompt를 첫 turn 에도 보이는 경량 메모리로 저장
 2. **라우팅** — prompt에서 키워드를 감지하면 적합한 agent 호출을 권고
-3. **메모리 주입** — working context 와 프로젝트의 결정·고친 버그·todo 등을 `[Project memory context]` 블록으로 prepend
+3. **메모리 주입** — current clues, recent session evidence, durable/external evidence 를 `[Project memory context]` 블록으로 prepend
 
 ## 어떻게 활용
 
@@ -43,6 +43,9 @@ Claude Code가 직접 읽지 않습니다 — 사람이 보는 참고 문서입�
 - [pr-agent] PR 작업 — pr-agent 호출 권장
 
 [Project memory context]
+[Current turn clues]
+- [working] ...
+[Durable evidence]
 - [decision] ...
 ```
 

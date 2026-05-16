@@ -36,7 +36,7 @@ Slack/Notion lazy-fetch 를 쓰려면 Claude Code 쪽에 해당 MCP 가 별도�
 | 영역 | 설명 |
 |---|---|
 | Memory | prompt, assistant response, `/memory remember`, Slack/Notion fetch 결과를 redaction 후 `memory_chunks` 에 저장합니다. |
-| Prefill | 매 prompt 전에 현재 turn working context 와 관련 memory 를 `[Project memory context]` 로 자동 prepend 합니다. |
+| Prefill | 매 prompt 전에 현재 turn clues, 최근 session evidence, durable/external evidence 를 `[Project memory context]` 로 자동 prepend 합니다. |
 | `/memory` | 저장된 memory 를 검색, 확인, 주입, pin, 삭제, refresh 합니다. |
 | `/retrieve` | 문서 RAG(`chunks_v2`/`summaries`)를 우선 검색하고, 결과가 없으면 `memory_chunks` 를 read-only fallback 으로 조회합니다. |
 | Routing | `<project>/.imprint/UserPromptSubmit.md` 의 키워드 룰을 보고 routing advisory 를 prepend 합니다. |
@@ -51,7 +51,8 @@ Slack/Notion lazy-fetch 를 쓰려면 Claude Code 쪽에 해당 MCP 가 별도�
        events.user_message 저장
        현재 질문 working mini-chunk 저장
        routing rule 평가
-       working overlay + 관련 memory prefill
+       need-retrieval gate
+       lane별 memory prefill
        lazy-fetch background spawn
   -> Claude 응답
   -> Stop hook
@@ -92,6 +93,17 @@ Slack/Notion lazy-fetch 를 쓰려면 Claude Code 쪽에 해당 MCP 가 별도�
 ```
 
 fetch 실패, URL cap 초과, stale 상태는 `source_status` marker 로 남고 `/memory list/show` 에서 확인할 수 있습니다. 자동 refresh 는 하지 않으며, 필요할 때 `/memory refresh` 로 명시 갱신합니다.
+
+## Memory lane
+
+자동 prefill 은 raw 질문을 근거처럼 취급하지 않도록 lane 을 나눠 출력합니다.
+
+- `Current turn clues`: 현재 질문과 deterministic search surface
+- `Recent session evidence`: 최근 session-visible working memory
+- `Durable evidence`: decision/fix/todo/code_context/note 등 대화에서 추출된 기억
+- `External fetched context`: Slack/Notion/spec/message/thread 근거
+
+working memory 는 기본적으로 24시간 TTL 과 session 당 최신 20개 제한을 가집니다.
 
 ## 안전과 한계
 

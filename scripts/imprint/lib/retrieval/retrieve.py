@@ -18,25 +18,41 @@ from ._common import Span, db_connect, profile_emit
 from .entity import resolve_in_query
 from .normalize import normalize_alias, normalize_chunk_type, normalize_query
 
-# Hybrid search defaults — 명세 권장 값.
+# Hybrid candidate fan-out.
+# 각 검색 채널에서 넉넉히 후보를 모은 뒤 RRF/BOOST/RR 단계에서 줄인다.
 VECTOR_TOPN = 100
 BM25_TOPN = 100
 FUSION_CANDIDATES = 200
+
+# 최종 context 로 넘기는 기본 chunk 수. CLI top_k 인자가 없을 때 사용한다.
 FINAL_TOPK_DEFAULT = 10
 
-# RRF 가중치 (semantic 80 / BM25 20).
+# Reciprocal Rank Fusion 설정.
+# RRF_K 는 상위 rank 간 점수 차이를 완만하게 만드는 smoothing 값이고,
+# vector/BM25 weight 는 semantic recall 을 더 신뢰하는 현재 정책을 표현한다.
 RRF_K = 60
 RRF_VECTOR_WEIGHT = 0.8
 RRF_BM25_WEIGHT = 0.2
 
-# BOOST 가중치.
+# Candidate boost/penalty weights.
+# RRF 뒤에 현재성, entity coverage, recency, working clue, contradiction 신호를 더한다.
 BOOST_CURRENT = 0.15
 BOOST_ENTITY = 0.10
 BOOST_RECENT = 0.05
+
+# Working memory 는 근거라기보다 현재 질문 해석 clue 이므로 낮은 고정 점수로 soft union.
 WORKING_OVERLAY_SCORE = 0.12
 WORKING_OVERLAY_LIMIT = 4
 
-# RG 게이트 임계.
+# Confirmed contradiction 은 사실상 사용 금지에 가까운 강한 감점, candidate 는 약한 감점.
+BOOST_CONTRADICTION_CONFIRMED = -1.0
+BOOST_CONTRADICTION_CANDIDATE = -0.20
+
+# top1 이 이 값보다 낮으면 "후보는 있지만 약하다"고 보고 memory_chunks fallback 을 연다.
+LOW_CONFIDENCE_TOP1 = 0.13
+
+# Rerank gate thresholds.
+# 후보가 충분하고 top1 확신이 낮을 때만 cross-encoder 를 호출해 latency 를 제한한다.
 RG_MIN_CANDIDATES = 10
 RG_TOP1_THRESHOLD = 0.85
 
@@ -73,10 +89,87 @@ class RetrievalResult:
 
 
 _TOKEN_RE = re.compile(r"[가-힣A-Za-z0-9]+")
+
+# LIKE fallback 에서 query intent 단어를 검색 token 으로 쓰지 않기 위한 stopword.
 _LIKE_STOPWORDS = {
     "알려줘", "알려주세요", "설명해줘", "설명해주세요",
     "어떻게", "뭐야", "무엇", "동작",
 }
+
+
+def _query_surfaces(query: str, expanded: str) -> list[tuple[str, str]]:
+    """원문, entity-expanded, code/action surface 를 병렬 검색용으로 구성."""
+    surfaces: list[tuple[str, str]] = []
+    seen: set[str] = set()
+
+    def add(kind: str, text: str) -> None:
+        t = " ".join((text or "").split())
+        key = t.lower()
+        if t and key not in seen:
+            seen.add(key)
+            surfaces.append((kind, t))
+
+    add("original", query)
+    add("expanded", expanded)
+    q = query.lower()
+    terms: list[str] = []
+    if any(k in q for k in ("버튼", "button", "클릭", "click", "탭", "tap")):
+        terms.extend(["button", "click", "handler", "action", "onClick", "onTap", "navigation"])
+    if any(k in q for k in ("화면", "view", "screen", "페이지", "page")):
+        terms.extend(["screen", "view", "route", "navigation"])
+    if any(k in q for k in ("설정", "동기화", "sync", "저장", "save")):
+        terms.extend(["settings", "sync", "synchronize", "save", "state"])
+    if terms:
+        add("code", f"{expanded} {' '.join(terms)}")
+    return surfaces[:3]
+
+
+def _contradiction_penalty_ids(
+    conn: sqlite3.Connection,
+    project_id: str,
+    resolved: list[dict],
+) -> tuple[set[str], set[str]]:
+    entity_ids = [hit.get("entity_id") for hit in resolved if hit.get("entity_id")]
+    if not entity_ids:
+        return set(), set()
+    placeholders = ",".join("?" * len(entity_ids))
+    cur = conn.execute(
+        f"""
+        SELECT chunk_a_id, chunk_b_id, status
+        FROM contradictions
+        WHERE project_id = ?
+          AND entity_id IN ({placeholders})
+          AND status IN ('confirmed', 'candidate')
+        """,
+        (project_id, *entity_ids),
+    )
+    confirmed: set[str] = set()
+    candidate: set[str] = set()
+    for row in cur.fetchall():
+        target = confirmed if row["status"] == "confirmed" else candidate
+        target.add(row["chunk_a_id"])
+        target.add(row["chunk_b_id"])
+    return confirmed, candidate
+
+
+def _needs_memory_fallback(
+    ordered: list[RetrievalCandidate],
+    resolved_terms: set[str],
+) -> bool:
+    if not ordered:
+        return True
+    if ordered[0].final_score < LOW_CONFIDENCE_TOP1:
+        return True
+    if ordered and all(c.source_type == "working" for c in ordered[: min(3, len(ordered))]):
+        return True
+    if resolved_terms:
+        top = ordered[: min(3, len(ordered))]
+        if top and not any(
+            any(term and term in normalize_alias(c.retrieval_text) for term in resolved_terms)
+            for c in top
+        ):
+            return True
+    return False
 
 
 def _build_fts_query(query: str) -> str | None:
@@ -458,24 +551,37 @@ def retrieve(
 
             # HYB
             with Span("HYB"):
-                bm25_rows = _fts_search(conn, project_id, expanded, BM25_TOPN)
+                surfaces = _query_surfaces(query, expanded)
+                bm25_batches: list[list[sqlite3.Row]] = []
+                for _kind, surface in surfaces:
+                    rows = _fts_search(conn, project_id, surface, BM25_TOPN)
+                    if rows:
+                        bm25_batches.append(rows)
                 vector_rows: list[tuple[sqlite3.Row, float]] = []
                 if query_embedding is not None:
                     vector_rows = _vector_search(conn, project_id, query_embedding, VECTOR_TOPN)
-                if not bm25_rows and not vector_rows:
-                    bm25_rows = _like_fallback_search(
-                        conn, project_id, query, expanded, BM25_TOPN,
-                    )
+                if not bm25_batches and not vector_rows:
+                    like_rows: list[sqlite3.Row] = []
+                    for _kind, surface in surfaces:
+                        like_rows.extend(_like_fallback_search(
+                            conn, project_id, query, surface, BM25_TOPN,
+                        ))
+                    if like_rows:
+                        dedup_like: dict[str, sqlite3.Row] = {}
+                        for row in like_rows:
+                            dedup_like.setdefault(row["id"], row)
+                        bm25_batches.append(list(dedup_like.values()))
 
             # RRF
             with Span("RRF"):
                 merged: dict[str, RetrievalCandidate] = {}
-                for rank, row in enumerate(bm25_rows):
-                    cid = row["id"]
-                    cand = merged.get(cid) or _row_to_candidate(row)
-                    cand.bm25_rank = rank
-                    cand.rrf_score += RRF_BM25_WEIGHT * (1.0 / (RRF_K + rank))
-                    merged[cid] = cand
+                for batch in bm25_batches:
+                    for rank, row in enumerate(batch):
+                        cid = row["id"]
+                        cand = merged.get(cid) or _row_to_candidate(row)
+                        cand.bm25_rank = rank if cand.bm25_rank is None else min(cand.bm25_rank, rank)
+                        cand.rrf_score += RRF_BM25_WEIGHT * (1.0 / (RRF_K + rank))
+                        merged[cid] = cand
                 for rank, (row, _sim) in enumerate(vector_rows):
                     cid = row["id"]
                     cand = merged.get(cid) or _row_to_candidate(row)
@@ -493,6 +599,9 @@ def retrieve(
                     for term in (hit.get("canonical_name"), hit.get("matched_alias"))
                     if term
                 }
+                confirmed_penalty, candidate_penalty = _contradiction_penalty_ids(
+                    conn, project_id, resolved,
+                )
                 for cand in merged.values():
                     boost = 0.0
                     if cand.is_current:
@@ -513,16 +622,26 @@ def retrieve(
                                 break
                     if _is_recent(cand.source_updated_at):
                         boost += BOOST_RECENT
+                    if cand.chunk_id in confirmed_penalty:
+                        boost += BOOST_CONTRADICTION_CONFIRMED
+                    elif cand.chunk_id in candidate_penalty:
+                        boost += BOOST_CONTRADICTION_CANDIDATE
                     cand.boost_score = boost
                     cand.final_score = cand.rrf_score + boost
                 ordered = sorted(merged.values(), key=lambda c: -c.final_score)[
                     :FUSION_CANDIDATES
                 ]
-                if not ordered:
+                if _needs_memory_fallback(ordered, resolved_terms):
                     with Span("MEMFB"):
-                        ordered = _memory_chunks_fallback_search(
+                        fallback = _memory_chunks_fallback_search(
                             conn, project_id, query, expanded, FUSION_CANDIDATES,
                         )
+                        by_id = {c.chunk_id: c for c in ordered}
+                        for cand in fallback:
+                            by_id.setdefault(cand.chunk_id, cand)
+                        ordered = sorted(by_id.values(), key=lambda c: -c.final_score)[
+                            :FUSION_CANDIDATES
+                        ]
 
             # RG
             rerank_used = False

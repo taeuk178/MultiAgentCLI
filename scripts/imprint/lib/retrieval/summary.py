@@ -18,9 +18,13 @@ from typing import Iterable
 from . import embedding as emb_mod
 from ._common import db_connect, log, new_id, now_iso
 
+# Summary generation runtime knobs.
+# LLM path is optional; timeout/max chars cap background work and prompt size.
 CLAUDE_BIN = os.environ.get("IMPRINT_CLAUDE_BIN") or "claude"
 SUMMARY_TIMEOUT = int(os.environ.get("IMPRINT_SUMMARY_TIMEOUT") or "30")
 SUMMARY_MAX_CHARS = 1200
+
+# Deterministic fallback keeps only the first useful lines when LLM is unavailable.
 DETERMINISTIC_MAX_LINES = 8
 
 

@@ -24,6 +24,8 @@ from ._common import db_connect, log, new_id, now_iso
 from .chunking import ChunkConfig, ChunkSpec, split_document
 from .normalize import normalize_chunk_type
 
+# Optional context-prefix generation settings.
+# The prefix enriches retrieval_text but must be bounded because ingest can run on long docs.
 CLAUDE_BIN = os.environ.get("IMPRINT_CLAUDE_BIN") or "claude"
 CONTEXT_PREFIX_TIMEOUT = int(os.environ.get("IMPRINT_CONTEXT_PREFIX_TIMEOUT") or "20")
 CONTEXT_PREFIX_MAX_CHARS = 400
