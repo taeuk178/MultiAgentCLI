@@ -16,6 +16,8 @@ import subprocess
 import sys
 import tempfile
 import time
+import json
+import hashlib
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -25,6 +27,7 @@ LIB_DIR = ROOT / "scripts" / "imprint" / "lib"
 SCHEMA_PATH = LIB_DIR / "schema.sql"
 
 PROJECT_ID = "p_test"
+ROOT_PROJECT_ID = hashlib.sha256(str(ROOT).encode("utf-8")).hexdigest()[:16]
 
 
 @dataclass
@@ -94,6 +97,18 @@ def run_python(env: dict, code: str) -> tuple[int, str, str]:
     return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
 
 
+def run_cmd(env: dict, args: list[str], *, input_text: str = "") -> tuple[int, str, str]:
+    proc = subprocess.run(
+        args,
+        input=input_text,
+        env=env,
+        capture_output=True,
+        text=True,
+        cwd=str(ROOT),
+    )
+    return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
+
+
 def db_query(home: str, sql: str, params: tuple = ()) -> list[tuple]:
     conn = sqlite3.connect(str(Path(home) / "app.sqlite"))
     try:
@@ -101,6 +116,38 @@ def db_query(home: str, sql: str, params: tuple = ()) -> list[tuple]:
         return list(cur.fetchall())
     finally:
         conn.close()
+
+
+def hook_env(env: dict) -> dict:
+    out = dict(env)
+    out.pop("IMPRINT_BYPASS_HOOKS", None)
+    out["IMPRINT_NO_SEED"] = "1"
+    out["CLAUDE_PLUGIN_ROOT"] = str(ROOT)
+    return out
+
+
+def make_fake_claude(home: str) -> str:
+    path = Path(home) / "fake-claude"
+    raw_token = "ghp_abcdefghijklmnopqrstuvwxyz1234567890"
+    path.write_text(
+        f"""#!/bin/sh
+joined="$*"
+case "$joined" in
+  *"Extract durable knowledge chunks"*)
+    printf '%s\\n' '[{{"chunk_type":"decision","text":"A 버튼 클릭은 {raw_token} 없이 테스트 모드를 시작합니다.","keywords":["A 버튼","{raw_token}"]}}]'
+    ;;
+  *"Return STRICT JSON with EXACTLY these keys"*)
+    printf '%s\\n' '{{"ambiguity_score":0.1,"keywords":["A 버튼","클릭","button click"],"refined_prompt":null}}'
+    ;;
+  *)
+    printf '%s\\n' '[]'
+    ;;
+esac
+""",
+        encoding="utf-8",
+    )
+    path.chmod(0o755)
+    return str(path)
 
 
 # -----------------------------------------------------------------------------
@@ -393,6 +440,168 @@ def tc_10_priority_drain(env: dict, home: str, case: CaseResult) -> None:
     case.detail = f"order={order}"
 
 
+def tc_11_hook_memory_loop(env: dict, home: str, case: CaseResult) -> None:
+    """SessionStart → UPS → Stop → 다음 UPS + redaction 회귀 검증."""
+    env_h = hook_env(env)
+    env_h["IMPRINT_CLAUDE_BIN"] = make_fake_claude(home)
+    raw_token = "ghp_abcdefghijklmnopqrstuvwxyz1234567890"
+    raw_password = "password=super-secret-123"
+
+    rc, _, err = run_cmd(env_h, ["bash", "scripts/imprint/session-start.sh"])
+    if rc != 0:
+        case.passed = False
+        case.detail = f"session-start rc={rc} err={err[:120]}"
+        return
+
+    prompt = f'A 버튼 클릭 동작 알려줘 token {raw_token}'
+    ups_input = json.dumps({"prompt": prompt, "session_id": "tc11"}, ensure_ascii=False)
+    rc, ups_out, err = run_cmd(
+        env_h, ["bash", "scripts/imprint/user-prompt-submit.sh"], input_text=ups_input,
+    )
+    if rc != 0:
+        case.passed = False
+        case.detail = f"ups rc={rc} err={err[:120]}"
+        return
+
+    transcript = Path(home) / "tc11-transcript.jsonl"
+    transcript.write_text(
+        json.dumps({
+            "type": "assistant",
+            "message": {
+                "content": [{
+                    "type": "text",
+                    "text": f"결정: A 버튼 클릭은 테스트 모드를 시작합니다. {raw_password}",
+                }],
+            },
+        }, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    stop_input = json.dumps({"transcript_path": str(transcript)}, ensure_ascii=False)
+    rc, _, err = run_cmd(
+        env_h, ["bash", "scripts/imprint/stop.sh"], input_text=stop_input,
+    )
+    if rc != 0:
+        case.passed = False
+        case.detail = f"stop rc={rc} err={err[:120]}"
+        return
+
+    time.sleep(0.5)
+    next_input = json.dumps({"prompt": "A 버튼 클릭 동작 알려줘", "session_id": "tc11-next"}, ensure_ascii=False)
+    rc, next_out, err = run_cmd(
+        env_h, ["bash", "scripts/imprint/user-prompt-submit.sh"], input_text=next_input,
+    )
+
+    conn = sqlite3.connect(str(Path(home) / "app.sqlite"))
+    try:
+        event_rows = conn.execute(
+            "SELECT kind, text_clean FROM events WHERE project_id = ? ORDER BY created_at",
+            (ROOT_PROJECT_ID,),
+        ).fetchall()
+        chunk_rows = conn.execute(
+            "SELECT chunk_type, text, metadata_json FROM memory_chunks "
+            "WHERE project_id = ? AND source_event_id IS NOT NULL",
+            (ROOT_PROJECT_ID,),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    all_event_text = "\n".join(row[1] for row in event_rows)
+    all_chunk_text = "\n".join(row[1] for row in chunk_rows)
+    raw_absent = (
+        raw_token not in all_event_text
+        and raw_token not in all_chunk_text
+        and raw_password not in all_event_text
+        and raw_password not in all_chunk_text
+    )
+    redacted_present = (
+        "gh*_[REDACTED]" in all_event_text
+        and "[REDACTED]" in all_event_text
+        and "gh*_[REDACTED]" in all_chunk_text
+    )
+    prefilled = "[Project memory context]" in next_out and "A 버튼 클릭은" in next_out
+
+    case.metrics = {
+        "events": len(event_rows),
+        "chunks": len(chunk_rows),
+        "raw_absent": raw_absent,
+        "redacted_present": redacted_present,
+        "prefilled": prefilled,
+    }
+    case.passed = (
+        rc == 0
+        and len(event_rows) >= 2
+        and len(chunk_rows) >= 1
+        and raw_absent
+        and redacted_present
+        and prefilled
+    )
+    case.detail = (
+        f"events={len(event_rows)} chunks={len(chunk_rows)} "
+        f"redacted={redacted_present} prefilled={prefilled}"
+    )
+
+
+def tc_12_memory_search_fixture(env: dict, home: str, case: CaseResult) -> None:
+    """memory_chunks 기본 RAG 경로: search/list/inject fixture."""
+    env_h = hook_env(env)
+    rc, _, err = run_cmd(env_h, ["bash", "scripts/imprint/session-start.sh"])
+    if rc != 0:
+        case.passed = False
+        case.detail = f"session-start rc={rc} err={err[:120]}"
+        return
+
+    now = "2026-05-16T00:00:00Z"
+    rows = [
+        ("tc12-decision", "decision", "테스트모드 A 버튼 결정 사항입니다.", "{}", 1),
+        ("tc12-fix", "fix", "테스트모드 클릭 오류를 수정했습니다.", "{}", 0),
+        ("tc12-todo", "todo", "테스트모드 접근성 TODO를 확인해야 합니다.", "{}", 0),
+        ("tc12-note", "note", "테스트모드 참고 노트입니다.", "{}", 0),
+        ("tc12-spec", "spec", "테스트모드 노션 정책입니다.", '{"source":"notion","page_id":"tc12"}', 0),
+        ("tc12-message", "message", "테스트모드 Slack 공지입니다.", '{"source":"slack","channel":"#tc12"}', 0),
+        ("tc12-thread", "thread", "테스트모드 Slack thread 요약입니다.", '{"source":"slack","channel":"#tc12"}', 0),
+    ]
+    conn = sqlite3.connect(str(Path(home) / "app.sqlite"))
+    try:
+        for rid, ctype, text, metadata, pinned in rows:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO memory_chunks
+                  (id, project_id, source_event_id, chunk_type, text, metadata_json, created_at, pinned)
+                VALUES (?, ?, NULL, ?, ?, ?, ?, ?)
+                """,
+                (rid, ROOT_PROJECT_ID, ctype, text, metadata, now, pinned),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+    memory = ["bash", "scripts/imprint/memory.sh"]
+    rc_s, search_out, search_err = run_cmd(env_h, memory + ["search", "테스트모드"])
+    rc_short, short_out, _ = run_cmd(env_h, memory + ["search", "버튼"])
+    rc_p, pinned_out, _ = run_cmd(env_h, memory + ["list", "--pinned", "--limit", "5"])
+    rc_f, filtered_out, _ = run_cmd(
+        env_h, memory + ["list", "--type", "spec", "--source", "notion", "--limit", "5"],
+    )
+    rc_i, inject_out, _ = run_cmd(env_h, memory + ["inject", "tc12-spec"])
+
+    found_count = sum(1 for line in search_out.splitlines() if line.strip())
+    checks = {
+        "search_all_types": rc_s == 0 and found_count >= 7,
+        "short_korean_fallback": rc_short == 0 and "tc12-decision" in short_out,
+        "pinned_first": rc_p == 0 and pinned_out.splitlines() and pinned_out.splitlines()[0].startswith("tc12-decision|"),
+        "type_source_filter": rc_f == 0 and "tc12-spec" in filtered_out and "tc12-message" not in filtered_out,
+        "inject_text": rc_i == 0 and inject_out == "테스트모드 노션 정책입니다.",
+    }
+    case.metrics = checks | {"found_count": found_count}
+    case.passed = all(checks.values())
+    case.detail = (
+        f"found={found_count} short={checks['short_korean_fallback']} pinned={checks['pinned_first']} "
+        f"filter={checks['type_source_filter']} inject={checks['inject_text']}"
+    )
+    if not case.passed and search_err:
+        case.detail += f" search_err={search_err[:120]}"
+
+
 # -----------------------------------------------------------------------------
 # 러너
 # -----------------------------------------------------------------------------
@@ -408,6 +617,8 @@ CASES: list[tuple[str, str, callable]] = [
     ("TC-08", "Contradiction 감지 (LLM judge)", tc_08_contradiction_llm),
     ("TC-09", "요청 중간 중단 (timeout)", tc_09_interruption_timeout),
     ("TC-10", "동시 ingest priority drain", tc_10_priority_drain),
+    ("TC-11", "Hook memory loop + redaction", tc_11_hook_memory_loop),
+    ("TC-12", "Memory search/list/inject fixture", tc_12_memory_search_fixture),
 ]
 
 

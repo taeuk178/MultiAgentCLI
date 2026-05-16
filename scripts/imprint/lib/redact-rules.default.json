@@ -17,9 +17,39 @@
       "replacement": "gh*_[REDACTED]"
     },
     {
+      "name": "github_fine_grained_pat",
+      "pattern": "github_pat_[A-Za-z0-9_]{40,}",
+      "replacement": "github_pat_[REDACTED]"
+    },
+    {
+      "name": "bearer_token",
+      "pattern": "(?i)bearer\\s+[A-Za-z0-9._-]{20,}",
+      "replacement": "Bearer [REDACTED]"
+    },
+    {
+      "name": "authorization_header",
+      "pattern": "(?i)authorization:\\s*\\S+",
+      "replacement": "Authorization: [REDACTED]"
+    },
+    {
+      "name": "password_assignment",
+      "pattern": "(?i)(password|passwd|pw|비밀번호)\\s*[:=]\\s*\\S+",
+      "replacement": "\\1=[REDACTED]"
+    },
+    {
       "name": "slack_token",
       "pattern": "xox[baprs]-[A-Za-z0-9-]{10,}",
       "replacement": "xox*-[REDACTED]"
+    },
+    {
+      "name": "korean_resident_registration_number",
+      "pattern": "\\b\\d{6}-\\d{7}\\b",
+      "replacement": "[REDACTED_RRN]"
+    },
+    {
+      "name": "credit_card_like",
+      "pattern": "\\b\\d{4}[ -]?\\d{4}[ -]?\\d{4}[ -]?\\d{4}\\b",
+      "replacement": "[REDACTED_CARD]"
     },
     {
       "name": "aws_access_key",

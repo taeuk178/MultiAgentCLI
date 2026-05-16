@@ -36,6 +36,7 @@ except Exception:
 if [[ -z "${PROMPT// }" ]]; then
   exit 0
 fi
+SAFE_PROMPT=$(redact_text "$PROMPT")
 
 # --- 1. Persist user_message event ------------------------------------------
 
@@ -43,7 +44,7 @@ if command -v sqlite3 >/dev/null 2>&1; then
   PID=$(project_id)
   NOW=$(now_iso)
   EVENT_ID=$(new_id)
-  ESC_PROMPT=$(sql_escape "$PROMPT")
+  ESC_PROMPT=$(sql_escape "$SAFE_PROMPT")
   db_exec "
     INSERT INTO events (id, project_id, source, kind, text_clean, created_at)
     VALUES ('$EVENT_ID', '$PID', 'claude_code', 'user_message', '$ESC_PROMPT', '$NOW');
@@ -184,8 +185,8 @@ fi
 
 if [[ -n "$PID" && -x "$(command -v python3)" ]]; then
   TMP_BG=$(mktemp 2>/dev/null || echo "/tmp/imprint-ups-$$.tmp")
-  printf '%s' "$PROMPT" > "$TMP_BG"
-  profile_emit "ups.spawn" "project=$PID prompt_bytes=${#PROMPT}"
+  printf '%s' "$SAFE_PROMPT" > "$TMP_BG"
+  profile_emit "ups.spawn" "project=$PID prompt_bytes=${#SAFE_PROMPT}"
   ( python3 "$SCRIPT_DIR/lib/ingestion.py" lazy-fetch "$PID" < "$TMP_BG" 2>>"$IMPRINT_LOG"
     rm -f "$TMP_BG"
   ) </dev/null >/dev/null 2>&1 &
@@ -194,7 +195,7 @@ fi
 
 PREFILL_OUT=""
 if [[ -n "$PID" && -x "$(command -v python3)" ]]; then
-  PREFILL_OUT=$(printf '%s' "$PROMPT" \
+  PREFILL_OUT=$(printf '%s' "$SAFE_PROMPT" \
     | python3 "$SCRIPT_DIR/lib/ingestion.py" prefill "$PID" 2>>"$IMPRINT_LOG" || true)
 fi
 

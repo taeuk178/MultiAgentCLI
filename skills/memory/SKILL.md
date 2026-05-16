@@ -31,22 +31,26 @@ Project override:
 ## Subcommands
 
 ### `/memory search <query>`
-FTS5 search across memory chunks for the current project.
+FTS5 search across memory chunks for the current project. If trigram FTS returns
+no rows, the dispatcher falls back to short-token `LIKE` search so Korean 2-char
+terms like `버튼` can still find relevant chunks.
 
 ```bash
 imprint memory search "Notion 페이지 섹션 분해 규칙"
 ```
 
 ### `/memory remember <text> [--type <t>] [--pin] [--redact]`
-Store an explicit memory chunk. Optionally specify chunk_type, pin it, or
-redact secrets before storing.
+Store an explicit memory chunk. Optionally specify chunk_type or pin it.
+Secret-shaped text is redacted before storage; `--redact` keeps the same
+behavior explicit and records `redacted: true` metadata even when no pattern
+matched.
 
 ```bash
 imprint memory remember "Quick 모드는 one-shot 실행, lazy fetch 즉시 트리거" --type decision
 imprint memory remember "key sk-ant-XXX 작동 확인" --redact     # secrets masked before INSERT
 ```
 
-`--redact`는 정규식 룰셋으로 chunk text를 마스킹하고 metadata에 `redacted: true`를 기록합니다. 룰셋 우선순위: `$IMPRINT_REDACT_RULES` > `~/.claude/imprint/redact-rules.json` > plugin default(`scripts/imprint/lib/redact-rules.default.json` — Anthropic/OpenAI/GitHub PAT/Slack token/AWS access key/JWT/PEM private key block 7가지). 사용자 룰셋 형식은 plugin default를 그대로 복사해 추가 패턴을 더하면 됩니다.
+정규식 룰셋은 저장 전 chunk text를 마스킹하고, 마스킹이 발생했거나 `--redact`를 지정하면 metadata에 `redacted: true`를 기록합니다. 룰셋 우선순위: `$IMPRINT_REDACT_RULES` > `~/.claude/imprint/redact-rules.json` > plugin default(`scripts/imprint/lib/redact-rules.default.json`). 사용자 룰셋 형식은 plugin default를 그대로 복사해 추가 패턴을 더하면 됩니다.
 
 Chunk types:
 - `decision` - design or implementation decisions
@@ -159,6 +163,7 @@ Project is identified by git root (`git rev-parse --show-toplevel`) or current w
 ## Notes
 
 - Memory is local and never sent to any server.
-- Sensitive information should be redacted before storing — use `--redact` flag (Phase 1.5).
+- Hook 저장 경로와 `/memory remember`는 secret-shaped text를 저장 전 redaction 룰셋으로 마스킹합니다. 그래도 민감정보를 일부러 memory에 넣는 사용은 피하세요.
 - The `UserPromptSubmit` hook automatically pulls recent + pinned chunks into prefill (see `hooks/hooks.json`).
 - External source chunks (Slack/Notion) are NOT written to the events table — they live only in `memory_chunks` with `source_event_id IS NULL` (D11, AC7).
+- 기본 사용자 RAG 경로는 자동 prefill + `/memory search`/`inject` 입니다. `/retrieve`는 별도 `documents`/`chunks_v2`/`summaries` 기반 문서 retrieval 경로라, 현재 `/memory`와 자동으로 수렴하지 않습니다.

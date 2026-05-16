@@ -10,32 +10,21 @@
 
 ## RAG 기본 동작 안정화 우선순위
 
-목표는 기능 확장보다 먼저 **실제 프로젝트에서 기억이 저장되고, 다시 검색되며, 사용자가 답변 근거로 참고할 수 있는지**를 확인하는 것. 다음 PR 은 아래 순서로 진행.
+목표는 기능 확장보다 먼저 **실제 프로젝트에서 기억이 저장되고, 다시 검색되며, 사용자가 답변 근거로 참고할 수 있는지**를 확인하는 것. 2026-05-16 에 redaction coverage, 자동 memory loop smoke test, 기본 읽기 경로 안내, 검색 fixture 는 1차 적용 완료. 다음 PR 은 아래 순서로 진행.
 
-1. **저장 경로 보안 보강 — redaction coverage**
-   `events.user_message`, `events.llm_response`, Stop hook extract 입력, 외부 source chunk INSERT 전 redaction 을 적용. token 이 raw DB/FTS 로 들어가면 RAG 신뢰성 이전에 사용 불가 상태가 되므로 최우선.
-
-2. **자동 memory loop 스모크 테스트**
-   `SessionStart → UserPromptSubmit → Stop → 다음 UserPromptSubmit` 를 샘플 JSON/임시 DB로 직접 호출해 다음을 검증: schema 적용, user/assistant event 저장, response extract 후 `memory_chunks` INSERT, 다음 prompt 에 `[Project memory context]` prepend. 이 테스트가 RAG 기본 생명선.
-
-3. **읽기 경로 정합성 결정**
-   현재 자동 hook 과 `/memory` 는 `memory_chunks`, `/retrieve` 는 `chunks_v2`/`summaries` 를 본다. 실제 프로젝트 사용자가 “방금 저장된 기억을 RAG가 찾아준다”고 느끼려면 둘 중 하나가 필요:
-   - 단기: 기본 사용자 경로를 `/memory search` + 자동 prefill 로 명시하고 `/retrieve` 는 문서 ingestion 전용으로 분리 표시.
-   - 중기: `memory_chunks → chunks_v2` bridge 또는 `/retrieve` 의 legacy `memory_chunks` fallback 추가.
-
-4. **검색 품질 최소 fixture**
-   decision/fix/todo/note/spec/message/thread 샘플을 넣고 한국어 부분일치, pinned 우선순위, source/type 필터, `/memory inject` 출력이 기대대로 동작하는지 테스트. “저장됐는데 못 찾는” 케이스를 먼저 잡는다.
-
-5. **외부 source 갱신/누락 가시화**
+1. **외부 source 갱신/누락 가시화**
    Slack/Notion URL cap 초과, stale `fetched_at`, fetch 실패를 사용자가 볼 수 있게 `plugin.log` 또는 `/memory show/list` 에 표시. 자동 refresh 보다 “지금 참조한 기억이 낡았는지 알기”가 먼저.
 
-6. **노이즈 turn soft filter**
+2. **읽기 경로 수렴**
+   단기 안내는 적용 완료: 기본 사용자 RAG는 자동 prefill + `/memory search/inject`, `/retrieve` 는 `chunks_v2` 문서 retrieval. 남은 결정은 `memory_chunks → chunks_v2` bridge 또는 `/retrieve` 의 legacy `memory_chunks` fallback 중 하나.
+
+3. **노이즈 turn soft filter**
    `events.noise=1` 플래그부터 도입. 삭제가 아니라 표식만 붙여 RAG 후보 품질과 DB 증가량을 관찰한다.
 
-7. **측정 후 캘리브레이션**
+4. **측정 후 캘리브레이션**
    `IMPRINT_PROFILE=1` 로 한 주 데이터 수집 후 latency budget, contradiction 임계, daemon 분리, summary 생성 품질을 판단한다.
 
-8. **후순위 기능 확장**
+5. **후순위 기능 확장**
    Workflow skill(`/commit-message`, `/pr-draft`, `/recap`, `/handoff`), registry, entity merge/split UI 는 RAG 기본 저장/검색 루프가 안정된 뒤 진행.
 
 ## 보안 — Redaction coverage 갭 (2026-05-11 관찰)
@@ -78,9 +67,9 @@
 
 **다음 액션**.
 
-- 1번(`user-prompt-submit.sh`, `stop.sh`, `ingestion.py extract` 진입 직전 `redact_text` 호출) 을 patch 한 PR 한 건.
-- 2번(default 룰셋 보강) 을 별도 PR 한 건 — 룰 추가는 코드 변경 0, JSON 갱신만.
-- 두 PR 모두 머지 후 `events` 테이블의 token-shaped 문자열을 grep 으로 한 번 청소 (사용자 권한 액션, plugin 이 자동 청소하지 않음).
+- 기본 저장 진입점 redaction 과 default 룰셋 보강은 2026-05-16 에 적용 완료.
+- 남은 운영 액션: 기존 사용자 DB의 `events` / `memory_chunks` 에 이미 들어간 token-shaped 문자열은 사용자 승인 하에 별도 청소.
+- 필요 시 다음 개선: card-like 패턴을 Luhn callback 기반 redaction helper 로 고도화해 false positive 를 줄임.
 
 ## events 노이즈 누적 갭 (2026-05-11 관찰)
 
@@ -442,9 +431,8 @@ CREATE INDEX idx_chunks_page ON memory_chunks(project_id, meta_page_id);
 
 ## 다음 세션 시작 시 추천 픽업 지점
 
-1. **redaction coverage 패치** — raw token 이 DB/FTS 에 들어가는 경로를 먼저 닫기.
-2. **RAG 저장/검색 루프 smoke test** — hook 직접 호출 + 임시 DB fixture 로 `memory_chunks` 저장/검색/prefill 확인.
-3. **읽기 경로 정합성 결정** — `memory_chunks` 기본 RAG 와 `chunks_v2` `/retrieve` 경로의 역할을 문서/코드에서 명확히 나누거나 bridge 설계.
-4. **외부 source stale/누락 가시화** — URL cap, stale fetched_at, fetch 실패를 사용자 관찰 가능하게 만들기.
-5. **retrieval 측정** — 기본 루프가 안정된 뒤 `IMPRINT_PROFILE=1` 데이터 수집으로 임계 캘리브레이션 / daemon 분리 결정.
-6. **후순위** — Workflow skill, registry, entity merge/split UI, Chunk 분류 2단계는 RAG 기본 동작 안정 후 진입.
+1. **외부 source stale/누락 가시화** — URL cap, stale fetched_at, fetch 실패를 사용자 관찰 가능하게 만들기.
+2. **읽기 경로 수렴 결정** — `memory_chunks → chunks_v2` bridge 와 `/retrieve` legacy fallback 중 어떤 경로가 더 단순한지 비교.
+3. **events noise soft filter** — `events.noise=1` 컬럼 + backchannel rule filter 를 별도 PR 로 적용.
+4. **retrieval 측정** — `IMPRINT_PROFILE=1` 데이터 수집으로 임계 캘리브레이션 / daemon 분리 결정.
+5. **후순위** — Workflow skill, registry, entity merge/split UI, Chunk 분류 2단계는 RAG 기본 동작 안정 후 진입.

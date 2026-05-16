@@ -53,15 +53,69 @@ cmd_search() {
     exit 1
   fi
   local pid; pid=$(project_id)
-  local esc; esc=$(sql_escape "$query")
-  db_exec "
-    SELECT m.id, m.chunk_type, substr(m.text, 1, 200)
-    FROM memory_chunks_fts f
-    JOIN memory_chunks m ON m.rowid = f.rowid
-    WHERE f.text MATCH '$esc' AND m.project_id = '$pid'
-    ORDER BY m.pinned DESC, m.created_at DESC
-    LIMIT 20;
-  "
+  IMPRINT_DB="$IMPRINT_DB" SEARCH_PROJECT_ID="$pid" SEARCH_QUERY="$query" python3 - <<'PY'
+import os
+import re
+import sqlite3
+
+db_path = os.environ["IMPRINT_DB"]
+project_id = os.environ["SEARCH_PROJECT_ID"]
+query = os.environ["SEARCH_QUERY"].strip()
+
+def fts_escape(q):
+    terms = [t.replace('"', '') for t in re.split(r"\s+", q) if t.replace('"', '')]
+    return " OR ".join(f'"{t}"' for t in terms)
+
+conn = sqlite3.connect(db_path, timeout=5.0)
+rows = []
+try:
+    fts_query = fts_escape(query)
+    if fts_query:
+        try:
+            rows = conn.execute(
+                """
+                SELECT m.id, m.chunk_type, substr(m.text, 1, 200), m.pinned, m.created_at
+                FROM memory_chunks_fts f
+                JOIN memory_chunks m ON m.rowid = f.rowid
+                WHERE f.text MATCH ? AND m.project_id = ?
+                ORDER BY m.pinned DESC, m.created_at DESC
+                LIMIT 20;
+                """,
+                (fts_query, project_id),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            rows = []
+
+    if not rows:
+        tokens = []
+        seen = set()
+        for tok in re.findall(r"[가-힣A-Za-z0-9]+", query.lower()):
+            if len(tok) < 2 or tok in seen:
+                continue
+            seen.add(tok)
+            tokens.append(tok)
+        if tokens:
+            clauses = []
+            params = []
+            for tok in tokens[:8]:
+                clauses.append("lower(text) LIKE ?")
+                params.append(f"%{tok}%")
+            rows = conn.execute(
+                f"""
+                SELECT id, chunk_type, substr(text, 1, 200), pinned, created_at
+                FROM memory_chunks
+                WHERE project_id = ? AND ({' OR '.join(clauses)})
+                ORDER BY pinned DESC, created_at DESC
+                LIMIT 20;
+                """,
+                (project_id, *params),
+            ).fetchall()
+finally:
+    conn.close()
+
+for row in rows:
+    print("|".join(str(v) for v in row[:3]))
+PY
 }
 
 cmd_remember() {
@@ -82,9 +136,13 @@ cmd_remember() {
     exit 1
   fi
   local metadata="{}"
-  if (( redact )); then
-    text=$(redact_text "$text")
+  local redacted_text
+  redacted_text=$(redact_text "$text")
+  if (( redact )) || [[ "$redacted_text" != "$text" ]]; then
+    text="$redacted_text"
     metadata='{"redacted":true}'
+  else
+    text="$redacted_text"
   fi
   local pid; pid=$(project_id)
   local id; id=$(new_id)

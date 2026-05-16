@@ -111,11 +111,12 @@ PY
 if [[ -z "${LAST_TEXT// }" ]]; then
   exit 0
 fi
+SAFE_LAST_TEXT=$(redact_text "$LAST_TEXT")
 
 PID=$(project_id)
 NOW=$(now_iso)
 EVENT_ID=$(new_id)
-ESC_TEXT=$(sql_escape "$LAST_TEXT")
+ESC_TEXT=$(sql_escape "$SAFE_LAST_TEXT")
 
 db_exec "
   INSERT INTO events (id, project_id, source, kind, text_clean, created_at)
@@ -126,13 +127,13 @@ db_exec "
 # 상태이고, chunk 저장은 다음 turn의 prefill에서 활용되면 충분하다.
 if [[ "${IMPRINT_DISABLE_EXTRACT:-0}" != "1" ]] && command -v python3 >/dev/null 2>&1; then
   TMP_BG=$(mktemp 2>/dev/null || echo "/tmp/imprint-stop-$$.tmp")
-  printf '%s' "$LAST_TEXT" > "$TMP_BG"
-  profile_emit "stop.spawn" "project=$PID event=$EVENT_ID resp_bytes=${#LAST_TEXT}"
+  printf '%s' "$SAFE_LAST_TEXT" > "$TMP_BG"
+  profile_emit "stop.spawn" "project=$PID event=$EVENT_ID resp_bytes=${#SAFE_LAST_TEXT}"
   ( python3 "$SCRIPT_DIR/lib/ingestion.py" extract "$PID" "$EVENT_ID" < "$TMP_BG" 2>>"$IMPRINT_LOG"
     rm -f "$TMP_BG"
   ) </dev/null >/dev/null 2>&1 &
   disown 2>/dev/null || true
 fi
 
-log_info "stop logged event=$EVENT_ID project=$PID bytes=${#LAST_TEXT}"
+log_info "stop logged event=$EVENT_ID project=$PID bytes=${#SAFE_LAST_TEXT}"
 exit 0
