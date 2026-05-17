@@ -64,107 +64,155 @@
 ## Mermaid
 
 ```mermaid
-%%{init: {'flowchart': {'useMaxWidth': false, 'rankSpacing': 80, 'nodeSpacing': 50}, 'theme': 'default'}}%%
-flowchart TB
-    %% ===== SessionStart =====
-    SS{{SessionStart hook}} --> SCHEMA["SQLite schema 적용<br/>projects upsert<br/>(sync)"]
-    SS --> SEED[".imprint defaults seed<br/>기존 파일 미덮어씀<br/>(sync)"]
-    SS --> SOUL["soul.md prepend<br/>(sync)"]
+%%{init: {'flowchart': {'useMaxWidth': false, 'rankSpacing': 55, 'nodeSpacing': 42}, 'theme': 'default'}}%%
+flowchart LR
+    %% ===== Left: input signals =====
+    subgraph IN["Input signals"]
+      direction TB
+      U["User prompt<br/>예: A 버튼 클릭 동작 알려줘"]
+      A["Assistant response<br/>마지막 turn transcript"]
+      E["External sources<br/>Slack / Notion URL<br/>sources.json keywords"]
+      M["Manual memory<br/>/memory remember"]
+      D["Document ingest<br/>raw docs for /retrieve"]
+    end
 
-    %% ===== UPS / Stop hook 자동 경로 =====
-    U([사용자 프롬프트]) --> CC[Claude Code]
-    CC --> UPS{{UserPromptSubmit hook}}
+    %% ===== Center: foreground hook path =====
+    subgraph FG["Foreground hook path"]
+      direction TB
+      SS["SessionStart<br/>schema + project upsert<br/>soul.md prepend"]
+      UPS["UserPromptSubmit<br/>redact + event archive"]
+      MINI["Working mini-chunk<br/>raw_turn + deterministic surfaces"]
+      GATE{"Need retrieval?"}
+      PREFILL["Lane prefill<br/>Current clues<br/>Recent session<br/>Durable evidence<br/>External context"]
+      PREPEND["[Project memory context]<br/>+ routing advisory"]
+      STOP["Stop hook<br/>llm_response archive"]
+    end
 
-    UPS -->|sync| LOG[("events.user_message 기록")]
-    UPS -->|sync| MINI[("working mini-chunk INSERT<br/>raw_turn + deterministic rewrite")]
-    UPS -->|sync| ROUTE["routing 룰 매칭<br/>.imprint/UserPromptSubmit.md<br/>(sync)"]
-    UPS -->|sync| GATE{"need-retrieval gate<br/>(sync)"}
-    UPS -->|sync| PREFILL["lane prefill<br/>current clues<br/>recent session<br/>durable/external evidence<br/>(LIMIT 8)<br/>(sync)"]
-    MINI --> PREFILL
+    %% ===== Center: background Haiku workers =====
+    subgraph BG["Background Haiku workers"]
+      direction TB
+      LF["Lazy fetch analyzer<br/>claude -p haiku"]
+      FETCH["Read-only fetch<br/>Slack / Notion"]
+      EXTCHUNK["External chunks<br/>spec / message / thread"]
+      EXTRACT["Response extractor<br/>claude -p haiku"]
+      DURABLE["Durable chunks<br/>decision / fix / todo<br/>code_context / note"]
+    end
+
+    %% ===== Center-right: storage and retrieval =====
+    subgraph STORE["SQLite memory store"]
+      direction TB
+      EVENTS[("events<br/>user_message / llm_response<br/>noise flag")]
+      MEM[("memory_chunks<br/>working / durable / external<br/>FTS5 + BM25")]
+      DOCS[("documents + chunks_v2<br/>summaries / entities<br/>contradictions")]
+      PROF[("plugin.log<br/>profile.jsonl<br/>status / trace")]
+    end
+
+    subgraph RET["Explicit /retrieve path"]
+      direction TB
+      QN["Normalize + multi-rewrite<br/>original / action / code"]
+      RES["Entity resolve<br/>scope classifier"]
+      HYB["Hybrid search<br/>FTS5 BM25<br/>optional vector"]
+      RRF["RRF + working overlay"]
+      BOOST["Boost / penalty<br/>recency, entity,<br/>contradiction"]
+      MEMFB{"Low confidence?"}
+      RR["optional rerank"]
+      JSON["Context block<br/>or JSON trace"]
+    end
+
+    %% ===== Right: generation =====
+    subgraph GEN["Generation"]
+      direction TB
+      CLAUDE["Claude Code main model"]
+      OUT["User-visible answer"]
+    end
+
+    %% ===== Bottom: record format =====
+    subgraph FORMAT["Memory / retrieval format"]
+      direction LR
+      F1["working<br/>memory_tier=working<br/>evidence_level=raw_turn"]
+      F2["durable<br/>assistant_extracted<br/>grounded=false"]
+      F3["external<br/>raw_source<br/>grounded=true<br/>source_uri"]
+      F4["status marker<br/>fetch_failed<br/>skipped_by_cap<br/>stale"]
+      F5["trace<br/>query_surfaces<br/>fallback_reasons<br/>rerank_gate_reason"]
+    end
+
+    U --> UPS
+    SS --> EVENTS
+    SS --> PREPEND
+    UPS --> EVENTS
+    UPS --> MINI
+    MINI --> MEM
+    UPS --> GATE
     GATE --> PREFILL
-    ROUTE --> CTX0["[Project memory context]<br/>+ routing advisory prepend<br/>(sync)"]
-    PREFILL --> CTX0
-    CTX0 --> RESP["Claude 응답 생성"]
-    RESP --> USR([사용자에게 응답 표시])
+    MEM --> PREFILL
+    PREFILL --> PREPEND
+    PREPEND --> CLAUDE
+    CLAUDE --> OUT
+    CLAUDE --> A
+    A --> STOP
+    STOP --> EVENTS
 
-    RESP --> ST{{Stop hook}}
-    ST -->|sync| LOG2[("events.llm_response archive")]
+    UPS -.spawn.-> LF
+    E --> LF
+    LF --> FETCH
+    FETCH --> EXTCHUNK
+    EXTCHUNK --> MEM
 
-    UPS -.spawn.-> LF["lazy-fetch worker<br/>(async)"]
-    LF --> ANL["haiku: 키워드/URL 분석"]
-    ANL --> EXT{외부 source?}
-    EXT -->|prompt URL| FETCH["Slack/Notion read-only fetch"]
-    EXT -->|sources.json + keywords| SRCSEARCH["Slack/Notion search"]
-    FETCH --> SPLIT_EXT["section chunk 분할"]
-    SRCSEARCH --> SPLIT_EXT
-    SPLIT_EXT --> MEM_EXT[("memory_chunks 직접 INSERT<br/>spec/message/thread")]
+    STOP -.spawn.-> EXTRACT
+    EXTRACT --> DURABLE
+    DURABLE --> MEM
+    M --> MEM
 
-    ST -.spawn.-> EXTRACT["response extract worker<br/>(async)"]
-    EXTRACT --> CLASSIFY["haiku: durable chunk 분류"]
-    CLASSIFY --> MEM_RESP[("memory_chunks 직접 INSERT<br/>decision/error/fix/...")]
+    D --> DOCS
+    DOCS --> RES
+    MEM --> QN
+    DOCS --> HYB
+    QN --> RES
+    RES --> HYB
+    HYB --> RRF
+    MEM --> RRF
+    RRF --> BOOST
+    BOOST --> MEMFB
+    MEMFB -->|yes| MEM
+    MEMFB -->|no| RR
+    MEM --> RR
+    RR --> JSON
+    JSON --> CLAUDE
 
-    MEM_EXT -.다음 turn.-> PREFILL
-    MEM_RESP -.다음 turn.-> PREFILL
+    EVENTS -.health.-> PROF
+    MEM -.profile/status.-> PROF
+    DOCS -.trace.-> PROF
+    MEM -.metadata.-> FORMAT
+    JSON -.explainability.-> FORMAT
 
-    %% ===== /retrieve 디스패처 (사용자 명시 호출) =====
-    RTV(["사용자 /retrieve 호출"]) --> ROUTED{--routed?}
-    ROUTED -->|no| QN["query normalize<br/>(sync)"]
-    QN --> RES["entity alias resolve<br/>(sync)"]
-    RES --> RW["multi-rewrite<br/>original/action/code<br/>(sync)"]
-    RW --> QEMB["query embedding<br/>BGE-M3 가용 시<br/>(sync/daemon-ready)"]
-    QEMB --> HYB["chunk retrieval<br/>chunks_v2 FTS5 + cosine<br/>short-token fallback<br/>(sync/daemon-ready)"]
-    HYB --> RRF["RRF fusion<br/>semantic 0.8 / BM25 0.2<br/>(sync)"]
-    RRF --> WUNION["working overlay soft union<br/>memory_tier=working<br/>(sync)"]
-    WUNION --> BOOST["is_current + recency<br/>+ entity coverage boost<br/>+ contradiction penalty<br/>(sync)"]
-    BOOST --> MEMFB{"후보 없음<br/>또는 저신뢰?"}
-    MEMFB -->|yes| MCHUNK["memory_chunks read-only fallback<br/>(sync)"]
-    MCHUNK --> CANDCTX["retrieval candidates<br/>(sync)"]
-    MEMFB -->|no| RG{"rerank 조건"}
-    RG -->|yes| RR["cross-encoder rerank<br/>(sync/daemon-ready)"]
-    RG -->|no| CANDCTX
-    RR --> CANDCTX
-    CANDCTX -->|chunk-only| CTX["context block / JSON<br/>(sync)"]
+    classDef input fill:#f7f7f7,stroke:#777,stroke-width:1px,color:#111;
+    classDef sync fill:#fff3cd,stroke:#d89b00,stroke-width:1px,color:#111;
+    classDef async fill:#e2f3f5,stroke:#238a92,stroke-width:1px,color:#111;
+    classDef store fill:#e9f2ff,stroke:#3b73c4,stroke-width:1px,color:#111;
+    classDef retrieve fill:#ede7f6,stroke:#7e57c2,stroke-width:1px,color:#111;
+    classDef gen fill:#fde2e2,stroke:#c94c4c,stroke-width:1px,color:#111;
+    classDef format fill:#e8f5e9,stroke:#4c8c4a,stroke-width:1px,color:#111;
 
-    ROUTED -->|yes| RRES["entity resolve 선행<br/>(sync)"]
-    RRES --> SCOPE["scope classifier<br/>local/feature/global<br/>(sync)"]
-    SCOPE -->|local| QN
-    SCOPE -->|feature| FSUM["feature summaries 검색<br/>(sync/daemon-ready)"]
-    SCOPE -->|global| GSUM["project/document/feature summaries 검색<br/>(sync/daemon-ready)"]
-    FSUM --> FCHUNK["chunk retrieval<br/>top feature chunks<br/>empty → memory fallback"]
-    GSUM --> GCHUNK["chunk retrieval<br/>key chunks<br/>empty → memory fallback"]
-    FCHUNK --> GROUND["summary_links grounding<br/>(sync)"]
-    GCHUNK --> GROUND
-    CANDCTX -.routed local.-> CCHECK["confirmed contradiction 조회<br/>(sync)"]
-    GROUND --> CCHECK["confirmed contradiction 조회<br/>(sync)"]
-    CCHECK --> CTX
-
-    %% ===== Retrieval v2 ingestion queue =====
-    DOCIN["retrieval ingest CLI/manual<br/>raw document"] --> INGEST["documents upsert<br/>chunking<br/>context_prefix optional<br/>embedding optional"]
-    INGEST --> CHUNKS[("chunks_v2 INSERT/UPDATE")]
-    CHUNKS --> DISPATCH["dispatch_commit"]
-    DISPATCH --> ENQ[("ingest_queue<br/>priority, FIFO")]
-    ENQ --> DRAIN["ingest-drain.sh<br/>single claim loop"]
-    DRAIN --> J4["ner_extract<br/>priority 9"]
-    DRAIN --> J5["summary_regen<br/>priority 5"]
-    DRAIN --> J6["contradiction_scan<br/>priority 5"]
-    J4 --> ENTITIES[("entities / entity_aliases<br/>chunk_entities")]
-    J5 --> SUMMARIES[("summaries / summary_links")]
-    J6 --> CONTRA[("contradictions")]
-    ENTITIES -.검색 품질 개선.-> RES
-    SUMMARIES -.routed 검색 후보.-> FSUM
-    SUMMARIES -.routed 검색 후보.-> GSUM
-    CONTRA -.conflict 표시.-> CCHECK
+    class U,A,E,M,D input;
+    class SS,UPS,MINI,GATE,PREFILL,PREPEND,STOP sync;
+    class LF,FETCH,EXTCHUNK,EXTRACT,DURABLE async;
+    class EVENTS,MEM,DOCS,PROF store;
+    class QN,RES,HYB,RRF,BOOST,MEMFB,RR,JSON retrieve;
+    class CLAUDE,OUT gen;
+    class F1,F2,F3,F4,F5 format;
 ```
 
 ## 노드 라벨
 
 | 라벨 | 의미 | 노드 |
 |---|---|---|
-| `(sync)` SessionStart / UPS / Stop | 세션 시작과 매 turn hook 동기 경로 | `SCHEMA` · `SEED` · `SOUL` · `LOG` · `MINI` · `GATE` · `ROUTE` · `PREFILL` · `CTX0` · `LOG2` |
-| `(sync)` /retrieve 진입 | `/retrieve` 디스패처 동기 경로 | `QN` · `RES` · `RW` · `RRES` · `SCOPE` · `RRF` · `WUNION` · `BOOST` · `MEMFB` · `MCHUNK` · `CANDCTX` · `GROUND` · `CCHECK` · `CTX` |
-| `(sync/daemon-ready)` | `/retrieve` 동기 경로 중 무거운 후보 | `QEMB` · `HYB` · `FSUM` · `GSUM` · `RR` |
-| `(async)` 자동 hook 백그라운드 | 사용자 turn 차단 없이 `memory_chunks` 에 직접 저장 | `LF` · `ANL` · `FETCH` · `SRCSEARCH` · `SPLIT_EXT` · `EXTRACT` · `CLASSIFY` |
-| `ingest_queue` | retrieval v2 문서 ingestion 뒤 후속 작업 drain | `ENQ` · `DRAIN` · `J4` · `J5` · `J6` |
+| Input signals | hook 과 retrieval 로 들어오는 원천 입력 | `U` · `A` · `E` · `M` · `D` |
+| Foreground hook path | 사용자 turn 을 막지 않는 동기 경량 경로 | `SS` · `UPS` · `MINI` · `GATE` · `PREFILL` · `PREPEND` · `STOP` |
+| Background Haiku workers | Haiku 를 쓰는 비동기 정리/추출/fetch 보조 경로 | `LF` · `FETCH` · `EXTCHUNK` · `EXTRACT` · `DURABLE` |
+| SQLite memory store | 실제 저장소와 운영 관측 파일 | `EVENTS` · `MEM` · `DOCS` · `PROF` |
+| Explicit /retrieve path | 사용자가 명시 호출할 때만 도는 검색 파이프라인 | `QN` · `RES` · `HYB` · `RRF` · `BOOST` · `MEMFB` · `RR` · `JSON` |
+| Generation | prepend 된 context 를 참고해 응답을 만드는 본 모델 경로 | `CLAUDE` · `OUT` |
+| Memory / retrieval format | 후보의 의미와 디버깅 trace 를 설명하는 metadata lane | `F1` · `F2` · `F3` · `F4` · `F5` |
 
 ## hook 단계별 의존성
 
@@ -228,18 +276,103 @@ confirmed contradiction 에 연결된 chunk 는 BOOST 단계에서 강하게 감
 
 자동 prefill gate 는 결정적 rule 기반입니다. `noise=1`, 짧은 backchannel, 단순 확인/감사/커밋 요청은 durable query search 를 생략하고, `어떻게/왜/어디/동작/정리/찾아줘` 계열 표현이나 UI/code/source 키워드가 있으면 durable/external memory 검색을 엽니다. gate 결과는 working chunk metadata 의 `need_retrieval`, `retrieval_reason` 과 `IMPRINT_PROFILE=1` 의 `cmd_prefill` record 에 남습니다.
 
-| 정책 | 현재 값 | 의미 |
-|---|---:|---|
-| working TTL | `IMPRINT_WORKING_TTL_HOURS=24` | working raw_turn 보관 시간 |
-| working cap | `IMPRINT_WORKING_MAX_PER_SESSION=20` | session 별 working 최신 row 제한 |
-| working overlay | `WORKING_OVERLAY_LIMIT=4`, score `0.12` | `/retrieve` clue soft union |
-| MEMFB top1 threshold | `LOW_CONFIDENCE_TOP1=0.13` | 이보다 낮으면 fallback open |
-| rerank 후보 수 | `RG_MIN_CANDIDATES=10` | 이보다 적으면 rerank skip |
-| rerank top1 threshold | `RG_TOP1_THRESHOLD=0.85` | top1 이 높으면 rerank skip |
-| confirmed contradiction | `-1.0` | BOOST 단계 강한 penalty |
-| candidate contradiction | `-0.20` | BOOST 단계 약한 penalty |
+### Foreground prefill / working memory
+
+| 변수 | 기본값 | 수정 위치 | 바꾸면 달라지는 것 |
+|---|---:|---|---|
+| `IMPRINT_WORKING_CONTEXT_LIMIT` | `4` | env | 자동 prefill 의 working/recent clue 최대 개수 |
+| `IMPRINT_PREFILL_LIMIT` | `8` | env | 자동 `[Project memory context]` 전체 chunk 상한 |
+| `IMPRINT_WORKING_TTL_HOURS` | `24` | env | working raw_turn 보관 시간 |
+| `IMPRINT_WORKING_MAX_PER_SESSION` | `20` | env | session 별 working raw_turn 최신 row 제한 |
+| `IMPRINT_AMBIGUITY_THRESHOLD` | `0.5` | env | prompt 분석 결과의 ambiguity 판단 기준 |
+
+### Lazy fetch / response extract
+
+| 변수 | 기본값 | 수정 위치 | 바꾸면 달라지는 것 |
+|---|---:|---|---|
+| `IMPRINT_CLAUDE_BIN` | `claude` | env | background Haiku 호출 CLI |
+| `IMPRINT_CLAUDE_TIMEOUT_PREFILL` | `25` | env | prompt 분석 Haiku timeout 초 |
+| `IMPRINT_CLAUDE_TIMEOUT_FETCH` | `45` | env | Slack/Notion fetch Haiku timeout 초 |
+| `IMPRINT_CLAUDE_TIMEOUT_EXTRACT` | `30` | env | Stop response extract Haiku timeout 초 |
+| `IMPRINT_ALLOWED_TOOLS_FETCH` | Notion/Slack wildcard | env | fetch worker 에 허용할 MCP tool 범위 |
+| `CHUNK_TYPES` | 9개 durable type | `ingestion.py` | Stop extract 가 저장할 수 있는 assistant memory type |
+| `EXTERNAL_CHUNK_TYPES` | `spec/message/thread` | `ingestion.py` | Slack/Notion chunk type 구분 |
+
+### Chunk retrieval / fusion
+
+| 변수 | 기본값 | 수정 위치 | 바꾸면 달라지는 것 |
+|---|---:|---|---|
+| `VECTOR_TOPN` | `100` | `retrieve.py` | vector 후보 fan-out 크기 |
+| `BM25_TOPN` | `100` | `retrieve.py` | FTS5/BM25 후보 fan-out 크기 |
+| `FUSION_CANDIDATES` | `200` | `retrieve.py` | RRF/BOOST 이후 rerank 전 최대 후보 수 |
+| `FINAL_TOPK_DEFAULT` | `10` | `retrieve.py` | CLI top_k 미지정 시 최종 context chunk 수 |
+| `RRF_K` | `60` | `retrieve.py` | rank fusion 점수 smoothing |
+| `RRF_VECTOR_WEIGHT` | `0.8` | `retrieve.py` | semantic/vector recall 가중치 |
+| `RRF_BM25_WEIGHT` | `0.2` | `retrieve.py` | lexical/FTS5 BM25 가중치 |
+| `BOOST_CURRENT` | `0.15` | `retrieve.py` | current chunk 가산점 |
+| `BOOST_ENTITY` | `0.10` | `retrieve.py` | resolved entity match 가산점 |
+| `BOOST_RECENT` | `0.05` | `retrieve.py` | 최근 source_updated_at 가산점 |
+| `WORKING_OVERLAY_LIMIT` | `4` | `retrieve.py` | `/retrieve` 에 soft union 할 working clue 수 |
+| `WORKING_OVERLAY_SCORE` | `0.12` | `retrieve.py` | working clue 의 고정 점수 |
+| `LOW_CONFIDENCE_TOP1` | `0.13` | `retrieve.py` | top1 이 낮을 때 `memory_chunks` fallback open |
+
+### Rerank
+
+| 변수 | 기본값 | 수정 위치 | 바꾸면 달라지는 것 |
+|---|---:|---|---|
+| `RG_MIN_CANDIDATES` | `10` | `retrieve.py` | 이보다 후보가 적으면 rerank skip |
+| `RG_TOP1_THRESHOLD` | `0.85` | `retrieve.py` | top1 이 이 값 이상이면 rerank skip |
+| `IMPRINT_RERANK_MODEL` | `BAAI/bge-reranker-v2-m3` | env | 사용할 cross-encoder 모델 |
+| `IMPRINT_RERANK_TIMEOUT_MS` | `200` | env | rerank timeout ms |
+| `IMPRINT_RERANK_CACHE_SIZE` | `64` | env | session-local rerank LRU cache 크기 |
+| `IMPRINT_DISABLE_RERANK` | `0` | env | `1`이면 rerank 비활성 |
+
+### Routed retrieval / summaries
+
+| 변수 | 기본값 | 수정 위치 | 바꾸면 달라지는 것 |
+|---|---:|---|---|
+| `FEATURE_SUMMARY_LIMIT` | `5` | `routing.py` | feature scope summary 후보 수 |
+| `FEATURE_CHUNK_LIMIT` | `8` | `routing.py` | feature scope chunk 후보 수 |
+| `GLOBAL_PROJECT_LIMIT` | `1` | `routing.py` | global scope project summary 수 |
+| `GLOBAL_DOCUMENT_LIMIT` | `3` | `routing.py` | global scope document summary 수 |
+| `GLOBAL_FEATURE_LIMIT` | `5` | `routing.py` | global scope feature summary 수 |
+| `GLOBAL_CHUNK_LIMIT` | `6` | `routing.py` | global scope key chunk 수 |
+| `GROUND_DRILLDOWN_LIMIT` | `3` | `routing.py` | summary_links drill-down chunk 수 |
+
+### Contradiction detection / penalty
+
+| 변수 | 기본값 | 수정 위치 | 바꾸면 달라지는 것 |
+|---|---:|---|---|
+| `BOOST_CONTRADICTION_CONFIRMED` | `-1.0` | `retrieve.py` | confirmed contradiction chunk 감점 |
+| `BOOST_CONTRADICTION_CANDIDATE` | `-0.20` | `retrieve.py` | candidate contradiction chunk 감점 |
+| `IMPRINT_NLI_MODEL` | `MoritzLaurer/mDeBERTa-v3-base-mnli-xnli` | env | contradiction NLI 모델 |
+| `IMPRINT_NLI_TIMEOUT_MS` | `500` | env | NLI 판정 timeout ms |
+| `IMPRINT_LLM_JUDGE_TIMEOUT_MS` | `30000` | env | Claude judge fallback timeout ms |
+| `IMPRINT_CONTRADICTION_TIME_GAP_DAYS` | `90` | env | contradiction 후보 시간 간격 |
+| `IMPRINT_CONTRADICTION_HIGH` | `0.8` | env | candidate 로 분류할 high threshold |
+| `IMPRINT_CONTRADICTION_MID` | `0.4` | env | 현재는 기록용 mid threshold |
+| `IMPRINT_LLM_REFINE_LOW` | `0.4` | env | NLI mid 구간 하한, LLM judge 보강 시작 |
+| `IMPRINT_LLM_REFINE_HIGH` | `0.6` | env | NLI mid 구간 상한, LLM judge 보강 끝 |
+
+### Storage / profile / safety
+
+| 변수 | 기본값 | 수정 위치 | 바꾸면 달라지는 것 |
+|---|---:|---|---|
+| `IMPRINT_HOME` | `~/.claude/imprint` | env | DB, log, profile 저장 위치 |
+| `IMPRINT_PROFILE` | `0` | env | `1`이면 profile JSONL 기록 |
+| `IMPRINT_STALE_DAYS` | `14` | env | 외부 source stale 표시 기준 |
+| `IMPRINT_REDACT_RULES` | 사용자 파일 또는 default | env | redaction rule 파일 |
+| `IMPRINT_BYPASS_HOOKS` | `0` | env | `1`이면 hook 즉시 종료, 재귀 가드 |
+| `IMPRINT_DISABLE_EXTRACT` | `0` | env | `1`이면 Stop extract 비활성 |
+| `IMPRINT_NO_SEED` | `0` | env | `1`이면 `.imprint/` 기본 파일 seed 비활성 |
+| `IMPRINT_MODEL_CACHE_DIR` | HuggingFace 기본 cache | env | optional ML 모델 cache 위치 |
+| `IMPRINT_DISABLE_EMBEDDING` | `0` | env | `1`이면 embedding/vector search 비활성 |
+| `IMPRINT_DISABLE_NLI` | `0` | env | `1`이면 NLI contradiction judge 비활성 |
+| `IMPRINT_DISABLE_LLM_JUDGE` | `0` | env | `1`이면 Claude LLM judge fallback 비활성 |
 
 `retrieve_json` / `routed_json` 은 `trace.query_surfaces`, `fallback_reasons`, `rerank_gate_reason` 과 candidate 별 `lane`, `evidence_level`, `grounded`, `source_uri`, `text_hash`, `penalties` 를 노출합니다. 이 값은 context 품질 회고와 gate/MEMFB/rerank threshold 튜닝에 사용합니다.
+
+튜닝할 때는 env 로 조정 가능한 값부터 바꾸고, `retrieve.py`/`routing.py` 의 코드 상수는 테스트와 함께 PR 로 변경합니다. 변경 후에는 `/retrieve --json` 의 `trace` 와 `IMPRINT_PROFILE=1` 의 `retrieve_done`, `cmd_prefill` record 를 같이 확인합니다.
 
 ## latency budget
 
