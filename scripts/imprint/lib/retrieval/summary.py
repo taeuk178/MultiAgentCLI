@@ -1,6 +1,6 @@
 """계층 요약 생성기 — feature / document / project.
 
-LLM 가용 시 claude CLI 로 4~8 문장 요약을 생성. 미가용 시 deterministic concat
+Codex 가용 시 4~8 문장 요약을 생성. 미가용 시 deterministic concat
 fallback (원문 청크의 핵심 라인 묶기). 두 경우 모두 generator 컬럼에 기록.
 summary_links 로 어느 chunk / summary 가 출처인지 추적.
 
@@ -11,16 +11,15 @@ from __future__ import annotations
 
 import os
 import sqlite3
-import subprocess
 from dataclasses import dataclass
 from typing import Iterable
 
 from . import embedding as emb_mod
 from ._common import db_connect, log, new_id, now_iso
+from .codex_runtime import call_codex
 
 # Summary generation runtime knobs.
 # LLM path is optional; timeout/max chars cap background work and prompt size.
-CLAUDE_BIN = os.environ.get("IMPRINT_CLAUDE_BIN") or "claude"
 SUMMARY_TIMEOUT = int(os.environ.get("IMPRINT_SUMMARY_TIMEOUT") or "30")
 SUMMARY_MAX_CHARS = 1200
 
@@ -88,25 +87,12 @@ def _select_chunks_for_feature(conn: sqlite3.Connection, project_id: str, featur
 def _llm_summarize(prompt: str) -> str | None:
     if os.environ.get("IMPRINT_DISABLE_SUMMARY_LLM") == "1":
         return None
-    try:
-        env = os.environ.copy()
-        env["IMPRINT_BYPASS_HOOKS"] = "1"
-        proc = subprocess.run(
-            [CLAUDE_BIN, "-p", "--model", "haiku"],
-            input=prompt,
-            text=True,
-            capture_output=True,
-            timeout=SUMMARY_TIMEOUT,
-            env=env,
-        )
-        if proc.returncode != 0:
-            log("WARN", f"summary LLM failed rc={proc.returncode} stderr={proc.stderr[:200]!r}")
-            return None
-        out = proc.stdout.strip()
-        return out[:SUMMARY_MAX_CHARS] if out else None
-    except Exception as exc:
-        log("WARN", f"summary LLM exception: {exc!r}")
+    out = call_codex(prompt, timeout=SUMMARY_TIMEOUT, task="summary")
+    if out is None:
+        log("WARN", "summary LLM failed")
         return None
+    out = out.strip()
+    return out[:SUMMARY_MAX_CHARS] if out else None
 
 
 def _deterministic_summarize(chunk_texts: list[str], *, max_lines: int = DETERMINISTIC_MAX_LINES) -> str:

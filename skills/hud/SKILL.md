@@ -110,7 +110,7 @@ uninstall이 아닌 한, 새 statusline은 다음 turn부터가 아니라 Claude
 ## Implementation 참고
 
 ```bash
-DISPATCHER="$CLAUDE_PLUGIN_ROOT/scripts/imprint/hud-setup.sh"
+DISPATCHER="${IMPRINT_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}}/scripts/imprint/hud-setup.sh"
 
 # 가장 자주 쓰는 호출들
 bash "$DISPATCHER" fields list                       # 가용 + 활성

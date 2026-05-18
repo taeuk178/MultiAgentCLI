@@ -32,17 +32,17 @@
      - Recent session evidence
      - Durable evidence
      - External fetched context
-  6. Claude 응답 생성
+  6. coding-agent 응답 생성
   7. Stop: 마지막 assistant 응답을 llm_response event 로 저장
 
 [자동 hook 백그라운드 경로]
   A. UserPromptSubmit lazy-fetch
-     - Haiku가 prompt 키워드/URL 분석
+     - Codex CLI 가 prompt 키워드/URL 분석
      - prompt URL 또는 sources.json 기반 Slack/Notion read-only fetch
      - section chunk 를 memory_chunks 에 직접 INSERT
 
   B. Stop response extract
-     - Haiku가 응답에서 durable chunk 분류
+     - Codex CLI 가 응답에서 durable chunk 분류
      - decision/error/fix/command/test_result/summary/todo/code_context/note 를 memory_chunks 에 직접 INSERT
 
 다음 turn:
@@ -88,13 +88,13 @@ flowchart LR
       STOP["Stop hook<br/>llm_response archive"]
     end
 
-    %% ===== Center: background Haiku workers =====
-    subgraph BG["Background Haiku workers"]
+    %% ===== Center: background LLM workers =====
+    subgraph BG["Background Codex workers"]
       direction TB
-      LF["Lazy fetch analyzer<br/>claude -p haiku"]
+      LF["Lazy fetch analyzer<br/>codex exec"]
       FETCH["Read-only fetch<br/>Slack / Notion"]
       EXTCHUNK["External chunks<br/>spec / message / thread"]
-      EXTRACT["Response extractor<br/>claude -p haiku"]
+      EXTRACT["Response extractor<br/>codex exec"]
       DURABLE["Durable chunks<br/>decision / fix / todo<br/>code_context / note"]
     end
 
@@ -122,7 +122,7 @@ flowchart LR
     %% ===== Right: generation =====
     subgraph GEN["Generation"]
       direction TB
-      CLAUDE["Claude Code main model"]
+      CLAUDE["Main coding model"]
       OUT["User-visible answer"]
     end
 
@@ -208,7 +208,7 @@ flowchart LR
 |---|---|---|
 | Input signals | hook 과 retrieval 로 들어오는 원천 입력 | `U` · `A` · `E` · `M` · `D` |
 | Foreground hook path | 사용자 turn 을 막지 않는 동기 경량 경로 | `SS` · `UPS` · `MINI` · `GATE` · `PREFILL` · `PREPEND` · `STOP` |
-| Background Haiku workers | Haiku 를 쓰는 비동기 정리/추출/fetch 보조 경로 | `LF` · `FETCH` · `EXTCHUNK` · `EXTRACT` · `DURABLE` |
+| Background Codex workers | Codex CLI 를 쓰는 비동기 정리/추출/fetch 보조 경로 | `LF` · `FETCH` · `EXTCHUNK` · `EXTRACT` · `DURABLE` |
 | SQLite memory store | 실제 저장소와 운영 관측 파일 | `EVENTS` · `MEM` · `DOCS` · `PROF` |
 | Explicit /retrieve path | 사용자가 명시 호출할 때만 도는 검색 파이프라인 | `QN` · `RES` · `HYB` · `RRF` · `BOOST` · `MEMFB` · `RR` · `JSON` |
 | Generation | prepend 된 context 를 참고해 응답을 만드는 본 모델 경로 | `CLAUDE` · `OUT` |
@@ -235,7 +235,7 @@ flowchart LR
 | gate + lane prefill | `python3`, `sqlite3`, FTS5 | durable query search/lane 분리 누락, legacy shell fallback 시도 |
 | routing advisory | `python3`, `.imprint/UserPromptSubmit.md` | routing prepend 없음 |
 | memory prefill | `python3`, `sqlite3`, FTS5 | primary prefill 누락, legacy shell fallback 시도 |
-| lazy-fetch spawn | `python3`, `claude`, Slack/Notion MCP | 새 외부 chunk 누적 없음, 기존 chunk 는 계속 사용 |
+| lazy-fetch spawn | `python3`, `codex`, Slack/Notion MCP | 새 외부 chunk 누적 없음, 기존 chunk 는 계속 사용 |
 
 ### Stop
 
@@ -243,7 +243,7 @@ flowchart LR
 |---|---|---|
 | transcript parse | `python3`, `transcript_path` | 마지막 assistant 응답 archive 누락 |
 | `events.llm_response` 저장 | `sqlite3`, `uuidgen` | response archive 누락 |
-| response extract spawn | `python3`, `claude` | 자동 memory 추출 없음, `/memory remember` 로 수동 보강 가능 |
+| response extract spawn | `python3`, `codex` | 자동 memory 추출 없음, `/memory remember` 로 수동 보강 가능 |
 
 ## 외부 소스 lazy-fetch
 
@@ -290,10 +290,11 @@ confirmed contradiction 에 연결된 chunk 는 BOOST 단계에서 강하게 감
 
 | 변수 | 기본값 | 수정 위치 | 바꾸면 달라지는 것 |
 |---|---:|---|---|
-| `IMPRINT_CLAUDE_BIN` | `claude` | env | background Haiku 호출 CLI |
-| `IMPRINT_CLAUDE_TIMEOUT_PREFILL` | `25` | env | prompt 분석 Haiku timeout 초 |
-| `IMPRINT_CLAUDE_TIMEOUT_FETCH` | `45` | env | Slack/Notion fetch Haiku timeout 초 |
-| `IMPRINT_CLAUDE_TIMEOUT_EXTRACT` | `30` | env | Stop response extract Haiku timeout 초 |
+| `IMPRINT_CODEX_BIN` | `codex` | env | background Codex 호출 CLI |
+| `IMPRINT_CODEX_MODEL` | Codex 기본값 | env | background Codex 호출 모델 |
+| `IMPRINT_CODEX_TIMEOUT_PREFILL` | `25` | env | prompt 분석 timeout 초 |
+| `IMPRINT_CODEX_TIMEOUT_FETCH` | `45` | env | Slack/Notion fetch timeout 초 |
+| `IMPRINT_CODEX_TIMEOUT_EXTRACT` | `30` | env | Stop response extract timeout 초 |
 | `IMPRINT_ALLOWED_TOOLS_FETCH` | Notion/Slack wildcard | env | fetch worker 에 허용할 MCP tool 범위 |
 | `CHUNK_TYPES` | 9개 durable type | `ingestion.py` | Stop extract 가 저장할 수 있는 assistant memory type |
 | `EXTERNAL_CHUNK_TYPES` | `spec/message/thread` | `ingestion.py` | Slack/Notion chunk type 구분 |
@@ -347,12 +348,12 @@ confirmed contradiction 에 연결된 chunk 는 BOOST 단계에서 강하게 감
 | `BOOST_CONTRADICTION_CANDIDATE` | `-0.20` | `retrieve.py` | candidate contradiction chunk 감점 |
 | `IMPRINT_NLI_MODEL` | `MoritzLaurer/mDeBERTa-v3-base-mnli-xnli` | env | contradiction NLI 모델 |
 | `IMPRINT_NLI_TIMEOUT_MS` | `500` | env | NLI 판정 timeout ms |
-| `IMPRINT_LLM_JUDGE_TIMEOUT_MS` | `30000` | env | Claude judge fallback timeout ms |
+| `IMPRINT_CODEX_JUDGE_TIMEOUT_MS` | `30000` | env | Codex judge fallback timeout ms |
 | `IMPRINT_CONTRADICTION_TIME_GAP_DAYS` | `90` | env | contradiction 후보 시간 간격 |
 | `IMPRINT_CONTRADICTION_HIGH` | `0.8` | env | candidate 로 분류할 high threshold |
 | `IMPRINT_CONTRADICTION_MID` | `0.4` | env | 현재는 기록용 mid threshold |
-| `IMPRINT_LLM_REFINE_LOW` | `0.4` | env | NLI mid 구간 하한, LLM judge 보강 시작 |
-| `IMPRINT_LLM_REFINE_HIGH` | `0.6` | env | NLI mid 구간 상한, LLM judge 보강 끝 |
+| `IMPRINT_CODEX_REFINE_LOW` | `0.4` | env | NLI mid 구간 하한, Codex judge 보강 시작 |
+| `IMPRINT_CODEX_REFINE_HIGH` | `0.6` | env | NLI mid 구간 상한, Codex judge 보강 끝 |
 
 ### Storage / profile / safety
 
@@ -368,7 +369,7 @@ confirmed contradiction 에 연결된 chunk 는 BOOST 단계에서 강하게 감
 | `IMPRINT_MODEL_CACHE_DIR` | HuggingFace 기본 cache | env | optional ML 모델 cache 위치 |
 | `IMPRINT_DISABLE_EMBEDDING` | `0` | env | `1`이면 embedding/vector search 비활성 |
 | `IMPRINT_DISABLE_NLI` | `0` | env | `1`이면 NLI contradiction judge 비활성 |
-| `IMPRINT_DISABLE_LLM_JUDGE` | `0` | env | `1`이면 Claude LLM judge fallback 비활성 |
+| `IMPRINT_DISABLE_CODEX_JUDGE` | `0` | env | `1`이면 Codex judge fallback 비활성 |
 
 `retrieve_json` / `routed_json` 은 `trace.query_surfaces`, `fallback_reasons`, `rerank_gate_reason` 과 candidate 별 `lane`, `evidence_level`, `grounded`, `source_uri`, `text_hash`, `penalties` 를 노출합니다. 이 값은 context 품질 회고와 gate/MEMFB/rerank threshold 튜닝에 사용합니다.
 
@@ -403,10 +404,11 @@ UPS hook 자동 경로는 `LOG → ROUTE → PREFILL → CTX0` 만 실행해 < 5
 | 변수 | 기본값 | 의미 |
 |---|---|---|
 | `IMPRINT_HOME` | `~/.claude/imprint` | DB, log, profile 저장 위치 |
-| `IMPRINT_CLAUDE_BIN` | `claude` | background Haiku 호출에 사용할 CLI |
-| `IMPRINT_CLAUDE_TIMEOUT_PREFILL` | `25` | prompt 분석 timeout 초 |
-| `IMPRINT_CLAUDE_TIMEOUT_FETCH` | `45` | Slack/Notion fetch timeout 초 |
-| `IMPRINT_CLAUDE_TIMEOUT_EXTRACT` | `30` | response extract timeout 초 |
+| `IMPRINT_CODEX_BIN` | `codex` | background Codex 호출 CLI |
+| `IMPRINT_CODEX_MODEL` | Codex 기본값 | background Codex 호출 모델 |
+| `IMPRINT_CODEX_TIMEOUT_PREFILL` | `25` | prompt 분석 timeout 초 |
+| `IMPRINT_CODEX_TIMEOUT_FETCH` | `45` | Slack/Notion fetch timeout 초 |
+| `IMPRINT_CODEX_TIMEOUT_EXTRACT` | `30` | response extract timeout 초 |
 | `IMPRINT_ALLOWED_TOOLS_FETCH` | Notion/Slack wildcard | fetch 호출에 넘길 allowed tools |
 | `IMPRINT_BYPASS_HOOKS` | `0` | `1`이면 hook 즉시 종료, 재귀 가드 |
 | `IMPRINT_DISABLE_EXTRACT` | `0` | `1`이면 Stop extract 비활성 |
@@ -432,7 +434,7 @@ UPS hook 자동 경로는 `LOG → ROUTE → PREFILL → CTX0` 만 실행해 < 5
 |---|---|
 | `sqlite3` 없음 | 저장과 검색 누락, hook 은 진행 |
 | `python3` 없음 | primary prefill/lazy-fetch/extract 누락 |
-| `claude` CLI 없음 | background LLM 경로 누락 |
+| `codex` CLI 없음 | background Codex 경로 누락 |
 | Slack/Notion MCP 없음 | 외부 fetch 0건, 기존 memory 는 유지 |
 | 선택 ML 의존성 없음 | FTS-only / rule fallback |
 | malformed LLM JSON | relaxed parse 실패 후 skip |

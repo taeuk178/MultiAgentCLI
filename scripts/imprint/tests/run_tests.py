@@ -64,9 +64,9 @@ def setup_env() -> tuple[str, dict]:
     env["IMPRINT_DISABLE_NLI"] = "1"
     env["IMPRINT_DISABLE_SUMMARY_LLM"] = "1"
     env["IMPRINT_DISABLE_NER_LLM"] = "1"
-    # LLM judge 는 TC-08 에서만 활성화
-    env["IMPRINT_DISABLE_LLM_JUDGE"] = "1"
-    env["IMPRINT_BYPASS_HOOKS"] = "1"  # claude -p 호출 시 hook 무한재귀 방지
+    # Codex judge 는 TC-08 에서만 활성화
+    env["IMPRINT_DISABLE_CODEX_JUDGE"] = "1"
+    env["IMPRINT_BYPASS_HOOKS"] = "1"  # codex exec 호출 시 hook 무한재귀 방지
 
     db_path = Path(home) / "app.sqlite"
     schema_sql = SCHEMA_PATH.read_text()
@@ -126,28 +126,41 @@ def hook_env(env: dict) -> dict:
     return out
 
 
-def make_fake_claude(home: str) -> str:
-    path = Path(home) / "fake-claude"
+def make_fake_codex(home: str) -> str:
+    path = Path(home) / "fake-codex"
     raw_token = "ghp_abcdefghijklmnopqrstuvwxyz1234567890"
     path.write_text(
         f"""#!/bin/sh
+out=""
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "-o" ]; then
+    shift
+    out="$1"
+  fi
+  shift
+done
 joined="$*"
 stdin="$(cat)"
 joined="$joined $stdin"
 case "$joined" in
   *"Extract durable knowledge chunks"*)
-    printf '%s\\n' '[{{"chunk_type":"decision","text":"A 버튼 클릭은 {raw_token} 없이 테스트 모드를 시작합니다.","keywords":["A 버튼","{raw_token}"]}}]'
+    result='[{{"chunk_type":"decision","text":"A 버튼 클릭은 {raw_token} 없이 테스트 모드를 시작합니다.","keywords":["A 버튼","{raw_token}"]}}]'
     ;;
   *"contradiction judge"*)
-    printf '%s\\n' '{{"verdict":"contradiction","score":0.95,"reason":"새 결정이 기존 즉시 진입 결정을 대체합니다."}}'
+    result='{{"verdict":"contradiction","score":0.95,"reason":"새 결정이 기존 즉시 진입 결정을 대체합니다."}}'
     ;;
   *"Return STRICT JSON with EXACTLY these keys"*)
-    printf '%s\\n' '{{"ambiguity_score":0.1,"keywords":["A 버튼","클릭","button click"],"refined_prompt":null}}'
+    result='{{"ambiguity_score":0.1,"keywords":["A 버튼","클릭","button click"],"refined_prompt":null}}'
     ;;
   *)
-    printf '%s\\n' '[]'
+    result='[]'
     ;;
 esac
+if [ -n "$out" ]; then
+  printf '%s\\n' "$result" > "$out"
+else
+  printf '%s\\n' "$result"
+fi
 """,
         encoding="utf-8",
     )
@@ -342,10 +355,10 @@ C 슬롯 본문 v2 (변경됨) 입니다.
 
 
 def tc_08_contradiction_llm(env: dict, home: str, case: CaseResult) -> None:
-    """LLM judge 활성 경로를 fake claude 로 결정적으로 검증."""
+    """Codex judge 활성 경로를 fake codex 로 결정적으로 검증."""
     env_llm = dict(env)
-    env_llm.pop("IMPRINT_DISABLE_LLM_JUDGE", None)
-    env_llm["IMPRINT_CLAUDE_BIN"] = make_fake_claude(home)
+    env_llm.pop("IMPRINT_DISABLE_CODEX_JUDGE", None)
+    env_llm["IMPRINT_CODEX_BIN"] = make_fake_codex(home)
 
     code = ("import sys; sys.path.insert(0, %r)\n"
             "from retrieval.entity import upsert_entity\n"
@@ -387,10 +400,10 @@ def tc_08_contradiction_llm(env: dict, home: str, case: CaseResult) -> None:
 
 
 def tc_09_interruption_timeout(env: dict, home: str, case: CaseResult) -> None:
-    """LLM judge 강제 timeout (1ms) + NLI 비활성 → rule fallback + needs_retry."""
+    """Codex judge 강제 timeout (1ms) + NLI 비활성 → rule fallback + needs_retry."""
     env_t = dict(env)
-    env_t.pop("IMPRINT_DISABLE_LLM_JUDGE", None)
-    env_t["IMPRINT_LLM_JUDGE_TIMEOUT_MS"] = "1"  # 사실상 즉시 timeout
+    env_t.pop("IMPRINT_DISABLE_CODEX_JUDGE", None)
+    env_t["IMPRINT_CODEX_JUDGE_TIMEOUT_MS"] = "1"  # 사실상 즉시 timeout
 
     # 기존 contradictions 정리 후 재scan
     conn = sqlite3.connect(str(Path(home) / "app.sqlite"))
@@ -460,7 +473,7 @@ def tc_10_priority_drain(env: dict, home: str, case: CaseResult) -> None:
 def tc_11_hook_memory_loop(env: dict, home: str, case: CaseResult) -> None:
     """SessionStart → UPS → Stop → 다음 UPS + redaction 회귀 검증."""
     env_h = hook_env(env)
-    env_h["IMPRINT_CLAUDE_BIN"] = make_fake_claude(home)
+    env_h["IMPRINT_CODEX_BIN"] = make_fake_codex(home)
     raw_token = "ghp_abcdefghijklmnopqrstuvwxyz1234567890"
     raw_password = "password=super-secret-123"
 
@@ -775,7 +788,7 @@ def tc_14_retrieve_memory_fallback(env: dict, home: str, case: CaseResult) -> No
 def tc_15_first_turn_working_overlay(env: dict, home: str, case: CaseResult) -> None:
     """UserPromptSubmit sync mini-chunk + prefill/retrieve working overlay."""
     env_h = hook_env(env)
-    env_h["IMPRINT_CLAUDE_BIN"] = make_fake_claude(home)
+    env_h["IMPRINT_CODEX_BIN"] = make_fake_codex(home)
     rc, _, err = run_cmd(env_h, ["bash", "scripts/imprint/session-start.sh"])
     if rc != 0:
         case.passed = False
@@ -939,7 +952,7 @@ def tc_15_first_turn_working_overlay(env: dict, home: str, case: CaseResult) -> 
 def tc_16_memory_lane_policy(env: dict, home: str, case: CaseResult) -> None:
     """working cleanup/gate/provenance + low-confidence MEMFB policy."""
     env_h = hook_env(env)
-    env_h["IMPRINT_CLAUDE_BIN"] = make_fake_claude(home)
+    env_h["IMPRINT_CODEX_BIN"] = make_fake_codex(home)
     env_h["IMPRINT_WORKING_TTL_HOURS"] = "1"
     env_h["IMPRINT_WORKING_MAX_PER_SESSION"] = "2"
     rc, _, err = run_cmd(env_h, ["bash", "scripts/imprint/session-start.sh"])
@@ -1218,7 +1231,7 @@ CASES: list[tuple[str, str, callable]] = [
     ("TC-05", "Retrieve global 쿼리", tc_05_retrieve_global),
     ("TC-06", "Entity alias 매칭", tc_06_entity_alias),
     ("TC-07", "Document 갱신 + supersede", tc_07_supersede),
-    ("TC-08", "Contradiction 감지 (LLM judge)", tc_08_contradiction_llm),
+    ("TC-08", "Contradiction 감지 (Codex judge)", tc_08_contradiction_llm),
     ("TC-09", "요청 중간 중단 (timeout)", tc_09_interruption_timeout),
     ("TC-10", "동시 ingest priority drain", tc_10_priority_drain),
     ("TC-11", "Hook memory loop + redaction", tc_11_hook_memory_loop),

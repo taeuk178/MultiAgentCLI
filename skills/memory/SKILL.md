@@ -150,7 +150,7 @@ imprint memory refresh project
 All subcommands are dispatched through:
 
 ```bash
-"$CLAUDE_PLUGIN_ROOT/scripts/imprint/memory.sh" <subcommand> [args...]
+"${IMPRINT_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}}/scripts/imprint/memory.sh" <subcommand> [args...]
 ```
 
 The script reads/writes `~/.claude/imprint/app.sqlite`, initializing the schema on first run.

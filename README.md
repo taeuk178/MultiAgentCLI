@@ -13,6 +13,8 @@ claude plugin install imprint@imprint
 
 설치 후 Claude Code 세션을 새로 열면 `SessionStart` hook 이 `~/.claude/imprint/app.sqlite` 를 만들고 현재 프로젝트를 등록합니다.
 
+Codex에서는 `.codex-plugin/plugin.json` manifest가 같은 `skills/`와 `hooks/hooks.json`을 가리킵니다.
+
 ## 사전 조건
 
 기본 기능은 아래 도구만 있으면 동작합니다.
@@ -21,7 +23,7 @@ claude plugin install imprint@imprint
 - `python3`
 - `sqlite3`
 - `uuidgen`
-- Claude Code / `claude` CLI
+- Claude Code / `claude` CLI, 또는 Codex / `codex` CLI
 
 선택 의존성은 검색 품질을 높입니다. 없어도 FTS-only fallback 으로 동작합니다.
 
@@ -30,6 +32,17 @@ pip install -r requirements-optional.txt
 ```
 
 Slack/Notion lazy-fetch 를 쓰려면 Claude Code 쪽에 해당 MCP 가 별도로 등록되어 있어야 합니다.
+
+## Codex/GPT 백엔드
+
+background GPT 작업은 Codex CLI를 사용합니다. 모델을 명시하고 싶으면 세션 환경에 아래 값을 지정합니다.
+
+```bash
+# 선택: 지정하지 않으면 Codex CLI의 기본 모델/프로필을 사용합니다.
+export IMPRINT_CODEX_MODEL=gpt-5.4-mini
+```
+
+이 설정은 prompt 분석, response extract, 요약, NER, contradiction judge 같은 background GPT 작업에만 적용됩니다. SQLite 저장소, `/memory`, `/retrieve` 검색 로직은 그대로 동작합니다.
 
 ## 핵심 기능
 
@@ -116,5 +129,5 @@ working memory 는 기본적으로 24시간 TTL 과 session 당 최신 20개 제
 - secret-shaped text 는 저장 전에 redaction 합니다. 그래도 민감정보를 일부러 memory 에 넣는 사용은 피하세요.
 - hook 은 실패해도 사용자 세션을 끊지 않고 `plugin.log` 에만 남깁니다.
 - `sentence_transformers`, `transformers`, `sqlite-vec` 는 선택 의존성입니다. 미설치 시 검색 품질은 낮아질 수 있지만 기본 동작은 유지됩니다.
-- `claude -p haiku` 를 쓰는 lazy-fetch/response extract 는 background 로 실행되며 다음 turn 부터 반영됩니다.
+- Codex CLI 를 쓰는 lazy-fetch/response extract 는 background 로 실행되며 다음 turn 부터 반영됩니다.
 - 사용자의 실제 DB 는 `~/.claude/imprint/app.sqlite` 에 저장됩니다. 테스트할 때는 `IMPRINT_HOME=/tmp/...` 로 격리하세요.

@@ -15,18 +15,17 @@ from __future__ import annotations
 import hashlib
 import os
 import sqlite3
-import subprocess
 from dataclasses import dataclass
 from typing import Any
 
 from . import embedding as emb_mod
 from ._common import db_connect, log, new_id, now_iso
 from .chunking import ChunkConfig, ChunkSpec, split_document
+from .codex_runtime import call_codex
 from .normalize import normalize_chunk_type
 
 # Optional context-prefix generation settings.
 # The prefix enriches retrieval_text but must be bounded because ingest can run on long docs.
-CLAUDE_BIN = os.environ.get("IMPRINT_CLAUDE_BIN") or "claude"
 CONTEXT_PREFIX_TIMEOUT = int(os.environ.get("IMPRINT_CONTEXT_PREFIX_TIMEOUT") or "20")
 CONTEXT_PREFIX_MAX_CHARS = 400
 
@@ -112,7 +111,7 @@ def _generate_context_prefix(
     section_path: str,
     chunk_text: str,
 ) -> str | None:
-    """claude CLI 로 1~2 문장 context_prefix 생성. 실패 시 None.
+    """Codex 로 1~2 문장 context_prefix 생성. 실패 시 None.
 
     동기 경로에서 직접 호출하지 말 것 — ingest 는 BG side. UPS hook 의 latency
     budget 과 무관.
@@ -128,25 +127,12 @@ def _generate_context_prefix(
         "Write 1-2 sentences (Korean) that explain what this chunk is about in the context of the document.\n"
         "Be concrete and factual. Output only the context text, no preamble."
     )
-    try:
-        env = os.environ.copy()
-        env["IMPRINT_BYPASS_HOOKS"] = "1"
-        proc = subprocess.run(
-            [CLAUDE_BIN, "-p", "--model", "haiku"],
-            input=prompt,
-            text=True,
-            capture_output=True,
-            timeout=CONTEXT_PREFIX_TIMEOUT,
-            env=env,
-        )
-        if proc.returncode != 0:
-            log("WARN", f"context_prefix failed rc={proc.returncode} stderr={proc.stderr[:200]!r}")
-            return None
-        out = proc.stdout.strip()
-        return out[:CONTEXT_PREFIX_MAX_CHARS] if out else None
-    except Exception as exc:
-        log("WARN", f"context_prefix exception: {exc!r}")
+    out = call_codex(prompt, timeout=CONTEXT_PREFIX_TIMEOUT, task="context_prefix")
+    if out is None:
+        log("WARN", "context_prefix LLM failed")
         return None
+    out = out.strip()
+    return out[:CONTEXT_PREFIX_MAX_CHARS] if out else None
 
 
 def ingest_document(
