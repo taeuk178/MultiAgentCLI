@@ -448,3 +448,141 @@ UPS hook 자동 경로는 `LOG → ROUTE → PREFILL → CTX0` 만 실행해 < 5
 | malformed LLM JSON | relaxed parse 실패 후 skip |
 
 `.imprint/` 폴더는 SessionStart hook 이 처음 실행될 때 자동 생성되며 기존 파일은 덮어쓰지 않습니다.
+
+## Alternate Mermaid Views
+
+위의 flowchart 는 전체 시스템 지도입니다. 아래 다이어그램은 같은 구조를 다른 관점에서
+보여줍니다. 처음 읽는 사람은 단계형 flowchart 로 실행 순서를 먼저 보고, ER diagram
+으로 저장소 역할을 확인하면 이해하기 쉽습니다.
+
+### Automatic Hook Sequence
+
+```mermaid
+%%{init: {'flowchart': {'useMaxWidth': true, 'rankSpacing': 44, 'nodeSpacing': 34}, 'theme': 'default'}}%%
+flowchart TB
+    U["User prompt<br/>A 버튼 클릭 동작 알려줘"]
+
+    subgraph SYNC["Synchronous hook path"]
+      direction TB
+      UPS["1. UserPromptSubmit<br/>redact prompt"]
+      EV["2. events<br/>save user_message"]
+      RAW["3. memory_chunks<br/>insert raw_turn<br/>as Query context"]
+      PF["4. Prefill<br/>read Query context<br/>search Session memory<br/>search Retrieved memory"]
+      PRE["5. Prepend<br/>[Project memory context]"]
+      MODEL["6. Claude / Codex<br/>generate answer"]
+      STOP["7. Stop<br/>save llm_response"]
+    end
+
+    subgraph ASYNC["Background workers"]
+      direction TB
+      LF["Lazy fetch<br/>analyze prompt"]
+      SRC["Slack / Notion<br/>read-only fetch"]
+      EXT["memory_chunks<br/>External source context"]
+      EX["Response extract<br/>classify persistent memory"]
+      PM["memory_chunks<br/>persistent memory chunks"]
+    end
+
+    U --> UPS --> EV --> RAW --> PF --> PRE --> MODEL --> STOP
+    UPS -. spawn .-> LF --> SRC --> EXT
+    STOP -. spawn .-> EX --> PM
+    EXT -. next turn candidate .-> PF
+    PM -. next turn candidate .-> PF
+```
+
+### Explicit Retrieve Sequence
+
+```mermaid
+%%{init: {'flowchart': {'useMaxWidth': true, 'rankSpacing': 44, 'nodeSpacing': 34}, 'theme': 'default'}}%%
+flowchart TB
+    Q["/retrieve --routed<br/>A 버튼 클릭 동작 알려줘"]
+    RES["1. Entity / scope resolve<br/>local / feature / global"]
+    SURF["2. Normalize + multi-rewrite<br/>original / action / code"]
+
+    subgraph PRIMARY["Primary retrieval"]
+      direction TB
+      DOCS["chunks_v2 + summaries<br/>FTS5 BM25<br/>optional vector"]
+      RRF["RRF<br/>merge primary candidates"]
+      OVER["Soft union<br/>Query context from memory_chunks"]
+    end
+
+    LOW{"Low confidence<br/>or no candidates?"}
+
+    subgraph FALLBACK["Fallback retrieval"]
+      direction TB
+      MEMFB["memory_chunks<br/>read-only fallback"]
+      FILTER["exclude source_status<br/>exclude working chunks"]
+    end
+
+    RANK["Boost / penalty<br/>recency, entity,<br/>contradiction"]
+    RR["Optional rerank"]
+    OUT["Context block<br/>or JSON trace"]
+
+    Q --> RES --> SURF --> DOCS --> RRF --> OVER --> LOW
+    LOW -- yes --> MEMFB --> FILTER --> RANK
+    LOW -- no --> RANK
+    RANK --> RR --> OUT
+```
+
+### Storage ER Diagram
+
+```mermaid
+erDiagram
+    PROJECTS ||--o{ EVENTS : has
+    PROJECTS ||--o{ MEMORY_CHUNKS : has
+    PROJECTS ||--o{ DOCUMENTS : has
+    DOCUMENTS ||--o{ CHUNKS_V2 : split_into
+    PROJECTS ||--o{ SUMMARIES : has
+    PROJECTS ||--o{ ENTITIES : has
+    PROJECTS ||--o{ CONTRADICTIONS : has
+    EVENTS ||--o{ MEMORY_CHUNKS : extracted_into
+    CHUNKS_V2 ||--o{ SUMMARIES : grounds
+    ENTITIES ||--o{ CONTRADICTIONS : involved_in
+
+    PROJECTS {
+        text id
+        text root_path
+        text name
+    }
+
+    EVENTS {
+        text id
+        text project_id
+        text kind
+        text text_clean
+        integer noise
+    }
+
+    MEMORY_CHUNKS {
+        text id
+        text project_id
+        text source_event_id
+        text chunk_type
+        text text
+        text metadata_json
+        integer pinned
+    }
+
+    DOCUMENTS {
+        text id
+        text project_id
+        text source_type
+        text source_ref
+    }
+
+    CHUNKS_V2 {
+        text id
+        text project_id
+        text document_id
+        text retrieval_text
+        blob embedding
+        integer is_current
+    }
+
+    SUMMARIES {
+        text id
+        text project_id
+        text level
+        text target_key
+        text summary_text
+    }
+```
