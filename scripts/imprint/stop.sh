@@ -3,11 +3,12 @@
 # Phase 2 minimum: persists the response as a `llm_response` event.
 # Chunk extraction (decision/error/fix/etc.) lands in Phase 3.
 #
-# stdin: JSON with session info; transcript path is in transcript_path field.
+# stdin: JSON with session info; Codex can provide last_assistant_message,
+# Claude-style fallback uses transcript_path.
 
 set -euo pipefail
 
-# 재귀 가드: ingestion.py가 spawn한 claude -p 서브프로세스가 종료될 때
+# 재귀 가드: ingestion.py가 spawn한 background model 서브프로세스가 종료될 때
 # 이 Stop hook이 또 발동해 다시 ingestion.py extract를 부르는 무한 루프를 막는다.
 if [[ "${IMPRINT_BYPASS_HOOKS:-0}" == "1" ]]; then
   exit 0
@@ -15,10 +16,43 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib/common.sh"
+ensure_home
 
 INPUT=$(cat || true)
+IMPRINT_HOST="$(imprint_detect_host "$INPUT")"
+export IMPRINT_HOST
 
-TRANSCRIPT_PATH=$(printf '%s' "$INPUT" | python3 -c '
+LAST_TEXT=$(printf '%s' "$INPUT" | python3 -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    value = data.get("last_assistant_message", "")
+    if isinstance(value, str):
+        print(value)
+    elif isinstance(value, dict):
+        parts = value.get("content", [])
+        out = []
+        if isinstance(parts, str):
+            out.append(parts)
+        elif isinstance(parts, list):
+            for part in parts:
+                if isinstance(part, str):
+                    out.append(part)
+                elif isinstance(part, dict) and part.get("type") == "text":
+                    out.append(part.get("text", ""))
+        print("\n".join([x for x in out if x]))
+except Exception:
+    pass
+' 2>>"$IMPRINT_LOG" || true)
+
+if ! command -v sqlite3 >/dev/null 2>&1; then
+  log_error "sqlite3 missing; stop hook skipped"
+  imprint_emit_stop_ok
+  exit 0
+fi
+
+if [[ -z "${LAST_TEXT// }" ]]; then
+  TRANSCRIPT_PATH=$(printf '%s' "$INPUT" | python3 -c '
 import json, sys
 try:
     data = json.load(sys.stdin)
@@ -27,21 +61,17 @@ except Exception:
     pass
 ' 2>>"$IMPRINT_LOG" || true)
 
-if [[ -z "${TRANSCRIPT_PATH// }" || ! -f "$TRANSCRIPT_PATH" ]]; then
-  exit 0
-fi
+  if [[ -z "${TRANSCRIPT_PATH// }" || ! -f "$TRANSCRIPT_PATH" ]]; then
+    imprint_emit_stop_ok
+    exit 0
+  fi
 
-if ! command -v sqlite3 >/dev/null 2>&1; then
-  log_error "sqlite3 missing; stop hook skipped"
-  exit 0
-fi
-
-# Extract last assistant text from the JSONL transcript.
-# IMPRINT_PROFILE=1: 같은 python 호출 안에서 파싱 시간/줄 수/파일 크기/assistant 수를
-# ~/.claude/imprint/profile.jsonl 에 한 줄로 emit. 추가 process spawn 없음.
-LAST_TEXT=$(IMPRINT_HOME_BG="${IMPRINT_HOME:-$HOME/.claude/imprint}" \
-  IMPRINT_PROFILE_BG="${IMPRINT_PROFILE:-0}" \
-  python3 - "$TRANSCRIPT_PATH" <<'PY' 2>>"$IMPRINT_LOG" || true
+  # Extract last assistant text from the JSONL transcript.
+  # IMPRINT_PROFILE=1: 같은 python 호출 안에서 파싱 시간/줄 수/파일 크기/assistant 수를
+  # $IMPRINT_HOME/profile.jsonl 에 한 줄로 emit. 추가 process spawn 없음.
+  LAST_TEXT=$(IMPRINT_HOME_BG="${IMPRINT_HOME:-$HOME/.imprint}" \
+    IMPRINT_PROFILE_BG="${IMPRINT_PROFILE:-0}" \
+    python3 - "$TRANSCRIPT_PATH" <<'PY' 2>>"$IMPRINT_LOG" || true
 import json, os, sys, time
 from datetime import datetime, timezone
 
@@ -83,7 +113,7 @@ except FileNotFoundError:
 
 if os.environ.get("IMPRINT_PROFILE_BG") == "1":
     try:
-        home = os.environ.get("IMPRINT_HOME_BG") or os.path.expanduser("~/.claude/imprint")
+        home = os.environ.get("IMPRINT_HOME_BG") or os.path.expanduser("~/.imprint")
         os.makedirs(home, exist_ok=True)
         try:
             file_bytes = os.path.getsize(path)
@@ -106,9 +136,11 @@ if os.environ.get("IMPRINT_PROFILE_BG") == "1":
 
 print(last)
 PY
-)
+  )
+fi
 
 if [[ -z "${LAST_TEXT// }" ]]; then
+  imprint_emit_stop_ok
   exit 0
 fi
 SAFE_LAST_TEXT=$(redact_text "$LAST_TEXT")
@@ -117,13 +149,14 @@ PID=$(project_id)
 NOW=$(now_iso)
 EVENT_ID=$(new_id)
 ESC_TEXT=$(sql_escape "$SAFE_LAST_TEXT")
+ESC_SOURCE=$(sql_escape "$IMPRINT_HOST")
 
 db_exec "
   INSERT INTO events (id, project_id, source, kind, text_clean, created_at)
-  VALUES ('$EVENT_ID', '$PID', 'claude_code', 'llm_response', '$ESC_TEXT', '$NOW');
+  VALUES ('$EVENT_ID', '$PID', '$ESC_SOURCE', 'llm_response', '$ESC_TEXT', '$NOW');
 " 2>>"$IMPRINT_LOG" || true
 
-# Chunk extraction을 백그라운드로 분리한다. claude 응답은 이미 사용자에게 표시된
+# Chunk extraction을 백그라운드로 분리한다. assistant 응답은 이미 사용자에게 표시된
 # 상태이고, chunk 저장은 다음 turn의 prefill에서 활용되면 충분하다.
 if [[ "${IMPRINT_DISABLE_EXTRACT:-0}" != "1" ]] && command -v python3 >/dev/null 2>&1; then
   TMP_BG=$(mktemp 2>/dev/null || echo "/tmp/imprint-stop-$$.tmp")
@@ -136,4 +169,5 @@ if [[ "${IMPRINT_DISABLE_EXTRACT:-0}" != "1" ]] && command -v python3 >/dev/null
 fi
 
 log_info "stop logged event=$EVENT_ID project=$PID bytes=${#SAFE_LAST_TEXT}"
+imprint_emit_stop_ok
 exit 0

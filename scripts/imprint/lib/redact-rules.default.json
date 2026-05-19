@@ -1,5 +1,5 @@
 {
-  "_doc": "Default redaction rules. 사용자가 ~/.claude/imprint/redact-rules.json을 만들면 그 파일이 우선한다. 정규식은 Python re 모듈 문법.",
+  "_doc": "Default redaction rules. 사용자가 ~/.imprint/redact-rules.json을 만들면 그 파일이 우선한다. 정규식은 Python re 모듈 문법.",
   "rules": [
     {
       "name": "anthropic_api_key",

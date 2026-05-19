@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PLUGIN_ROOT\"/scripts/imprint/user-prompt-submit.sh",
+            "command": "bash \"${IMPRINT_PLUGIN_ROOT:-${PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}}}\"/scripts/imprint/user-prompt-submit.sh",
             "timeout": 30
           }
         ]
@@ -19,7 +19,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PLUGIN_ROOT\"/scripts/imprint/stop.sh",
+            "command": "bash \"${IMPRINT_PLUGIN_ROOT:-${PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}}}\"/scripts/imprint/stop.sh",
             "timeout": 30
           }
         ]
@@ -31,7 +31,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PLUGIN_ROOT\"/scripts/imprint/session-start.sh",
+            "command": "bash \"${IMPRINT_PLUGIN_ROOT:-${PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}}}\"/scripts/imprint/session-start.sh",
             "timeout": 5
           }
         ]

@@ -1,7 +1,7 @@
 """LLM-driven entity mention 추출 + alias candidate mining.
 
 명세 다이어그램의 `ENT1/ENT2` (chunk → entity mention) 와 `EA` (J4 alias mining)
-의 결정적 부분을 채운다. claude CLI haiku 호출이 BG side 전제이므로 동기 경로
+의 결정적 부분을 채운다. LLM 호출이 BG side 전제이므로 동기 경로
 budget 과 무관.
 
 추출 결과는 `entity_aliases.status='pending'` + `chunk_entities` link 로 저장 —
@@ -15,14 +15,13 @@ import json
 import os
 import re
 import sqlite3
-import subprocess
 from dataclasses import dataclass
 
 from ._common import db_connect, log, new_id, now_iso
 from .entity import upsert_entity, add_alias
+from .model_runtime import run_background_model
 
-# Entity extraction runs in background jobs, so Haiku timeout can be higher than hook paths.
-CLAUDE_BIN = os.environ.get("IMPRINT_CLAUDE_BIN") or "claude"
+# Entity extraction runs in background jobs, so timeout can be higher than hook paths.
 NER_TIMEOUT_MS = int(os.environ.get("IMPRINT_NER_TIMEOUT_MS") or "25000")
 
 # Mentions above this confidence skip manual review and become confirmed aliases.
@@ -88,28 +87,12 @@ def _llm_extract(chunk_text: str) -> list[ExtractedMention] | None:
         return None
     truncated = chunk_text[:NER_MAX_CHARS]
     prompt = _PROMPT.replace("{chunk}", truncated)
-    try:
-        env = os.environ.copy()
-        env["IMPRINT_BYPASS_HOOKS"] = "1"
-        proc = subprocess.run(
-            [CLAUDE_BIN, "-p", "--model", "haiku"],
-            input=prompt,
-            text=True,
-            capture_output=True,
-            timeout=NER_TIMEOUT_MS / 1000.0,
-            env=env,
-        )
-        if proc.returncode != 0:
-            log("WARN", f"NER LLM failed rc={proc.returncode} stderr={proc.stderr[:200]!r}")
-            return None
-    except subprocess.TimeoutExpired:
-        log("WARN", "NER LLM timeout")
-        return None
-    except Exception as exc:
-        log("WARN", f"NER LLM exception: {exc!r}")
+    out = run_background_model(prompt, timeout=NER_TIMEOUT_MS / 1000.0, task="ner")
+    if out is None:
+        log("WARN", "NER LLM failed")
         return None
 
-    out = (proc.stdout or "").strip()
+    out = out.strip()
     if not out:
         return []
     # JSON 배열 추출 — 코드펜스나 prose 가 둘러싸도 매치.

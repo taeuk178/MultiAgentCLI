@@ -1,11 +1,11 @@
-"""contradiction detection — 후보 생성 + NLI 판정 + LLM judge fallback + 3구간 분기.
+"""contradiction detection — 후보 생성 + NLI 판정 + model judge fallback + 3구간 분기.
 
 판정 우선순위 (명세):
   1) 로컬 NLI (mDeBERTa-v3-base-mnli-xnli) — 500ms timeout
-  2) NLI 실패/timeout 또는 mid confidence (0.4~0.6) → LLM judge (claude CLI haiku)
+  2) NLI 실패/timeout 또는 mid confidence (0.4~0.6) → model judge
   3) 둘 다 실패/timeout → status=candidate 로 저장해 다음 배치에서 재시도
 
-NLI / LLM 모두 미설치/미인증 시 rule 기반 약 신호로 status=candidate 보존.
+NLI / model runtime 모두 미설치/미인증 시 rule 기반 약 신호로 status=candidate 보존.
 자동 dismiss 금지 — false negative 영구 손실 방지.
 """
 from __future__ import annotations
@@ -14,19 +14,18 @@ import json
 import os
 import re
 import sqlite3
-import subprocess
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from ._common import db_connect, log, new_id, now_iso
+from .model_runtime import run_background_model
 
 # Local NLI model and fallback judge runtime settings.
-# NLI is fast/optional; Haiku judge is slower but helps mid-confidence pairs.
+# NLI is fast/optional; model judge is slower but helps mid-confidence pairs.
 NLI_MODEL_NAME = os.environ.get("IMPRINT_NLI_MODEL") or "MoritzLaurer/mDeBERTa-v3-base-mnli-xnli"
 NLI_TIMEOUT_MS = int(os.environ.get("IMPRINT_NLI_TIMEOUT_MS") or "500")
-LLM_JUDGE_TIMEOUT_MS = int(os.environ.get("IMPRINT_LLM_JUDGE_TIMEOUT_MS") or "30000")
-CLAUDE_BIN = os.environ.get("IMPRINT_CLAUDE_BIN") or "claude"
+MODEL_JUDGE_TIMEOUT_MS = int(os.environ.get("IMPRINT_MODEL_JUDGE_TIMEOUT_MS") or "30000")
 
 # Candidate generation only compares decisions close enough in source update time.
 TIME_GAP_DAYS = int(os.environ.get("IMPRINT_CONTRADICTION_TIME_GAP_DAYS") or "90")
@@ -35,9 +34,9 @@ TIME_GAP_DAYS = int(os.environ.get("IMPRINT_CONTRADICTION_TIME_GAP_DAYS") or "90
 HIGH_THRESHOLD = float(os.environ.get("IMPRINT_CONTRADICTION_HIGH") or "0.8")
 MID_THRESHOLD = float(os.environ.get("IMPRINT_CONTRADICTION_MID") or "0.4")
 
-# NLI 가 mid 영역(low confidence) 일 때 LLM judge 로 보강할 범위.
-LLM_REFINE_LOW = float(os.environ.get("IMPRINT_LLM_REFINE_LOW") or "0.4")
-LLM_REFINE_HIGH = float(os.environ.get("IMPRINT_LLM_REFINE_HIGH") or "0.6")
+# NLI 가 mid 영역(low confidence) 일 때 model judge 로 보강할 범위.
+MODEL_REFINE_LOW = float(os.environ.get("IMPRINT_MODEL_REFINE_LOW") or "0.4")
+MODEL_REFINE_HIGH = float(os.environ.get("IMPRINT_MODEL_REFINE_HIGH") or "0.6")
 
 _lock = threading.Lock()
 _pipeline = None
@@ -83,7 +82,7 @@ def _try_load_pipeline():
             )
         except Exception as exc:
             _load_failed = True
-            log("WARN", f"NLI pipeline load failed: {exc!r} — falling back to LLM judge / rule")
+            log("WARN", f"NLI pipeline load failed: {exc!r} — falling back to model judge / rule")
             _pipeline = None
     return _pipeline
 
@@ -128,7 +127,7 @@ def _nli_score(premise: str, hypothesis: str) -> tuple[float, str] | None:
     return float(holder["score"]), holder.get("reason", "")
 
 
-_LLM_JUDGE_PROMPT = """You are a contradiction judge for Korean engineering decisions.
+_MODEL_JUDGE_PROMPT = """You are a contradiction judge for Korean engineering decisions.
 
 Two decision statements about the same feature are given. Decide whether they
 contradict each other (i.e., one decision invalidates the other).
@@ -146,44 +145,28 @@ Statement B: {b}
 JSON:"""
 
 
-def _llm_judge(a_text: str, b_text: str) -> tuple[float, str] | None:
-    """claude CLI 로 두 결정문이 충돌하는지 판정.
+def _model_judge(a_text: str, b_text: str) -> tuple[float, str] | None:
+    """model runtime으로 두 결정문이 충돌하는지 판정.
 
     반환: (contradiction_score, reason). 실패/timeout 시 None.
-    timeout 은 LLM_JUDGE_TIMEOUT_MS — NLI 보다 길게 두는 것이 합리적 (LLM 호출 RTT
+    timeout 은 MODEL_JUDGE_TIMEOUT_MS — NLI 보다 길게 두는 것이 합리적 (model 호출 RTT
     가 NLI inference 보다 큼). 명세 500 ms 는 NLI 한정.
     """
-    if os.environ.get("IMPRINT_DISABLE_LLM_JUDGE") == "1":
+    if os.environ.get("IMPRINT_DISABLE_MODEL_JUDGE") == "1":
         return None
-    prompt = _LLM_JUDGE_PROMPT.replace("{a}", a_text[:1500]).replace("{b}", b_text[:1500])
-    try:
-        env = os.environ.copy()
-        env["IMPRINT_BYPASS_HOOKS"] = "1"
-        proc = subprocess.run(
-            [CLAUDE_BIN, "-p", "--model", "haiku"],
-            input=prompt,
-            text=True,
-            capture_output=True,
-            timeout=LLM_JUDGE_TIMEOUT_MS / 1000.0,
-            env=env,
-        )
-        if proc.returncode != 0:
-            log("WARN", f"LLM judge failed rc={proc.returncode} stderr={proc.stderr[:200]!r}")
-            return None
-    except subprocess.TimeoutExpired:
-        log("WARN", "LLM judge timeout")
-        return None
-    except Exception as exc:
-        log("WARN", f"LLM judge exception: {exc!r}")
+    prompt = _MODEL_JUDGE_PROMPT.replace("{a}", a_text[:1500]).replace("{b}", b_text[:1500])
+    out = run_background_model(prompt, timeout=MODEL_JUDGE_TIMEOUT_MS / 1000.0, task="contradiction")
+    if out is None:
+        log("WARN", "model judge failed")
         return None
 
-    out = (proc.stdout or "").strip()
+    out = out.strip()
     if not out:
         return None
     # JSON 한 줄만 추출. 모델이 코드펜스를 둘러싸도 매치되도록.
     m = re.search(r"\{[^{}]*\}", out)
     if not m:
-        log("WARN", f"LLM judge non-JSON: {out[:200]!r}")
+        log("WARN", f"model judge non-JSON: {out[:200]!r}")
         return None
     try:
         data = json.loads(m.group(0))
@@ -191,7 +174,7 @@ def _llm_judge(a_text: str, b_text: str) -> tuple[float, str] | None:
         score = float(data.get("score") or 0.0)
         reason = str(data.get("reason") or "")[:200]
     except (ValueError, json.JSONDecodeError) as exc:
-        log("WARN", f"LLM judge parse failed: {exc!r} raw={out[:200]!r}")
+        log("WARN", f"model judge parse failed: {exc!r} raw={out[:200]!r}")
         return None
 
     # verdict 와 score 정합성 보정 — 모델이 "neutral" 라며 0.9 주는 등 모순 시
@@ -202,7 +185,7 @@ def _llm_judge(a_text: str, b_text: str) -> tuple[float, str] | None:
         score = min(score, 0.3)
     elif verdict == "neutral":
         score = max(0.4, min(score, 0.6))
-    return score, f"llm verdict={verdict} reason={reason}"
+    return score, f"model verdict={verdict} reason={reason}"
 
 
 def _classify_status(score: float) -> str:
@@ -215,16 +198,16 @@ def _classify_status(score: float) -> str:
 class JudgeResult:
     score: float
     reason: str
-    detector: str            # nli | llm | rule | retry
+    detector: str            # nli | model | rule | retry
     needs_retry: bool        # True 면 status=candidate 로 강제 (다음 배치에서 재판정)
 
 
 def _judge_pair(a_text: str, b_text: str, *, use_nli: bool, use_llm: bool) -> JudgeResult:
-    """판정 파이프라인 — NLI primary → LLM fallback → rule weak signal.
+    """판정 파이프라인 — NLI primary → model fallback → rule weak signal.
 
     명세 우선순위:
       1) NLI 시도 (500 ms timeout).
-      2) NLI 가 실패/timeout 또는 mid confidence (LLM_REFINE_LOW~HIGH) 면 LLM judge.
+      2) NLI 가 실패/timeout 또는 mid confidence (MODEL_REFINE_LOW~HIGH) 면 model judge.
       3) 둘 다 실패 → rule 약 신호로 status=candidate 보존 (재시도).
     """
     nli_out: tuple[float, str] | None = None
@@ -234,25 +217,25 @@ def _judge_pair(a_text: str, b_text: str, *, use_nli: bool, use_llm: bool) -> Ju
     # NLI 가 high confidence (high or low extreme) 결과면 그대로 채택.
     if nli_out is not None:
         score, reason = nli_out
-        if score >= HIGH_THRESHOLD or score < LLM_REFINE_LOW:
+        if score >= HIGH_THRESHOLD or score < MODEL_REFINE_LOW:
             return JudgeResult(score, reason, "nli", needs_retry=False)
-        # mid 영역 → LLM judge 로 정밀화 시도. 실패하면 NLI 결과 그대로 보존.
+        # mid 영역 → model judge 로 정밀화 시도. 실패하면 NLI 결과 그대로 보존.
         if use_llm:
-            llm_out = _llm_judge(a_text, b_text)
-            if llm_out is not None:
-                lscore, lreason = llm_out
-                return JudgeResult(lscore, f"{reason}; {lreason}", "llm", needs_retry=False)
+            model_out = _model_judge(a_text, b_text)
+            if model_out is not None:
+                mscore, mreason = model_out
+                return JudgeResult(mscore, f"{reason}; {mreason}", "model", needs_retry=False)
         return JudgeResult(score, reason, "nli", needs_retry=False)
 
-    # NLI 실패/미가용 → LLM judge primary.
+    # NLI 실패/미가용 → model judge primary.
     if use_llm:
-        llm_out = _llm_judge(a_text, b_text)
-        if llm_out is not None:
-            lscore, lreason = llm_out
-            return JudgeResult(lscore, lreason, "llm", needs_retry=False)
+        model_out = _model_judge(a_text, b_text)
+        if model_out is not None:
+            mscore, mreason = model_out
+            return JudgeResult(mscore, mreason, "model", needs_retry=False)
 
     # 마지막 fallback — rule 약 신호. score 0.5 (mid neutral) 로 두되 needs_retry=True
-    # 로 status=candidate 강제. 다음 배치에서 NLI/LLM 가용해지면 재판정.
+    # 로 status=candidate 강제. 다음 배치에서 NLI/model runtime 가용해지면 재판정.
     weak_score = 0.5 if a_text != b_text else 0.0
     return JudgeResult(
         weak_score,

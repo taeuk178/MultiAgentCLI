@@ -5,11 +5,12 @@
 #      from plugin defaults — never overwriting user edits
 #   3) emit soul.md content to stdout so it gets prepended to the session context
 #
-# Output: stdout is appended to the session context. stderr is silent.
+# Output: stdout is appended to the session context. Codex receives JSON
+# hookSpecificOutput.additionalContext. stderr is silent.
 
 set -euo pipefail
 
-# 재귀 가드: ingestion.py가 spawn한 claude -p 서브프로세스에서 SessionStart가
+# 재귀 가드: ingestion.py가 spawn한 background model 서브프로세스에서 SessionStart가
 # 다시 발동해 schema 재적용·soul.md emit이 일어나는 걸 막는다.
 if [[ "${IMPRINT_BYPASS_HOOKS:-0}" == "1" ]]; then
   exit 0
@@ -17,6 +18,10 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib/common.sh"
+
+INPUT=$(cat || true)
+IMPRINT_HOST="$(imprint_detect_host "$INPUT")"
+export IMPRINT_HOST
 
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 DEFAULTS_DIR="$PLUGIN_ROOT/prompts/defaults"
@@ -104,9 +109,12 @@ elif [[ -f "$DEFAULTS_DIR/soul.md" ]]; then
 fi
 
 if [[ -n "$SOUL" ]]; then
-  printf '\n[imprint soul — %s]\n' "$(basename "$SOUL")"
-  cat "$SOUL"
-  printf '\n'
+  SOUL_CONTEXT=$(
+    printf '\n[imprint soul — %s]\n' "$(basename "$SOUL")"
+    cat "$SOUL"
+    printf '\n'
+  )
+  imprint_emit_context "SessionStart" "$SOUL_CONTEXT"
 fi
 
 log_info "session-start ok project=${PID:-unknown} root=$ROOT soul=${SOUL:-none}"

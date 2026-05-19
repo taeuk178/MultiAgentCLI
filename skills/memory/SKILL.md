@@ -1,12 +1,12 @@
 ---
 name: memory
-description: Manage local project memory - search, inject, remember, pin, list, forget. Persistent SQLite-backed memory shared across Claude Code sessions and projects.
+description: Manage local project memory - search, inject, remember, pin, list, forget. Persistent SQLite-backed memory shared across Claude Code and Codex sessions/projects.
 level: 3
 ---
 
 # Memory - Local Project Memory System
 
-This skill provides persistent project memory backed by SQLite. Memory chunks (decisions, errors, fixes, commands, summaries, todos) are stored locally and can be searched, injected into the current Claude Code context, or pinned for automatic prefill injection.
+This skill provides persistent project memory backed by SQLite. Memory chunks (decisions, errors, fixes, commands, summaries, todos) are stored locally and can be searched, injected into the current host context, or pinned for automatic prefill injection.
 
 ## When to Use
 
@@ -20,12 +20,12 @@ This skill provides persistent project memory backed by SQLite. Memory chunks (d
 
 Global memory:
 ```
-~/.claude/imprint/app.sqlite
+~/.imprint/app.sqlite
 ```
 
 Project override:
 ```
-<project>/.claude/imprint/app.sqlite (optional)
+<project>/.imprint/app.sqlite (optional)
 ```
 
 ## Subcommands
@@ -50,7 +50,7 @@ imprint memory remember "Quick 모드는 one-shot 실행, lazy fetch 즉시 트�
 imprint memory remember "key sk-ant-XXX 작동 확인" --redact     # secrets masked before INSERT
 ```
 
-정규식 룰셋은 저장 전 chunk text를 마스킹하고, 마스킹이 발생했거나 `--redact`를 지정하면 metadata에 `redacted: true`를 기록합니다. 룰셋 우선순위: `$IMPRINT_REDACT_RULES` > `~/.claude/imprint/redact-rules.json` > plugin default(`scripts/imprint/lib/redact-rules.default.json`). 사용자 룰셋 형식은 plugin default를 그대로 복사해 추가 패턴을 더하면 됩니다.
+정규식 룰셋은 저장 전 chunk text를 마스킹하고, 마스킹이 발생했거나 `--redact`를 지정하면 metadata에 `redacted: true`를 기록합니다. 룰셋 우선순위: `$IMPRINT_REDACT_RULES` > `~/.imprint/redact-rules.json` > plugin default(`scripts/imprint/lib/redact-rules.default.json`). 사용자 룰셋 형식은 plugin default를 그대로 복사해 추가 패턴을 더하면 됩니다.
 
 Chunk types:
 - `decision` - design or implementation decisions
@@ -64,7 +64,7 @@ Chunk types:
 - `note` - generic notes
 
 ### `/memory inject <chunk-id>`
-Output a specific chunk's text so Claude Code includes it in context.
+Output a specific chunk's text so the current host includes it in context.
 
 ### `/memory show <chunk-id> [--json]`
 Pretty-print a chunk's full text + `metadata_json` for **debugging**. 외부
@@ -96,7 +96,7 @@ imprint memory stats --json       # 자동화/대시보드용 JSON
 `stats`는 그 반대 — 분포만 보여주고 개별 chunk는 안 찍습니다.
 
 ### `/memory profile [--days <n>] [--json]`
-Summarize `~/.claude/imprint/profile.jsonl` after running sessions with
+Summarize `~/.imprint/profile.jsonl` after running sessions with
 `IMPRINT_PROFILE=1`. Shows stage-level latency p50/p95/max and external fetch
 payload sizes, which is the first input for daemon split or threshold tuning.
 
@@ -150,10 +150,10 @@ imprint memory refresh project
 All subcommands are dispatched through:
 
 ```bash
-"$CLAUDE_PLUGIN_ROOT/scripts/imprint/memory.sh" <subcommand> [args...]
+"${IMPRINT_PLUGIN_ROOT:-${PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}}}/scripts/imprint/memory.sh" <subcommand> [args...]
 ```
 
-The script reads/writes `~/.claude/imprint/app.sqlite`, initializing the schema on first run.
+The script reads/writes `~/.imprint/app.sqlite`, initializing the schema on first run.
 
 ## Project Identification
 

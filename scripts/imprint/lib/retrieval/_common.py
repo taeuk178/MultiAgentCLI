@@ -12,10 +12,22 @@ from typing import Any
 
 # Shared runtime paths for retrieval modules.
 # IMPRINT_HOME lets tests and users isolate app.sqlite/plugin.log/profile.jsonl.
-IMPRINT_HOME = Path(os.environ.get("IMPRINT_HOME") or (Path.home() / ".claude" / "imprint"))
+IMPRINT_HOME = Path(os.environ.get("IMPRINT_HOME") or (Path.home() / ".imprint"))
 IMPRINT_DB = IMPRINT_HOME / "app.sqlite"
 IMPRINT_LOG = IMPRINT_HOME / "plugin.log"
 IMPRINT_PROFILE_FILE = IMPRINT_HOME / "profile.jsonl"
+LEGACY_CLAUDE_DB = Path.home() / ".claude" / "imprint" / "app.sqlite"
+DATA_TABLES = (
+    "events",
+    "memory_chunks",
+    "documents",
+    "chunks_v2",
+    "summaries",
+    "entities",
+    "entity_aliases",
+    "contradictions",
+    "source_status",
+)
 
 
 def now_iso() -> str:
@@ -33,6 +45,66 @@ def log(level: str, msg: str) -> None:
             f.write(f"[{now_iso()}] {level}: {msg}\n")
     except OSError:
         pass
+
+
+def _has_user_data(db_path: Path) -> bool:
+    if not db_path.exists() or db_path.stat().st_size == 0:
+        return False
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return False
+    try:
+        for table in DATA_TABLES:
+            exists = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                (table,),
+            ).fetchone()
+            if not exists:
+                continue
+            count = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            if count > 0:
+                return True
+        return False
+    except sqlite3.Error:
+        return False
+    finally:
+        conn.close()
+
+
+def _remove_legacy_files(db_path: Path) -> None:
+    for suffix in ("", "-wal", "-shm"):
+        try:
+            Path(f"{db_path}{suffix}").unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            log("WARN", f"legacy claude db cleanup skipped path={db_path}{suffix} err={exc!r}")
+
+
+def migrate_legacy_claude_db_if_needed() -> None:
+    if os.environ.get("IMPRINT_DISABLE_LEGACY_MIGRATION") == "1":
+        return
+    if IMPRINT_HOME != Path.home() / ".imprint":
+        return
+    if not LEGACY_CLAUDE_DB.exists():
+        return
+    try:
+        if _has_user_data(IMPRINT_DB) or not _has_user_data(LEGACY_CLAUDE_DB):
+            return
+        IMPRINT_HOME.mkdir(parents=True, exist_ok=True)
+        src = sqlite3.connect(f"file:{LEGACY_CLAUDE_DB}?mode=ro", uri=True)
+        dst = sqlite3.connect(str(IMPRINT_DB))
+        try:
+            src.backup(dst)
+        finally:
+            dst.close()
+            src.close()
+        if _has_user_data(IMPRINT_DB):
+            _remove_legacy_files(LEGACY_CLAUDE_DB)
+            log("INFO", f"legacy claude db migrated old={LEGACY_CLAUDE_DB} new={IMPRINT_DB} cleanup=removed")
+    except sqlite3.Error as exc:
+        log("WARN", f"legacy claude db migration skipped: {exc!r}")
 
 
 _VEC_LOAD_FAILED = False
@@ -62,6 +134,7 @@ def _try_load_sqlite_vec(conn: sqlite3.Connection) -> bool:
 
 def db_connect(*, load_vec: bool = False) -> sqlite3.Connection:
     IMPRINT_HOME.mkdir(parents=True, exist_ok=True)
+    migrate_legacy_claude_db_if_needed()
     conn = sqlite3.connect(str(IMPRINT_DB), isolation_level=None)
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA busy_timeout = 5000")

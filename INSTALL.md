@@ -1,12 +1,12 @@
-# Imprint — Claude Code Plugin 설치
+# Imprint — Claude/Codex Plugin 설치
 
-이 저장소는 Claude Code 플러그인입니다. 설치 후 Claude Code 세션에서 자동 hook, `/memory`, `/retrieve` 가 동작합니다.
+이 저장소는 Claude Code/Codex 플러그인입니다. 설치 후 Coding agent 세션에서 자동 hook, `/memory`, `/retrieve` 가 동작합니다.
 
 ## 사전 조건
 
 기본 기능:
 
-- Claude Code, 구독 OAuth 인증된 `claude` CLI
+- Claude Code/`claude` CLI 또는 Codex/`codex` CLI
 - `bash`
 - `python3`
 - `sqlite3`
@@ -21,14 +21,21 @@
 
 ### 1. 로컬 마켓플레이스로 등록
 
-Claude Code 세션 안에서 이 repo의 절대 경로를 사용합니다.
+Coding agent 세션 안에서 이 repo의 절대 경로를 사용합니다.
 
 ```text
 /plugin marketplace add <ABSOLUTE_PATH_TO_THIS_REPO>
 /plugin install imprint@imprint
 ```
 
-설치 후 Claude Code 세션을 새로 열면 `SessionStart` hook 이 실행됩니다.
+설치 후 Coding agent 세션을 새로 열면 `SessionStart` hook 이 실행됩니다.
+
+Codex에서 hook을 쓰려면 `~/.codex/config.toml`에 plugin hook feature를 켜야 합니다.
+
+```toml
+[features]
+plugin_hooks = true
+```
 
 ### 2. 직접 심볼릭 링크 (개발 모드)
 
@@ -37,11 +44,13 @@ mkdir -p ~/.claude/plugins/cache/local
 ln -s <ABSOLUTE_PATH_TO_THIS_REPO> ~/.claude/plugins/cache/local/imprint
 ```
 
-이후 Claude Code를 재시작합니다.
+이후 사용 중인 host를 재시작합니다.
+
+Codex 개발 설치는 `.codex-plugin/plugin.json` manifest를 사용합니다. Codex App에서 로컬 plugin을 추가할 때도 같은 repo root를 지정하세요.
 
 ## 설치 후 확인
 
-새 Claude Code 세션을 열고 아래 질문을 보냅니다.
+새 Coding agent 세션을 열고 아래 질문을 보냅니다.
 
 ```text
 이 프로젝트의 최근 결정 사항을 알려줘
@@ -49,9 +58,11 @@ ln -s <ABSOLUTE_PATH_TO_THIS_REPO> ~/.claude/plugins/cache/local/imprint
 
 정상 동작하면:
 
-- `~/.claude/imprint/app.sqlite` 가 생성됩니다.
-- `~/.claude/imprint/plugin.log` 에 `session-start ok` 로그가 남습니다.
+- `~/.imprint/app.sqlite` 가 생성됩니다.
+- `~/.imprint/plugin.log` 에 `session-start ok` 로그가 남습니다.
 - 필요한 경우 prompt 앞에 `[Project memory context]` 블록이 prepend 됩니다.
+
+기존 `~/.claude/imprint/app.sqlite` 에 데이터가 있고 새 `~/.imprint/app.sqlite` 가 비어 있으면 첫 실행 때 자동으로 새 경로에 복사한 뒤 기존 `app.sqlite` 파일을 제거합니다. 새 DB에 이미 memory/event/document 데이터가 있으면 덮어쓰거나 제거하지 않습니다.
 
 상태 진단:
 
@@ -61,7 +72,7 @@ ln -s <ABSOLUTE_PATH_TO_THIS_REPO> ~/.claude/plugins/cache/local/imprint
 
 ## 자주 쓰는 명령
 
-Claude Code 세션 안에서:
+Coding agent 세션 안에서:
 
 ```text
 /memory remember <text> [--type decision|fix|todo|...] [--pin] [--redact]
@@ -92,7 +103,7 @@ Claude Code 세션 안에서:
 ## 데이터 위치
 
 ```text
-~/.claude/imprint/
+~/.imprint/
   app.sqlite        # events, memory_chunks, retrieval 데이터
   plugin.log        # hook/skill/debug 로그
   profile.jsonl     # IMPRINT_PROFILE=1 활성 시 latency/payload 측정
@@ -106,7 +117,7 @@ IMPRINT_HOME=/tmp/imprint-test python3 scripts/imprint/tests/run_tests.py
 
 ## 선택: ML 의존성
 
-기본 설치만으로도 FTS5 + LIKE fallback + Claude CLI LLM judge fallback 으로 동작합니다. 검색 품질을 높이고 싶다면:
+기본 설치만으로도 FTS5 + LIKE fallback + background model judge fallback 으로 동작합니다. 검색 품질을 높이고 싶다면:
 
 ```bash
 pip install -r requirements-optional.txt
@@ -132,7 +143,7 @@ CI 또는 가벼운 환경에서 선택 기능을 끄려면:
 export IMPRINT_DISABLE_EMBEDDING=1
 export IMPRINT_DISABLE_RERANK=1
 export IMPRINT_DISABLE_NLI=1
-export IMPRINT_DISABLE_LLM_JUDGE=1
+export IMPRINT_DISABLE_MODEL_JUDGE=1
 export IMPRINT_DISABLE_NER_LLM=1
 export IMPRINT_DISABLE_SQLITE_VEC=1
 ```
@@ -172,8 +183,8 @@ export IMPRINT_DISABLE_SQLITE_VEC=1
 
 ### 비동기 작업
 
-- lazy-fetch: Haiku가 prompt 키워드/URL을 분석하고 Slack/Notion MCP를 read-only fetch.
-- response extract: Haiku가 assistant 응답에서 decision/fix/todo/code_context 등 durable chunk를 추출.
+- lazy-fetch: background model이 prompt 키워드/URL을 분석하고 Slack/Notion MCP를 read-only fetch.
+- response extract: background model이 assistant 응답에서 decision/fix/todo/code_context 등 durable chunk를 추출.
 - retrieval v2 ingest queue: 명시 문서 ingestion 뒤 `summary_regen`, `contradiction_scan`, `ner_extract` 를 처리.
 
 자동 hook 의 `memory_chunks` 저장 경로는 현재 ingest queue 를 거치지 않습니다.
@@ -189,7 +200,7 @@ python3 scripts/imprint/tests/run_tests.py
 현재 기준선:
 
 ```text
-17 PASS / 0 FAIL
+19 PASS / 0 FAIL
 ```
 
 문법만 빠르게 확인:
@@ -201,7 +212,7 @@ bash -n scripts/imprint/memory.sh
 
 ## 제거
 
-Claude Code 세션 안에서:
+Coding agent 세션 안에서:
 
 ```text
 /plugin remove imprint
@@ -210,7 +221,7 @@ Claude Code 세션 안에서:
 memory DB까지 지우려면:
 
 ```bash
-rm -rf ~/.claude/imprint
+rm -rf ~/.imprint
 ```
 
 DB 삭제는 되돌릴 수 없으니 필요한 경우 먼저 백업하세요.

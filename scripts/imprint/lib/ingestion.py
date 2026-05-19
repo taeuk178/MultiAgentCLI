@@ -14,7 +14,7 @@ Design constraints:
   inserted directly into memory_chunks with source_event_id NULL (D11, AC7).
 - Dedup key = source_uri/url + evidence_level + text_hash where possible.
   Legacy URL/page-level dedup remains for broad external refresh avoidance.
-- All claude -p calls use --model haiku for latency + cost (D19, AC13).
+- Background model calls go through retrieval.model_runtime and use the detected host CLI.
 """
 from __future__ import annotations
 
@@ -31,20 +31,31 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+from retrieval.model_runtime import run_background_model
+from retrieval._common import migrate_legacy_claude_db_if_needed
+
 # Runtime paths. IMPRINT_HOME 으로 테스트/실사용 DB 를 쉽게 격리한다.
-IMPRINT_HOME = Path(os.environ.get("IMPRINT_HOME") or (Path.home() / ".claude" / "imprint"))
+IMPRINT_HOME = Path(os.environ.get("IMPRINT_HOME") or (Path.home() / ".imprint"))
 IMPRINT_DB = IMPRINT_HOME / "app.sqlite"
 IMPRINT_LOG = IMPRINT_HOME / "plugin.log"
 DEFAULT_REDACT_RULES = Path(__file__).with_name("redact-rules.default.json")
 
 # Prompt 분석 결과가 이 값보다 애매하면 refined prompt 를 더 보수적으로 다룬다.
 AMBIGUITY_THRESHOLD = float(os.environ.get("IMPRINT_AMBIGUITY_THRESHOLD") or "0.5")
-# 실측: spawn된 claude -p haiku는 사용자 repo의 CLAUDE.md까지 로드하므로
-# 단순 prompt도 10~20초 걸린다. fetch는 MCP RTT까지 더해져 더 오래 걸림.
-CLAUDE_TIMEOUT_PREFILL = int(os.environ.get("IMPRINT_CLAUDE_TIMEOUT_PREFILL") or "25")
-CLAUDE_TIMEOUT_FETCH = int(os.environ.get("IMPRINT_CLAUDE_TIMEOUT_FETCH") or "45")
-CLAUDE_TIMEOUT_EXTRACT = int(os.environ.get("IMPRINT_CLAUDE_TIMEOUT_EXTRACT") or "30")
-CLAUDE_BIN = os.environ.get("IMPRINT_CLAUDE_BIN") or "claude"
+# Host model subprocesses can load user/project rules and MCP config, so even simple
+# prompts may take seconds. Fetch has extra MCP RTT and gets a longer timeout.
+MODEL_TIMEOUT_PREFILL = int(
+    os.environ.get("IMPRINT_MODEL_TIMEOUT_PREFILL")
+    or "25"
+)
+MODEL_TIMEOUT_FETCH = int(
+    os.environ.get("IMPRINT_MODEL_TIMEOUT_FETCH")
+    or "45"
+)
+MODEL_TIMEOUT_EXTRACT = int(
+    os.environ.get("IMPRINT_MODEL_TIMEOUT_EXTRACT")
+    or "30"
+)
 
 # LLM이 응답에서 추출하도록 허용된 chunk_type. 외부 source 전용 타입
 # (spec/message/thread)은 ingestion 경로에서만 직접 INSERT한다.
@@ -135,6 +146,7 @@ def _profile_span(stage: str, **fields: Any):
 
 def db() -> sqlite3.Connection:
     IMPRINT_HOME.mkdir(parents=True, exist_ok=True)
+    migrate_legacy_claude_db_if_needed()
     conn = sqlite3.connect(IMPRINT_DB, timeout=5.0)
     conn.execute("PRAGMA foreign_keys = ON;")
     return conn
@@ -222,79 +234,8 @@ def redact_json_value(value: Any) -> Any:
 
 
 # ---------------------------------------------------------------------------
-# claude -p haiku helpers
+# Background model helpers
 # ---------------------------------------------------------------------------
-
-DEFAULT_ALLOWED_TOOLS_FETCH = os.environ.get(
-    "IMPRINT_ALLOWED_TOOLS_FETCH",
-    # 사용자가 어떤 이름으로 Notion/Slack MCP를 등록했는지는 환경마다 다르다.
-    # 인증/거부는 claude가 자체 처리하므로 plugin은 read-only MCP 이름 패턴만
-    # 와일드카드로 열어두면 충분하다. --dangerously-skip-permissions는 쓰지 않음.
-    "mcp__claude_ai_Notion__*,"
-    "mcp__notion__*,"
-    "mcp__claude_ai_Slack__*,"
-    "mcp__slack__*",
-)
-
-
-def call_claude(prompt: str, *, timeout: int, needs_tools: bool = False) -> str | None:
-    """Run `claude -p --model haiku` with the given prompt. Returns stdout
-    text on success, None on any failure (timeout, non-zero exit, missing CLI).
-
-    needs_tools=True passes a read-only allow-list of Slack/Notion MCP tools so
-    fetch operations work non-interactively. Pure analysis/extraction calls
-    pass no allow-list so claude -p stays in tool-less mode (faster, safer)."""
-    cmd = [CLAUDE_BIN, "-p", "--model", "haiku", "--output-format", "text"]
-    if needs_tools and DEFAULT_ALLOWED_TOOLS_FETCH:
-        cmd.extend(["--allowed-tools", DEFAULT_ALLOWED_TOOLS_FETCH])
-    else:
-        cmd.extend(["--allowed-tools", ""])
-    cmd.append("--")
-    cmd.append(prompt)
-    # 서브프로세스가 다시 imprint hook을 타면서 자기 자신을 무한히 spawn하는 걸
-    # 막는다. session-start / user-prompt-submit / stop 모두 이 변수를 보고 즉시 종료한다.
-    sub_env = os.environ.copy()
-    sub_env["IMPRINT_BYPASS_HOOKS"] = "1"
-    t0 = time.monotonic()
-    rc: int | None = None
-    err: str | None = None
-    out_bytes = 0
-    try:
-        try:
-            # stdin=DEVNULL: claude -p가 stdin을 3초 기다리는 "no stdin data received"
-            # 경고를 회피한다. 우리는 prompt를 argv로만 전달하므로 stdin이 필요 없다.
-            result = subprocess.run(
-                cmd,
-                capture_output=True, text=True,
-                timeout=timeout,
-                env=sub_env,
-                stdin=subprocess.DEVNULL,
-            )
-        except FileNotFoundError:
-            err = "FileNotFoundError"
-            log("WARN", f"claude CLI not found at {CLAUDE_BIN}")
-            return None
-        except subprocess.TimeoutExpired:
-            err = "TimeoutExpired"
-            log("WARN", f"claude -p timeout after {timeout}s")
-            return None
-        except OSError as exc:
-            err = "OSError"
-            log("WARN", f"claude -p exec error: {exc}")
-            return None
-        rc = result.returncode
-        out_bytes = len(result.stdout) if result.stdout else 0
-        if rc != 0:
-            log("WARN", f"claude -p rc={rc}: {result.stderr[:300]}")
-            return None
-        return result.stdout
-    finally:
-        _profile_emit(
-            "call_claude",
-            dur_ms=int((time.monotonic() - t0) * 1000),
-            timeout=timeout, needs_tools=needs_tools,
-            rc=rc, err=err, stdout_bytes=out_bytes,
-        )
 
 
 def parse_json_relaxed(text: str | None) -> Any:
@@ -337,7 +278,7 @@ def parse_json_relaxed(text: str | None) -> Any:
 # ---------------------------------------------------------------------------
 
 PREFILL_PROMPT = """\
-You analyze a user prompt for an iOS team Claude Code session.
+You analyze a user prompt for an iOS team coding-agent session.
 
 Return STRICT JSON with EXACTLY these keys:
 {
@@ -365,9 +306,9 @@ User prompt:
 
 
 def analyze_prompt(prompt: str) -> dict | None:
-    out = call_claude(
+    out = run_background_model(
         PREFILL_PROMPT.replace("{PROMPT}", prompt[:4000]),
-        timeout=CLAUDE_TIMEOUT_PREFILL,
+        timeout=MODEL_TIMEOUT_PREFILL,
         needs_tools=False,
     )
     data = parse_json_relaxed(out)
@@ -461,9 +402,9 @@ def is_slack_thread_url(url: str) -> bool:
 def fetch_slack_url(url: str, prompt: str) -> list[dict] | None:
     """Returns list of chunk dicts (text + metadata fields) or None on error."""
     if is_slack_thread_url(url):
-        out = call_claude(
+        out = run_background_model(
             SLACK_FETCH_THREAD_PROMPT.replace("{URL}", url).replace("{PROMPT}", prompt[:1000]),
-            timeout=CLAUDE_TIMEOUT_FETCH,
+            timeout=MODEL_TIMEOUT_FETCH,
             needs_tools=True,
         )
         data = parse_json_relaxed(out)
@@ -501,9 +442,9 @@ def fetch_slack_url(url: str, prompt: str) -> list[dict] | None:
             chunks.append({"text": f"[Slack reply] {text}", "metadata": md})
         return chunks
     # single-message permalink
-    out = call_claude(
+    out = run_background_model(
         SLACK_FETCH_SINGLE_PROMPT.replace("{URL}", url),
-        timeout=CLAUDE_TIMEOUT_FETCH,
+        timeout=MODEL_TIMEOUT_FETCH,
         needs_tools=True,
     )
     data = parse_json_relaxed(out)
@@ -527,11 +468,11 @@ def fetch_slack_url(url: str, prompt: str) -> list[dict] | None:
 def fetch_slack_keywords(channels: list[str], keywords: list[str]) -> list[dict]:
     if not channels or not keywords:
         return []
-    out = call_claude(
+    out = run_background_model(
         SLACK_KEYWORD_PROMPT
             .replace("{CHANNELS}", json.dumps(channels, ensure_ascii=False))
             .replace("{KEYWORDS}", json.dumps(keywords, ensure_ascii=False)),
-        timeout=CLAUDE_TIMEOUT_FETCH,
+        timeout=MODEL_TIMEOUT_FETCH,
         needs_tools=True,
     )
     data = parse_json_relaxed(out)
@@ -617,9 +558,9 @@ If nothing relevant or tool unavailable: []. Output ONLY the JSON array.
 
 
 def fetch_notion_url(url_or_id: str) -> list[dict] | None:
-    out = call_claude(
+    out = run_background_model(
         NOTION_FETCH_PROMPT.replace("{URL_OR_ID}", url_or_id),
-        timeout=CLAUDE_TIMEOUT_FETCH,
+        timeout=MODEL_TIMEOUT_FETCH,
         needs_tools=True,
     )
     data = parse_json_relaxed(out)
@@ -665,11 +606,11 @@ def fetch_notion_url(url_or_id: str) -> list[dict] | None:
 def fetch_notion_keywords(pages: list[str], keywords: list[str]) -> list[dict]:
     if not pages or not keywords:
         return []
-    out = call_claude(
+    out = run_background_model(
         NOTION_KEYWORD_PROMPT
             .replace("{PAGES}", json.dumps(pages, ensure_ascii=False))
             .replace("{KEYWORDS}", json.dumps(keywords, ensure_ascii=False)),
-        timeout=CLAUDE_TIMEOUT_FETCH,
+        timeout=MODEL_TIMEOUT_FETCH,
         needs_tools=True,
     )
     data = parse_json_relaxed(out)
@@ -911,9 +852,9 @@ Assistant response:
 def extract_chunks_from_response(response: str) -> list[dict]:
     if not response.strip():
         return []
-    out = call_claude(
+    out = run_background_model(
         EXTRACT_PROMPT.replace("{RESPONSE}", response[:8000]),
-        timeout=CLAUDE_TIMEOUT_EXTRACT,
+        timeout=MODEL_TIMEOUT_EXTRACT,
         needs_tools=False,
     )
     data = parse_json_relaxed(out)
@@ -1650,7 +1591,7 @@ def cmd_mini_ingest(argv: list[str]) -> int:
     """UserPromptSubmit 동기 경량 저장.
 
     현재 turn 의 raw query 를 즉시 FTS-visible memory_chunks row 로 넣는다.
-    Haiku durable 분류는 기존처럼 Stop/lazy-fetch background 에 남긴다.
+    LLM durable 분류는 기존처럼 Stop/lazy-fetch background 에 남긴다.
     """
     if len(argv) < 2:
         return 1
