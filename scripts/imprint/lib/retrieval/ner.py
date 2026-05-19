@@ -19,7 +19,7 @@ from dataclasses import dataclass
 
 from ._common import db_connect, log, new_id, now_iso
 from .entity import upsert_entity, add_alias
-from .codex_runtime import call_codex
+from .model_runtime import run_background_model
 
 # Entity extraction runs in background jobs, so timeout can be higher than hook paths.
 NER_TIMEOUT_MS = int(os.environ.get("IMPRINT_NER_TIMEOUT_MS") or "25000")
@@ -87,7 +87,7 @@ def _llm_extract(chunk_text: str) -> list[ExtractedMention] | None:
         return None
     truncated = chunk_text[:NER_MAX_CHARS]
     prompt = _PROMPT.replace("{chunk}", truncated)
-    out = call_codex(prompt, timeout=NER_TIMEOUT_MS / 1000.0, task="ner")
+    out = run_background_model(prompt, timeout=NER_TIMEOUT_MS / 1000.0, task="ner")
     if out is None:
         log("WARN", "NER LLM failed")
         return None

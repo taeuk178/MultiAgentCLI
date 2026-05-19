@@ -37,12 +37,12 @@
 
 [자동 hook 백그라운드 경로]
   A. UserPromptSubmit lazy-fetch
-     - Codex CLI 가 prompt 키워드/URL 분석
+     - background model 이 prompt 키워드/URL 분석
      - prompt URL 또는 sources.json 기반 Slack/Notion read-only fetch
      - section chunk 를 memory_chunks 에 직접 INSERT
 
   B. Stop response extract
-     - Codex CLI 가 응답에서 durable chunk 분류
+     - background model 이 응답에서 durable chunk 분류
      - decision/error/fix/command/test_result/summary/todo/code_context/note 를 memory_chunks 에 직접 INSERT
 
 다음 turn:
@@ -89,12 +89,12 @@ flowchart LR
     end
 
     %% ===== Center: background LLM workers =====
-    subgraph BG["Background Codex workers"]
+    subgraph BG["Background model workers"]
       direction TB
-      LF["Lazy fetch analyzer<br/>codex exec"]
+      LF["Lazy fetch analyzer<br/>host CLI"]
       FETCH["Read-only fetch<br/>Slack / Notion"]
       EXTCHUNK["External chunks<br/>spec / message / thread"]
-      EXTRACT["Response extractor<br/>codex exec"]
+      EXTRACT["Response extractor<br/>host CLI"]
       DURABLE["Durable chunks<br/>decision / fix / todo<br/>code_context / note"]
     end
 
@@ -122,7 +122,7 @@ flowchart LR
     %% ===== Right: generation =====
     subgraph GEN["Generation"]
       direction TB
-      CLAUDE["Main coding model"]
+      HOSTMODEL["Host coding model"]
       OUT["User-visible answer"]
     end
 
@@ -146,9 +146,9 @@ flowchart LR
     GATE --> PREFILL
     MEM --> PREFILL
     PREFILL --> PREPEND
-    PREPEND --> CLAUDE
-    CLAUDE --> OUT
-    CLAUDE --> A
+    PREPEND --> HOSTMODEL
+    HOSTMODEL --> OUT
+    HOSTMODEL --> A
     A --> STOP
     STOP --> EVENTS
 
@@ -177,7 +177,7 @@ flowchart LR
     MEMFB -->|no| RR
     MEM --> RR
     RR --> JSON
-    JSON --> CLAUDE
+    JSON --> HOSTMODEL
 
     EVENTS -.health.-> PROF
     MEM -.profile/status.-> PROF
@@ -198,7 +198,7 @@ flowchart LR
     class LF,FETCH,EXTCHUNK,EXTRACT,DURABLE async;
     class EVENTS,MEM,DOCS,PROF store;
     class QN,RES,HYB,RRF,BOOST,MEMFB,RR,JSON retrieve;
-    class CLAUDE,OUT gen;
+    class HOSTMODEL,OUT gen;
     class F1,F2,F3,F4,F5 format;
 ```
 
@@ -208,10 +208,10 @@ flowchart LR
 |---|---|---|
 | Input signals | hook 과 retrieval 로 들어오는 원천 입력 | `U` · `A` · `E` · `M` · `D` |
 | Foreground hook path | 사용자 turn 을 막지 않는 동기 경량 경로 | `SS` · `UPS` · `MINI` · `GATE` · `PREFILL` · `PREPEND` · `STOP` |
-| Background Codex workers | Codex CLI 를 쓰는 비동기 정리/추출/fetch 보조 경로 | `LF` · `FETCH` · `EXTCHUNK` · `EXTRACT` · `DURABLE` |
+| Background model workers | background model CLI 를 쓰는 비동기 정리/추출/fetch 보조 경로 | `LF` · `FETCH` · `EXTCHUNK` · `EXTRACT` · `DURABLE` |
 | SQLite memory store | 실제 저장소와 운영 관측 파일 | `EVENTS` · `MEM` · `DOCS` · `PROF` |
 | Explicit /retrieve path | 사용자가 명시 호출할 때만 도는 검색 파이프라인 | `QN` · `RES` · `HYB` · `RRF` · `BOOST` · `MEMFB` · `RR` · `JSON` |
-| Generation | prepend 된 context 를 참고해 응답을 만드는 본 모델 경로 | `CLAUDE` · `OUT` |
+| Generation | prepend 된 context 를 참고해 응답을 만드는 host 모델 경로 | `HOSTMODEL` · `OUT` |
 | Memory / retrieval format | 후보의 의미와 디버깅 trace 를 설명하는 metadata lane | `F1` · `F2` · `F3` · `F4` · `F5` |
 
 ## hook 단계별 의존성
@@ -235,7 +235,7 @@ flowchart LR
 | gate + lane prefill | `python3`, `sqlite3`, FTS5 | durable query search/lane 분리 누락, legacy shell fallback 시도 |
 | routing advisory | `python3`, `.imprint/UserPromptSubmit.md` | routing prepend 없음 |
 | memory prefill | `python3`, `sqlite3`, FTS5 | primary prefill 누락, legacy shell fallback 시도 |
-| lazy-fetch spawn | `python3`, `codex`, Slack/Notion MCP | 새 외부 chunk 누적 없음, 기존 chunk 는 계속 사용 |
+| lazy-fetch spawn | `python3`, host CLI, Slack/Notion MCP | 새 외부 chunk 누적 없음, 기존 chunk 는 계속 사용 |
 
 ### Stop
 
@@ -243,7 +243,7 @@ flowchart LR
 |---|---|---|
 | transcript parse | `python3`, `transcript_path` | 마지막 assistant 응답 archive 누락 |
 | `events.llm_response` 저장 | `sqlite3`, `uuidgen` | response archive 누락 |
-| response extract spawn | `python3`, `codex` | 자동 memory 추출 없음, `/memory remember` 로 수동 보강 가능 |
+| response extract spawn | `python3`, host CLI | 자동 memory 추출 없음, `/memory remember` 로 수동 보강 가능 |
 
 ## 외부 소스 lazy-fetch
 
@@ -290,11 +290,14 @@ confirmed contradiction 에 연결된 chunk 는 BOOST 단계에서 강하게 감
 
 | 변수 | 기본값 | 수정 위치 | 바꾸면 달라지는 것 |
 |---|---:|---|---|
-| `IMPRINT_CODEX_BIN` | `codex` | env | background Codex 호출 CLI |
-| `IMPRINT_CODEX_MODEL` | Codex 기본값 | env | background Codex 호출 모델 |
-| `IMPRINT_CODEX_TIMEOUT_PREFILL` | `25` | env | prompt 분석 timeout 초 |
-| `IMPRINT_CODEX_TIMEOUT_FETCH` | `45` | env | Slack/Notion fetch timeout 초 |
-| `IMPRINT_CODEX_TIMEOUT_EXTRACT` | `30` | env | Stop response extract timeout 초 |
+| `IMPRINT_HOST` | auto | env | `claude`/`codex` host 감지 override |
+| `IMPRINT_CLAUDE_BIN` | `claude` | env | Claude host background CLI |
+| `IMPRINT_CLAUDE_MODEL` | `haiku` | env | Claude host background 모델 |
+| `IMPRINT_CODEX_BIN` | `codex` | env | Codex host background CLI |
+| `IMPRINT_CODEX_MODEL` | Codex 기본값 | env | Codex host background 모델 |
+| `IMPRINT_MODEL_TIMEOUT_PREFILL` | `25` | env | prompt 분석 timeout 초 |
+| `IMPRINT_MODEL_TIMEOUT_FETCH` | `45` | env | Slack/Notion fetch timeout 초 |
+| `IMPRINT_MODEL_TIMEOUT_EXTRACT` | `30` | env | Stop response extract timeout 초 |
 | `IMPRINT_ALLOWED_TOOLS_FETCH` | Notion/Slack wildcard | env | fetch worker 에 허용할 MCP tool 범위 |
 | `CHUNK_TYPES` | 9개 durable type | `ingestion.py` | Stop extract 가 저장할 수 있는 assistant memory type |
 | `EXTERNAL_CHUNK_TYPES` | `spec/message/thread` | `ingestion.py` | Slack/Notion chunk type 구분 |
@@ -348,18 +351,19 @@ confirmed contradiction 에 연결된 chunk 는 BOOST 단계에서 강하게 감
 | `BOOST_CONTRADICTION_CANDIDATE` | `-0.20` | `retrieve.py` | candidate contradiction chunk 감점 |
 | `IMPRINT_NLI_MODEL` | `MoritzLaurer/mDeBERTa-v3-base-mnli-xnli` | env | contradiction NLI 모델 |
 | `IMPRINT_NLI_TIMEOUT_MS` | `500` | env | NLI 판정 timeout ms |
-| `IMPRINT_CODEX_JUDGE_TIMEOUT_MS` | `30000` | env | Codex judge fallback timeout ms |
+| `IMPRINT_MODEL_JUDGE_TIMEOUT_MS` | `30000` | env | model judge fallback timeout ms |
 | `IMPRINT_CONTRADICTION_TIME_GAP_DAYS` | `90` | env | contradiction 후보 시간 간격 |
 | `IMPRINT_CONTRADICTION_HIGH` | `0.8` | env | candidate 로 분류할 high threshold |
 | `IMPRINT_CONTRADICTION_MID` | `0.4` | env | 현재는 기록용 mid threshold |
-| `IMPRINT_CODEX_REFINE_LOW` | `0.4` | env | NLI mid 구간 하한, Codex judge 보강 시작 |
-| `IMPRINT_CODEX_REFINE_HIGH` | `0.6` | env | NLI mid 구간 상한, Codex judge 보강 끝 |
+| `IMPRINT_MODEL_REFINE_LOW` | `0.4` | env | NLI mid 구간 하한, model judge 보강 시작 |
+| `IMPRINT_MODEL_REFINE_HIGH` | `0.6` | env | NLI mid 구간 상한, model judge 보강 끝 |
 
 ### Storage / profile / safety
 
 | 변수 | 기본값 | 수정 위치 | 바꾸면 달라지는 것 |
 |---|---:|---|---|
-| `IMPRINT_HOME` | `~/.claude/imprint` | env | DB, log, profile 저장 위치 |
+| `IMPRINT_HOME` | `~/.imprint` | env | DB, log, profile 저장 위치 |
+| `IMPRINT_DISABLE_LEGACY_MIGRATION` | `0` | env | `1`이면 `~/.claude/imprint/app.sqlite` 자동 migration 비활성 |
 | `IMPRINT_PROFILE` | `0` | env | `1`이면 profile JSONL 기록 |
 | `IMPRINT_STALE_DAYS` | `14` | env | 외부 source stale 표시 기준 |
 | `IMPRINT_REDACT_RULES` | 사용자 파일 또는 default | env | redaction rule 파일 |
@@ -369,7 +373,7 @@ confirmed contradiction 에 연결된 chunk 는 BOOST 단계에서 강하게 감
 | `IMPRINT_MODEL_CACHE_DIR` | HuggingFace 기본 cache | env | optional ML 모델 cache 위치 |
 | `IMPRINT_DISABLE_EMBEDDING` | `0` | env | `1`이면 embedding/vector search 비활성 |
 | `IMPRINT_DISABLE_NLI` | `0` | env | `1`이면 NLI contradiction judge 비활성 |
-| `IMPRINT_DISABLE_CODEX_JUDGE` | `0` | env | `1`이면 Codex judge fallback 비활성 |
+| `IMPRINT_DISABLE_MODEL_JUDGE` | `0` | env | `1`이면 model judge fallback 비활성 |
 
 `retrieve_json` / `routed_json` 은 `trace.query_surfaces`, `fallback_reasons`, `rerank_gate_reason` 과 candidate 별 `lane`, `evidence_level`, `grounded`, `source_uri`, `text_hash`, `penalties` 를 노출합니다. 이 값은 context 품질 회고와 gate/MEMFB/rerank threshold 튜닝에 사용합니다.
 
@@ -403,12 +407,16 @@ UPS hook 자동 경로는 `LOG → ROUTE → PREFILL → CTX0` 만 실행해 < 5
 
 | 변수 | 기본값 | 의미 |
 |---|---|---|
-| `IMPRINT_HOME` | `~/.claude/imprint` | DB, log, profile 저장 위치 |
-| `IMPRINT_CODEX_BIN` | `codex` | background Codex 호출 CLI |
-| `IMPRINT_CODEX_MODEL` | Codex 기본값 | background Codex 호출 모델 |
-| `IMPRINT_CODEX_TIMEOUT_PREFILL` | `25` | prompt 분석 timeout 초 |
-| `IMPRINT_CODEX_TIMEOUT_FETCH` | `45` | Slack/Notion fetch timeout 초 |
-| `IMPRINT_CODEX_TIMEOUT_EXTRACT` | `30` | response extract timeout 초 |
+| `IMPRINT_HOME` | `~/.imprint` | DB, log, profile 저장 위치 |
+| `IMPRINT_DISABLE_LEGACY_MIGRATION` | `0` | `1`이면 legacy Claude DB 자동 migration 비활성 |
+| `IMPRINT_HOST` | auto | `claude`/`codex` host 감지 override |
+| `IMPRINT_CLAUDE_BIN` | `claude` | Claude host background CLI |
+| `IMPRINT_CLAUDE_MODEL` | `haiku` | Claude host background 모델 |
+| `IMPRINT_CODEX_BIN` | `codex` | Codex host background CLI |
+| `IMPRINT_CODEX_MODEL` | Codex 기본값 | Codex host background 모델 |
+| `IMPRINT_MODEL_TIMEOUT_PREFILL` | `25` | prompt 분석 timeout 초 |
+| `IMPRINT_MODEL_TIMEOUT_FETCH` | `45` | Slack/Notion fetch timeout 초 |
+| `IMPRINT_MODEL_TIMEOUT_EXTRACT` | `30` | response extract timeout 초 |
 | `IMPRINT_ALLOWED_TOOLS_FETCH` | Notion/Slack wildcard | fetch 호출에 넘길 allowed tools |
 | `IMPRINT_BYPASS_HOOKS` | `0` | `1`이면 hook 즉시 종료, 재귀 가드 |
 | `IMPRINT_DISABLE_EXTRACT` | `0` | `1`이면 Stop extract 비활성 |
@@ -424,9 +432,9 @@ UPS hook 자동 경로는 `LOG → ROUTE → PREFILL → CTX0` 만 실행해 < 5
 | `<project>/.imprint/soul.md` | 세션 시작·압축 후 prepend 되는 project persona |
 | `<project>/.imprint/UserPromptSubmit.md` | keyword 기반 routing advisory rule |
 | `<project>/.imprint/sources.json` | Slack/Notion lazy-fetch 대상 |
-| `~/.claude/imprint/app.sqlite` | events, memory_chunks, retrieval v2 tables |
-| `~/.claude/imprint/plugin.log` | hook, dispatcher, ingestion log |
-| `~/.claude/imprint/profile.jsonl` | `IMPRINT_PROFILE=1` 일 때 stage 측정값 |
+| `~/.imprint/app.sqlite` | events, memory_chunks, retrieval v2 tables |
+| `~/.imprint/plugin.log` | hook, dispatcher, ingestion log |
+| `~/.imprint/profile.jsonl` | `IMPRINT_PROFILE=1` 일 때 stage 측정값 |
 
 ## graceful degradation
 
@@ -434,7 +442,7 @@ UPS hook 자동 경로는 `LOG → ROUTE → PREFILL → CTX0` 만 실행해 < 5
 |---|---|
 | `sqlite3` 없음 | 저장과 검색 누락, hook 은 진행 |
 | `python3` 없음 | primary prefill/lazy-fetch/extract 누락 |
-| `codex` CLI 없음 | background Codex 경로 누락 |
+| background model CLI 없음 | background model 경로 누락 |
 | Slack/Notion MCP 없음 | 외부 fetch 0건, 기존 memory 는 유지 |
 | 선택 ML 의존성 없음 | FTS-only / rule fallback |
 | malformed LLM JSON | relaxed parse 실패 후 skip |

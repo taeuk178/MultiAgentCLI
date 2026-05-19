@@ -7,11 +7,11 @@
 #      prepend any matched advisories
 #
 # stdin: JSON with { "prompt": "...", "session_id": "...", ... }
-# stdout: extra context text (Claude Code prepends to the user message)
+# stdout: extra context text for Claude, JSON additionalContext for Codex.
 
 set -euo pipefail
 
-# 재귀 가드: ingestion.py가 spawn한 claude -p 서브프로세스가 또 이 hook을
+# 재귀 가드: ingestion.py가 spawn한 background model 서브프로세스가 또 이 hook을
 # 타면서 무한히 자기 자신을 호출하는 걸 막는다. ingestion.py가 IMPRINT_BYPASS_HOOKS=1
 # 을 넘기면 stdout만 빈값으로 비우고 즉시 종료한다.
 if [[ "${IMPRINT_BYPASS_HOOKS:-0}" == "1" ]]; then
@@ -20,16 +20,20 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib/common.sh"
+ensure_home
 
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 DEFAULTS_DIR="$PLUGIN_ROOT/prompts/defaults"
 
 INPUT=$(cat || true)
+IMPRINT_HOST="$(imprint_detect_host "$INPUT")"
+export IMPRINT_HOST
+
 PROMPT=$(printf '%s' "$INPUT" | python3 -c '
 import json, sys
 try:
     data = json.load(sys.stdin)
-    print(data.get("prompt", ""))
+    print(data.get("prompt") or data.get("user_prompt") or data.get("message") or "")
 except Exception:
     pass
 ' 2>>"$IMPRINT_LOG" || true)
@@ -37,7 +41,7 @@ SESSION_ID=$(printf '%s' "$INPUT" | python3 -c '
 import json, sys
 try:
     data = json.load(sys.stdin)
-    print(data.get("session_id", ""))
+    print(data.get("session_id") or data.get("conversation_id") or data.get("thread_id") or "")
 except Exception:
     pass
 ' 2>>"$IMPRINT_LOG" || true)
@@ -62,9 +66,10 @@ if command -v sqlite3 >/dev/null 2>&1; then
   NOW=$(now_iso)
   EVENT_ID=$(new_id)
   ESC_PROMPT=$(sql_escape "$SAFE_PROMPT")
+  ESC_SOURCE=$(sql_escape "$IMPRINT_HOST")
   db_exec "
     INSERT INTO events (id, project_id, source, kind, text_clean, noise, created_at)
-    VALUES ('$EVENT_ID', '$PID', 'claude_code', 'user_message', '$ESC_PROMPT', $NOISE, '$NOW');
+    VALUES ('$EVENT_ID', '$PID', '$ESC_SOURCE', 'user_message', '$ESC_PROMPT', $NOISE, '$NOW');
   " 2>>"$IMPRINT_LOG" || true
   if [[ "$NOISE" == "0" && -x "$(command -v python3)" ]]; then
     printf '%s' "$SAFE_PROMPT" \
@@ -195,8 +200,9 @@ PY
 )
 fi
 
+CONTEXT_OUT=""
 if [[ -n "${ROUTING// }" ]]; then
-  printf '\n%s\n' "$ROUTING"
+  CONTEXT_OUT=$(printf '\n%s\n' "$ROUTING")
 fi
 
 # --- 3. Prefill pipeline ----------------------------------------------------
@@ -221,7 +227,7 @@ if [[ -n "$PID" && -x "$(command -v python3)" ]]; then
     | python3 "$SCRIPT_DIR/lib/ingestion.py" prefill "$PID" "$SESSION_ID" "$EVENT_ID" 2>>"$IMPRINT_LOG" || true)
 fi
 
-# Fallback: if ingestion.py produced nothing (claude CLI missing, OAuth not
+# Fallback: if ingestion.py produced nothing (host CLI missing, OAuth not
 # configured, etc.) emit the legacy simple memory context so the user still
 # benefits from prior chunks.
 if [[ -z "${PREFILL_OUT// }" && -n "$PID" ]] && command -v sqlite3 >/dev/null 2>&1; then
@@ -241,7 +247,12 @@ if [[ -z "${PREFILL_OUT// }" && -n "$PID" ]] && command -v sqlite3 >/dev/null 2>
 fi
 
 if [[ -n "${PREFILL_OUT// }" ]]; then
-  printf '%s\n' "$PREFILL_OUT"
+  if [[ -n "${CONTEXT_OUT// }" ]]; then
+    CONTEXT_OUT=$(printf '%s\n%s\n' "$CONTEXT_OUT" "$PREFILL_OUT")
+  else
+    CONTEXT_OUT="$PREFILL_OUT"
+  fi
 fi
 
+imprint_emit_context "UserPromptSubmit" "$CONTEXT_OUT"
 exit 0

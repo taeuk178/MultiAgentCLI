@@ -1,4 +1,4 @@
-"""검색 결과를 Claude prompt 형식으로 포매팅.
+"""검색 결과를 host prompt context 형식으로 포매팅.
 
 local: 7a 그대로 (chunk 중심).
 feature: feature summary 서두 + chunk 근거 + drill-down + conflict.

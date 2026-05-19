@@ -16,7 +16,7 @@ from typing import Iterable
 
 from . import embedding as emb_mod
 from ._common import db_connect, log, new_id, now_iso
-from .codex_runtime import call_codex
+from .model_runtime import run_background_model
 
 # Summary generation runtime knobs.
 # LLM path is optional; timeout/max chars cap background work and prompt size.
@@ -87,7 +87,7 @@ def _select_chunks_for_feature(conn: sqlite3.Connection, project_id: str, featur
 def _llm_summarize(prompt: str) -> str | None:
     if os.environ.get("IMPRINT_DISABLE_SUMMARY_LLM") == "1":
         return None
-    out = call_codex(prompt, timeout=SUMMARY_TIMEOUT, task="summary")
+    out = run_background_model(prompt, timeout=SUMMARY_TIMEOUT, task="summary")
     if out is None:
         log("WARN", "summary LLM failed")
         return None

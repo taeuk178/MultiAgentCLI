@@ -5,7 +5,7 @@
 # 사용자가 어떤 segment를 노출할지 hud-config.json의 fields 배열로 결정한다.
 # 우선순위:
 #   1. <git-root>/.imprint/hud-config.json (project-scope override)
-#   2. ~/.claude/imprint/hud-config.json   (user-scope)
+#   2. ~/.imprint/hud-config.json          (user-scope)
 #   3. default fields = ["5h", "ctx", "time"]
 #
 # Backward-compat: 옛 layout=minimal/focused/full 키만 있고 fields가 없으면

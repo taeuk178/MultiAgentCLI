@@ -95,7 +95,7 @@ level: 2
 | 어디 | 경로 | 언제 |
 | --- | --- | --- |
 | **project** (우선) | `<git-root>/.imprint/hud-config.json` | 사용자가 "이 프로젝트만", "여기서만", "여기에서는" 같은 표현을 쓸 때 — 명령에 `--project` 추가 |
-| **user** | `~/.claude/imprint/hud-config.json` | 기본. 모든 프로젝트에서 같은 HUD를 원할 때 |
+| **user** | `~/.imprint/hud-config.json` | 기본. 모든 프로젝트에서 같은 HUD를 원할 때 |
 
 project가 user보다 항상 우선합니다.
 
@@ -110,7 +110,7 @@ uninstall이 아닌 한, 새 statusline은 다음 turn부터가 아니라 Claude
 ## Implementation 참고
 
 ```bash
-DISPATCHER="${IMPRINT_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}}/scripts/imprint/hud-setup.sh"
+DISPATCHER="${IMPRINT_PLUGIN_ROOT:-${PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}}}/scripts/imprint/hud-setup.sh"
 
 # 가장 자주 쓰는 호출들
 bash "$DISPATCHER" fields list                       # 가용 + 활성

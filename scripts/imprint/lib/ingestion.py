@@ -14,7 +14,7 @@ Design constraints:
   inserted directly into memory_chunks with source_event_id NULL (D11, AC7).
 - Dedup key = source_uri/url + evidence_level + text_hash where possible.
   Legacy URL/page-level dedup remains for broad external refresh avoidance.
-- Background GPT calls go through retrieval.codex_runtime and use Codex CLI.
+- Background model calls go through retrieval.model_runtime and use the detected host CLI.
 """
 from __future__ import annotations
 
@@ -31,28 +31,29 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-from retrieval.codex_runtime import call_codex
+from retrieval.model_runtime import run_background_model
+from retrieval._common import migrate_legacy_claude_db_if_needed
 
 # Runtime paths. IMPRINT_HOME 으로 테스트/실사용 DB 를 쉽게 격리한다.
-IMPRINT_HOME = Path(os.environ.get("IMPRINT_HOME") or (Path.home() / ".claude" / "imprint"))
+IMPRINT_HOME = Path(os.environ.get("IMPRINT_HOME") or (Path.home() / ".imprint"))
 IMPRINT_DB = IMPRINT_HOME / "app.sqlite"
 IMPRINT_LOG = IMPRINT_HOME / "plugin.log"
 DEFAULT_REDACT_RULES = Path(__file__).with_name("redact-rules.default.json")
 
 # Prompt 분석 결과가 이 값보다 애매하면 refined prompt 를 더 보수적으로 다룬다.
 AMBIGUITY_THRESHOLD = float(os.environ.get("IMPRINT_AMBIGUITY_THRESHOLD") or "0.5")
-# Codex subprocesses can load user/project rules and MCP config, so even simple
+# Host model subprocesses can load user/project rules and MCP config, so even simple
 # prompts may take seconds. Fetch has extra MCP RTT and gets a longer timeout.
-CODEX_TIMEOUT_PREFILL = int(
-    os.environ.get("IMPRINT_CODEX_TIMEOUT_PREFILL")
+MODEL_TIMEOUT_PREFILL = int(
+    os.environ.get("IMPRINT_MODEL_TIMEOUT_PREFILL")
     or "25"
 )
-CODEX_TIMEOUT_FETCH = int(
-    os.environ.get("IMPRINT_CODEX_TIMEOUT_FETCH")
+MODEL_TIMEOUT_FETCH = int(
+    os.environ.get("IMPRINT_MODEL_TIMEOUT_FETCH")
     or "45"
 )
-CODEX_TIMEOUT_EXTRACT = int(
-    os.environ.get("IMPRINT_CODEX_TIMEOUT_EXTRACT")
+MODEL_TIMEOUT_EXTRACT = int(
+    os.environ.get("IMPRINT_MODEL_TIMEOUT_EXTRACT")
     or "30"
 )
 
@@ -145,6 +146,7 @@ def _profile_span(stage: str, **fields: Any):
 
 def db() -> sqlite3.Connection:
     IMPRINT_HOME.mkdir(parents=True, exist_ok=True)
+    migrate_legacy_claude_db_if_needed()
     conn = sqlite3.connect(IMPRINT_DB, timeout=5.0)
     conn.execute("PRAGMA foreign_keys = ON;")
     return conn
@@ -232,7 +234,7 @@ def redact_json_value(value: Any) -> Any:
 
 
 # ---------------------------------------------------------------------------
-# Background Codex helpers
+# Background model helpers
 # ---------------------------------------------------------------------------
 
 
@@ -304,9 +306,9 @@ User prompt:
 
 
 def analyze_prompt(prompt: str) -> dict | None:
-    out = call_codex(
+    out = run_background_model(
         PREFILL_PROMPT.replace("{PROMPT}", prompt[:4000]),
-        timeout=CODEX_TIMEOUT_PREFILL,
+        timeout=MODEL_TIMEOUT_PREFILL,
         needs_tools=False,
     )
     data = parse_json_relaxed(out)
@@ -400,9 +402,9 @@ def is_slack_thread_url(url: str) -> bool:
 def fetch_slack_url(url: str, prompt: str) -> list[dict] | None:
     """Returns list of chunk dicts (text + metadata fields) or None on error."""
     if is_slack_thread_url(url):
-        out = call_codex(
+        out = run_background_model(
             SLACK_FETCH_THREAD_PROMPT.replace("{URL}", url).replace("{PROMPT}", prompt[:1000]),
-            timeout=CODEX_TIMEOUT_FETCH,
+            timeout=MODEL_TIMEOUT_FETCH,
             needs_tools=True,
         )
         data = parse_json_relaxed(out)
@@ -440,9 +442,9 @@ def fetch_slack_url(url: str, prompt: str) -> list[dict] | None:
             chunks.append({"text": f"[Slack reply] {text}", "metadata": md})
         return chunks
     # single-message permalink
-    out = call_codex(
+    out = run_background_model(
         SLACK_FETCH_SINGLE_PROMPT.replace("{URL}", url),
-        timeout=CODEX_TIMEOUT_FETCH,
+        timeout=MODEL_TIMEOUT_FETCH,
         needs_tools=True,
     )
     data = parse_json_relaxed(out)
@@ -466,11 +468,11 @@ def fetch_slack_url(url: str, prompt: str) -> list[dict] | None:
 def fetch_slack_keywords(channels: list[str], keywords: list[str]) -> list[dict]:
     if not channels or not keywords:
         return []
-    out = call_codex(
+    out = run_background_model(
         SLACK_KEYWORD_PROMPT
             .replace("{CHANNELS}", json.dumps(channels, ensure_ascii=False))
             .replace("{KEYWORDS}", json.dumps(keywords, ensure_ascii=False)),
-        timeout=CODEX_TIMEOUT_FETCH,
+        timeout=MODEL_TIMEOUT_FETCH,
         needs_tools=True,
     )
     data = parse_json_relaxed(out)
@@ -556,9 +558,9 @@ If nothing relevant or tool unavailable: []. Output ONLY the JSON array.
 
 
 def fetch_notion_url(url_or_id: str) -> list[dict] | None:
-    out = call_codex(
+    out = run_background_model(
         NOTION_FETCH_PROMPT.replace("{URL_OR_ID}", url_or_id),
-        timeout=CODEX_TIMEOUT_FETCH,
+        timeout=MODEL_TIMEOUT_FETCH,
         needs_tools=True,
     )
     data = parse_json_relaxed(out)
@@ -604,11 +606,11 @@ def fetch_notion_url(url_or_id: str) -> list[dict] | None:
 def fetch_notion_keywords(pages: list[str], keywords: list[str]) -> list[dict]:
     if not pages or not keywords:
         return []
-    out = call_codex(
+    out = run_background_model(
         NOTION_KEYWORD_PROMPT
             .replace("{PAGES}", json.dumps(pages, ensure_ascii=False))
             .replace("{KEYWORDS}", json.dumps(keywords, ensure_ascii=False)),
-        timeout=CODEX_TIMEOUT_FETCH,
+        timeout=MODEL_TIMEOUT_FETCH,
         needs_tools=True,
     )
     data = parse_json_relaxed(out)
@@ -850,9 +852,9 @@ Assistant response:
 def extract_chunks_from_response(response: str) -> list[dict]:
     if not response.strip():
         return []
-    out = call_codex(
+    out = run_background_model(
         EXTRACT_PROMPT.replace("{RESPONSE}", response[:8000]),
-        timeout=CODEX_TIMEOUT_EXTRACT,
+        timeout=MODEL_TIMEOUT_EXTRACT,
         needs_tools=False,
     )
     data = parse_json_relaxed(out)

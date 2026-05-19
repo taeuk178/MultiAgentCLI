@@ -21,7 +21,7 @@ from typing import Any
 from . import embedding as emb_mod
 from ._common import db_connect, log, new_id, now_iso
 from .chunking import ChunkConfig, ChunkSpec, split_document
-from .codex_runtime import call_codex
+from .model_runtime import run_background_model
 from .normalize import normalize_chunk_type
 
 # Optional context-prefix generation settings.
@@ -127,7 +127,7 @@ def _generate_context_prefix(
         "Write 1-2 sentences (Korean) that explain what this chunk is about in the context of the document.\n"
         "Be concrete and factual. Output only the context text, no preamble."
     )
-    out = call_codex(prompt, timeout=CONTEXT_PREFIX_TIMEOUT, task="context_prefix")
+    out = run_background_model(prompt, timeout=CONTEXT_PREFIX_TIMEOUT, task="context_prefix")
     if out is None:
         log("WARN", "context_prefix LLM failed")
         return None
