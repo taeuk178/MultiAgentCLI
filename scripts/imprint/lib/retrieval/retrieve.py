@@ -35,12 +35,12 @@ RRF_VECTOR_WEIGHT = 0.8
 RRF_BM25_WEIGHT = 0.2
 
 # Candidate boost/penalty weights.
-# RRF 뒤에 현재성, entity coverage, recency, working clue, contradiction 신호를 더한다.
+# RRF 뒤에 현재성, entity coverage, recency, query context, contradiction 신호를 더한다.
 BOOST_CURRENT = 0.15
 BOOST_ENTITY = 0.10
 BOOST_RECENT = 0.05
 
-# Working memory 는 근거라기보다 현재 질문 해석 clue 이므로 낮은 고정 점수로 soft union.
+# Working memory 는 retrieved context 가 아니라 query context 이므로 낮은 고정 점수로 soft union.
 WORKING_OVERLAY_SCORE = 0.12
 WORKING_OVERLAY_LIMIT = 4
 
@@ -191,12 +191,12 @@ def _needs_memory_fallback(
     return bool(_memory_fallback_reasons(ordered, resolved_terms))
 
 
-def _candidate_lane(cand: RetrievalCandidate) -> str:
+def _candidate_context_section(cand: RetrievalCandidate) -> str:
     if cand.source_type == "working":
-        return "current_turn_clues"
+        return "query_context"
     if cand.evidence_level == "raw_source" or cand.source_type in {"slack", "notion", "spec", "message", "thread"}:
-        return "external_fetched_context"
-    return "durable_evidence"
+        return "external_source_context"
+    return "retrieved_memory"
 
 
 def _dedupe_candidates(candidates: list[RetrievalCandidate]) -> list[RetrievalCandidate]:
@@ -432,7 +432,7 @@ def _memory_chunks_fallback_search(
                 text_hash=str(text_hash) if text_hash else None,
             )
         )
-        candidates[-1].lane = _candidate_lane(candidates[-1])
+        candidates[-1].lane = _candidate_context_section(candidates[-1])
     return sorted(candidates, key=lambda c: -c.final_score)
 
 
@@ -443,7 +443,7 @@ def _working_memory_overlay(
     normalized_query: str,
     top_n: int = WORKING_OVERLAY_LIMIT,
 ) -> list[RetrievalCandidate]:
-    """현재 세션 working mini-chunk 를 retrieval 후보에 soft union.
+    """현재 세션 working mini-chunk 를 retrieval 후보에 query context 로 soft union.
 
     session_id 를 알 수 있으면 해당 세션만, shell `/retrieve` 처럼 알 수 없으면
     프로젝트의 최신 working chunk 중 query token 이 닿는 row 를 우선 사용한다.
@@ -517,7 +517,7 @@ def _working_memory_overlay(
                 rrf_score=WORKING_OVERLAY_SCORE,
                 boost_score=0.0,
                 final_score=WORKING_OVERLAY_SCORE,
-                lane="current_turn_clues",
+                lane="query_context",
                 evidence_level=md.get("evidence_level") or "raw_turn",
                 grounded=bool(md.get("grounded")) if md.get("grounded") is not None else False,
                 source_uri=md.get("source_uri") or md.get("url"),
@@ -569,7 +569,7 @@ def _row_to_candidate(row: sqlite3.Row) -> RetrievalCandidate:
     )
     cand.evidence_level = "raw_source" if cand.source_type in {"slack", "notion"} else None
     cand.grounded = True if cand.evidence_level == "raw_source" else None
-    cand.lane = _candidate_lane(cand)
+    cand.lane = _candidate_context_section(cand)
     return cand
 
 
@@ -700,7 +700,7 @@ def retrieve(
                         cand.penalties.append("candidate_contradiction")
                     cand.boost_score = boost
                     cand.final_score = cand.rrf_score + boost
-                    cand.lane = cand.lane or _candidate_lane(cand)
+                    cand.lane = cand.lane or _candidate_context_section(cand)
                 ordered = _dedupe_candidates(list(merged.values()))[:FUSION_CANDIDATES]
                 low_confidence_reasons = _memory_fallback_reasons(ordered, resolved_terms)
                 if low_confidence_reasons:

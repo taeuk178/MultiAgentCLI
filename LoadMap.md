@@ -17,10 +17,10 @@ imprint 는 Claude Code hook·skill 시스템 위에서 동작하는 로컬 개�
 ```text
 사용자 입력
   -> UserPromptSubmit hook
-       event archive, working mini-chunk, gate, lane prefill
+       event archive, working mini-chunk, gate, context section prefill
   -> Claude Code 응답
   -> Stop hook
-       response archive, durable memory extract
+       response archive, persistent memory extract
   -> 다음 turn
        저장된 기억이 다시 prefill/search/retrieve 후보가 됨
 ```
@@ -49,7 +49,7 @@ API key 없이 Claude Code OAuth 구독을 그대로 사용합니다. 무거운 
 ### Hook 계층
 
 - `SessionStart`: 스키마 적용, 프로젝트 row upsert, `.imprint/soul.md` prepend.
-- `UserPromptSubmit`: prompt redaction, `events.user_message` 저장, working mini-chunk 저장, routing rule 평가, need-retrieval gate, lane prefill, lazy-fetch worker spawn.
+- `UserPromptSubmit`: prompt redaction, `events.user_message` 저장, working mini-chunk 저장, routing rule 평가, need-retrieval gate, context section prefill, lazy-fetch worker spawn.
 - `Stop`: assistant 응답 redaction, `events.llm_response` archive, response extract worker spawn.
 
 동기 hook 은 사용자 turn 을 막지 않는 경량 작업만 수행합니다. 외부 fetch 와 Haiku 기반 추출은 background 로 분리합니다.
@@ -71,8 +71,8 @@ API key 없이 Claude Code OAuth 구독을 그대로 사용합니다. 무거운 
 - local: multi-rewrite → hybrid search → RRF → working overlay → BOOST/penalty → low-confidence MEMFB → optional rerank → CTX.
 - feature/global: summary 검색 + chunk retrieval + grounding + contradiction check.
 - 문서 후보가 없거나 저신뢰이면 `memory_chunks` 를 read-only fallback 으로 조회합니다.
-- `source_status` marker 와 working chunk 는 fallback evidence 후보에서 제외합니다.
-- JSON mode 는 trace, lane, provenance, penalty, fallback/rerank 이유를 노출합니다.
+- `source_status` marker 와 working chunk 는 fallback retrieved context 후보에서 제외합니다.
+- JSON mode 는 trace, context section, provenance, penalty, fallback/rerank 이유를 노출합니다.
 
 ### External Source 계층
 
@@ -80,7 +80,7 @@ Slack/Notion lazy-fetch 는 사용자 prompt URL 또는 `<project>/.imprint/sour
 
 - 성공 chunk: `spec`, `message`, `thread`.
 - 실패/관찰 marker: `source_status` (`fetch_failed`, `fetch_empty`, `skipped_by_cap`, stale 계산).
-- dedup: `source_uri/url + evidence_level + text_hash` 기준.
+- dedup: `source_uri/url + provenance(evidence_level) + text_hash` 기준.
 - 자동 refresh 는 하지 않고, `/memory refresh` 로 명시 갱신합니다.
 
 ### Queue 계층
@@ -100,14 +100,14 @@ retrieval v2 ingestion 은 `ingest_queue` 를 통해 후속 작업을 순차 처
 - redaction coverage.
 - hook memory loop smoke test.
 - 첫 turn working overlay.
-- lane 기반 prefill.
+- context section 기반 prefill.
 - `/memory` 기본 검색/list/show/inject/remember/refresh/profile/status.
 - 한국어 2자 토큰 fallback.
 - external source 상태 가시화.
 - events noise soft flag.
 - `/retrieve` memory fallback + JSON trace.
 - text_hash 기반 dedup.
-- 테스트 기준선: `17 PASS / 0 FAIL`.
+- 테스트 기준선: `19 PASS / 0 FAIL`.
 
 완료된 결정과 이유는 `HISTORY.md` 에 남깁니다.
 
@@ -175,7 +175,7 @@ RAG 기본 루프가 안정된 뒤 진입합니다.
 - **실패해도 세션 차단 금지**: hook 실패는 silent fail + log 로 처리합니다.
 - **측정 후 최적화**: daemon, TTL, queue 통합은 profile 데이터가 쌓인 뒤 결정합니다.
 - **삭제보다 표식 우선**: noise, stale, fetch failure 는 먼저 표시하고, 삭제 정책은 나중에 정합니다.
-- **working 은 clue, durable/external 은 evidence**: raw 질문을 근거처럼 과신하지 않도록 lane 을 분리합니다.
+- **working 은 query context, retrieved/external 은 retrieved context**: raw 질문을 근거처럼 과신하지 않도록 context section 을 분리합니다.
 - **민감정보는 저장 전 redaction**: raw token-shaped 문자열이 DB/FTS 에 들어가지 않도록 진입점에서 방어합니다.
 
 ## 장기 위험
@@ -196,7 +196,7 @@ prompt, terminal output, external source 에 secret 이 섞일 수 있습니다.
 
 대응:
 - project_id 분리.
-- lane 분리.
+- context section 분리.
 - working TTL/cap.
 - source_status/working 제외 fallback.
 - 수동 `/memory inject` 로 명시 근거 주입.

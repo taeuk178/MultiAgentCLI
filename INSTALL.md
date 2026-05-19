@@ -98,7 +98,7 @@ Coding agent 세션 안에서:
 /retrieve --routed --json "테스트 모드 진입 UX 시나리오"
 ```
 
-`/retrieve --json` 과 `/retrieve --routed --json` 은 trace, lane, provenance, fallback/rerank 이유를 함께 반환합니다.
+`/retrieve --json` 과 `/retrieve --routed --json` 은 trace, context section, provenance, fallback/rerank 이유를 함께 반환합니다.
 
 ## 데이터 위치
 
@@ -166,8 +166,8 @@ export IMPRINT_DISABLE_SQLITE_VEC=1
 ### 자동 hook 경로
 
 - `SessionStart`: SQLite 스키마 적용, 프로젝트 등록, `.imprint/soul.md` prepend.
-- `UserPromptSubmit`: user prompt redaction, `events.user_message` 저장, working mini-chunk 저장, routing rule 평가, need-retrieval gate, lane prefill, lazy-fetch worker spawn.
-- `Stop`: 마지막 assistant 응답 redaction, `events.llm_response` 저장, durable response extract worker spawn.
+- `UserPromptSubmit`: user prompt redaction, `events.user_message` 저장, working mini-chunk 저장, routing rule 평가, need-retrieval gate, context section prefill, lazy-fetch worker spawn.
+- `Stop`: 마지막 assistant 응답 redaction, `events.llm_response` 저장, persistent response extract worker spawn.
 
 자동 hook 경로는 full `/retrieve` 를 호출하지 않습니다. 사용자 turn 을 막지 않기 위해 동기 경로는 lightweight prefill 만 수행합니다.
 
@@ -176,7 +176,7 @@ export IMPRINT_DISABLE_SQLITE_VEC=1
 `/retrieve` 는 사용자가 명시 호출할 때만 실행됩니다.
 
 - `chunks_v2` / `summaries` 문서 RAG 우선.
-- 현재 세션 working memory 를 clue 로 soft union.
+- 현재 세션 working memory 를 query context 로 soft union.
 - 후보가 없거나 저신뢰이면 `memory_chunks` read-only fallback.
 - confirmed contradiction 은 scoring 단계에서 강하게 감점.
 - JSON mode 는 trace 와 provenance 를 노출.
@@ -184,7 +184,7 @@ export IMPRINT_DISABLE_SQLITE_VEC=1
 ### 비동기 작업
 
 - lazy-fetch: background model이 prompt 키워드/URL을 분석하고 Slack/Notion MCP를 read-only fetch.
-- response extract: background model이 assistant 응답에서 decision/fix/todo/code_context 등 durable chunk를 추출.
+- response extract: background model이 assistant 응답에서 decision/fix/todo/code_context 등 persistent memory chunk를 추출.
 - retrieval v2 ingest queue: 명시 문서 ingestion 뒤 `summary_regen`, `contradiction_scan`, `ner_extract` 를 처리.
 
 자동 hook 의 `memory_chunks` 저장 경로는 현재 ingest queue 를 거치지 않습니다.

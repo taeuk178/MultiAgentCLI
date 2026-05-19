@@ -79,12 +79,12 @@ NOTION_URL_RE = re.compile(
 # Tokenizer shared by deterministic gate/rewrite/prefill search.
 TOKEN_RE = re.compile(r"[가-힣A-Za-z0-9_]+")
 
-# Foreground prefill limits. Hook latency 를 위해 working/durable context 크기를 제한한다.
+# Foreground prefill limits. Hook latency 를 위해 query/session/retrieved context 크기를 제한한다.
 WORKING_CONTEXT_LIMIT = int(os.environ.get("IMPRINT_WORKING_CONTEXT_LIMIT") or "4")
 PREFILL_CONTEXT_LIMIT = int(os.environ.get("IMPRINT_PREFILL_LIMIT") or "8")
 
 # Working memory retention policy.
-# raw_turn 은 clue 용도라 오래 보관하지 않고 session 당 최신 N개만 유지한다.
+# raw_turn 은 query context 용도라 오래 보관하지 않고 session 당 최신 N개만 유지한다.
 WORKING_TTL_HOURS = int(os.environ.get("IMPRINT_WORKING_TTL_HOURS") or "24")
 WORKING_MAX_PER_SESSION = int(os.environ.get("IMPRINT_WORKING_MAX_PER_SESSION") or "20")
 
@@ -825,7 +825,7 @@ def insert_source_status_chunk(
 # ---------------------------------------------------------------------------
 
 EXTRACT_PROMPT = """\
-Extract durable knowledge chunks from this assistant response. Return STRICT JSON array.
+Extract persistent memory chunks from this assistant response. Return STRICT JSON array.
 
 Each item:
 {
@@ -947,7 +947,7 @@ def deterministic_query_surfaces(prompt: str) -> list[dict[str, str]]:
 
 
 def retrieval_gate(prompt: str) -> tuple[bool, str]:
-    """자동 prefill 에서 durable query search 를 열지 결정하는 deterministic gate."""
+    """자동 prefill 에서 retrieved-memory search 를 열지 결정하는 deterministic gate."""
     s = (prompt or "").strip().lower()
     if not s:
         return False, "empty"
@@ -1130,7 +1130,7 @@ def load_working_context(
     return rows
 
 
-def _chunk_lane(chunk: dict) -> str:
+def _chunk_section(chunk: dict) -> str:
     try:
         md = json.loads(chunk.get("metadata_json") or "{}")
         if not isinstance(md, dict):
@@ -1138,11 +1138,11 @@ def _chunk_lane(chunk: dict) -> str:
     except (json.JSONDecodeError, TypeError):
         md = {}
     if md.get("memory_tier") == "working":
-        return "current"
+        return "query"
     source = md.get("source_type") or md.get("source")
     if source in ("slack", "notion") or chunk.get("chunk_type") in EXTERNAL_CHUNK_TYPES:
         return "external"
-    return "durable"
+    return "retrieved"
 
 
 def search_memory(
@@ -1258,7 +1258,7 @@ def search_memory(
             except sqlite3.OperationalError as exc:
                 log("WARN", f"like fallback search failed: {exc}")
 
-    # 3. fallback: 최근 durable chunk (decision/fix/todo/note + 외부 source)
+    # 3. fallback: 최근 retrieved memory (decision/fix/todo/note + 외부 source)
     # 외부 source chunk를 'note'에서 spec/message/thread로 분리한 뒤
     # fallback이 빈 결과를 내지 않도록 신규 타입도 포함시킨다.
     if not seen:
@@ -1477,7 +1477,7 @@ def cmd_prefill(argv: list[str]) -> int:
     t0 = time.monotonic()
     chunks: list[dict] = []
     working_count = 0
-    durable_count = 0
+    retrieved_count = 0
     need_retrieval, retrieval_reason = retrieval_gate(prompt)
     try:
         try:
@@ -1486,16 +1486,16 @@ def cmd_prefill(argv: list[str]) -> int:
                     conn, project_id, session_id, limit=WORKING_CONTEXT_LIMIT,
                 )
                 working_count = len(working)
-                durable = []
+                retrieved = []
                 if need_retrieval:
-                    durable = search_memory(
+                    retrieved = search_memory(
                         conn, project_id, prefill_keywords(prompt), prompt,
                         limit=PREFILL_CONTEXT_LIMIT,
                     )
-                durable_count = len(durable)
+                retrieved_count = len(retrieved)
                 seen: set[str] = set()
                 chunks = []
-                for c in working + durable:
+                for c in working + retrieved:
                     cid = c.get("id")
                     if cid in seen:
                         continue
@@ -1513,24 +1513,24 @@ def cmd_prefill(argv: list[str]) -> int:
                       dur_ms=int((time.monotonic() - t0) * 1000),
                       chunks=len(chunks),
                       working_chunks=working_count,
-                      durable_chunks=durable_count,
-                      durable_search_skipped=not need_retrieval,
+                      retrieved_chunks=retrieved_count,
+                      retrieved_search_skipped=not need_retrieval,
                       need_retrieval=need_retrieval,
                       retrieval_reason=retrieval_reason,
                       prompt_bytes=len(prompt))
 
     if not chunks:
-        _profile_emit("cmd_prefill.lanes",
+        _profile_emit("cmd_prefill.sections",
                       project_id=project_id,
-                      current=0, recent=0, durable=0, external=0,
+                      query=0, session=0, retrieved=0, external=0,
                       need_retrieval=need_retrieval,
                       retrieval_reason=retrieval_reason)
         return 0
 
-    lanes: dict[str, list[dict]] = {
-        "current": [],
-        "recent": [],
-        "durable": [],
+    sections: dict[str, list[dict]] = {
+        "query": [],
+        "session": [],
+        "retrieved": [],
         "external": [],
     }
     for c in chunks:
@@ -1539,25 +1539,25 @@ def cmd_prefill(argv: list[str]) -> int:
             md = json.loads(c.get("metadata_json") or "{}")
         except (json.JSONDecodeError, TypeError):
             pass
-        lane = _chunk_lane(c)
-        if lane == "current" and request_id and md.get("request_id") != request_id:
-            lane = "recent"
-        lanes[lane].append(c)
+        section = _chunk_section(c)
+        if section == "query" and request_id and md.get("request_id") != request_id:
+            section = "session"
+        sections[section].append(c)
 
-    _profile_emit("cmd_prefill.lanes",
+    _profile_emit("cmd_prefill.sections",
                   project_id=project_id,
-                  current=len(lanes["current"]),
-                  recent=len(lanes["recent"]),
-                  durable=len(lanes["durable"]),
-                  external=len(lanes["external"]),
+                  query=len(sections["query"]),
+                  session=len(sections["session"]),
+                  retrieved=len(sections["retrieved"]),
+                  external=len(sections["external"]),
                   need_retrieval=need_retrieval,
                   retrieval_reason=retrieval_reason)
 
     out_lines = ["[Project memory context]"]
     if not need_retrieval:
-        out_lines.append(f"(durable search skipped: {retrieval_reason})")
+        out_lines.append(f"(retrieved-memory search skipped: {retrieval_reason})")
 
-    def append_lane(title: str, items: list[dict]) -> None:
+    def append_section(title: str, items: list[dict]) -> None:
         if not items:
             return
         out_lines.append(f"[{title}]")
@@ -1578,10 +1578,10 @@ def cmd_prefill(argv: list[str]) -> int:
                 text = (c["text"] or "").split("\n", 1)[0].strip()
             out_lines.append(f"- [{tag}] {text[:300]}")
 
-    append_lane("Current turn clues", lanes["current"])
-    append_lane("Recent session evidence", lanes["recent"])
-    append_lane("Durable evidence", lanes["durable"])
-    append_lane("External fetched context", lanes["external"])
+    append_section("Query context", sections["query"])
+    append_section("Session memory", sections["session"])
+    append_section("Retrieved memory", sections["retrieved"])
+    append_section("External source context", sections["external"])
 
     sys.stdout.write("\n" + "\n".join(out_lines) + "\n")
     return 0
@@ -1591,7 +1591,7 @@ def cmd_mini_ingest(argv: list[str]) -> int:
     """UserPromptSubmit 동기 경량 저장.
 
     현재 turn 의 raw query 를 즉시 FTS-visible memory_chunks row 로 넣는다.
-    LLM durable 분류는 기존처럼 Stop/lazy-fetch background 에 남긴다.
+    LLM 기반 persistent memory 분류는 기존처럼 Stop/lazy-fetch background 에 남긴다.
     """
     if len(argv) < 2:
         return 1

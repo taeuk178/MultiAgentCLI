@@ -43,6 +43,7 @@ def _candidate_json(c):
         "boost_score": round(c.boost_score, 6),
         "final_score": round(c.final_score, 6),
         "matched_entities": c.matched_entities,
+        "context_section": c.lane,
         "lane": c.lane,
         "evidence_level": c.evidence_level,
         "grounded": c.grounded,

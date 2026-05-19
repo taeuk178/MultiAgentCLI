@@ -13,8 +13,8 @@
 RAG 기본 기능과 1차 운영 관측성은 적용 완료된 상태입니다.
 
 - 자동 hook 루프: `SessionStart → UserPromptSubmit → Stop → 다음 UserPromptSubmit`.
-- 첫 turn 가시성: user prompt 를 working mini-chunk 로 즉시 저장하고 prefill/retrieve clue 로 사용.
-- memory lane: current clues, recent session, durable evidence, external fetched context 분리.
+- 첫 turn 가시성: user prompt 를 working mini-chunk 로 즉시 저장하고 prefill/retrieve query context 로 사용.
+- RAG context sections: query context, session memory, retrieved memory, external source context 분리.
 - 수동 memory: `/memory search/list/show/inject/remember/refresh/stats/profile/status`.
 - 명시 retrieval: `/retrieve` 는 `chunks_v2`/`summaries` 우선, 저신뢰 또는 빈 후보면 `memory_chunks` read-only fallback.
 - 관찰성: source status marker, events noise flag, profile JSONL, retrieve JSON trace, candidate provenance, text_hash dedup.
@@ -24,7 +24,7 @@ RAG 기본 기능과 1차 운영 관측성은 적용 완료된 상태입니다.
 
 ```text
 python3 scripts/imprint/tests/run_tests.py
-TOTAL  17 PASS / 0 FAIL
+TOTAL  19 PASS / 0 FAIL
 ```
 
 테스트는 임시 `IMPRINT_HOME=/tmp/...` 방식으로 격리합니다. 사용자 홈 `~/.claude/imprint` 직접 수정은 명시 동의 전까지 하지 않습니다.
@@ -46,12 +46,12 @@ TOTAL  17 PASS / 0 FAIL
 ## 사용성 테스트 체크리스트
 
 - 새 세션 시작 시 `SessionStart` 가 스키마 적용과 `soul.md` prepend 를 조용히 수행하는지.
-- “A 버튼 클릭 동작 알려줘” 같은 질문 직후 `[Current turn clues]` 가 prefill 되는지.
-- 다음 turn 에 Stop extract 또는 external lazy-fetch 결과가 `[Durable evidence]` / `[External fetched context]` 로 보이는지.
+- “A 버튼 클릭 동작 알려줘” 같은 질문 직후 `[Query context]` 가 prefill 되는지.
+- 다음 turn 에 Stop extract 또는 external lazy-fetch 결과가 `[Retrieved memory]` / `[External source context]` 로 보이는지.
 - `/memory search <키워드>` 가 한국어 짧은 토큰 fallback 포함해 기대 chunk 를 찾는지.
 - `/memory show --json <id>` 에서 metadata, `source_status`, `text_hash`, provenance 를 이해할 수 있는지.
 - `/memory status --json` 이 DB/log/profile 상태와 working 정책을 보여주는지.
-- `/retrieve --routed --json <질문>` 의 `trace` 와 candidate lane/provenance 가 기대대로 남는지.
+- `/retrieve --routed --json <질문>` 의 `trace` 와 candidate context section/provenance 가 기대대로 남는지.
 - 문서 chunk 가 있으면 `/retrieve` 가 `chunks_v2` 를 우선하고, 저신뢰일 때만 `memory_chunks` fallback 을 여는지.
 - Slack/Notion fetch 실패, URL cap 초과, stale 외부 chunk 가 `/memory list/show/status` 에서 관찰 가능한지.
 
@@ -59,7 +59,7 @@ TOTAL  17 PASS / 0 FAIL
 
 `IMPRINT_PROFILE=1` 로 `~/.claude/imprint/profile.jsonl` 을 누적한 뒤 `/memory profile --json` 과 `/memory status --json` 으로 봅니다.
 
-- `cmd_prefill`: working/durable count, durable search skip 사유, lane count.
+- `cmd_prefill`: working/retrieved count, retrieved-memory search skip 사유, context section count.
 - `retrieve_done`: query surface 수, fallback 여부와 이유, rerank gate 사유.
 - `stop.transcript_reparse`: 긴 세션에서 증가하는지.
 - `call_claude`: Haiku 호출 RTT 와 timeout 빈도.

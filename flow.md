@@ -6,9 +6,9 @@
 
 - hook 은 사용자 세션을 끊지 않습니다. 실패는 silent skip + `plugin.log` 로 처리합니다.
 - 동기 경로는 가볍게 유지합니다. LLM 호출, Slack/Notion fetch, response extract 는 background 로 분리합니다.
-- 자동 hook 경로는 현재 turn 을 working mini-chunk 로 먼저 저장하고 gate 결과에 따라 `memory_chunks` 를 lane 별로 prefill 합니다.
+- 자동 hook 경로는 현재 turn 을 working mini-chunk 로 먼저 저장하고 gate 결과에 따라 `memory_chunks` 를 context section 별로 prefill 합니다.
 - `/retrieve` 는 사용자가 명시 호출했을 때만 `chunks_v2`/`summaries` retrieval 을 수행합니다.
-- `/retrieve` 는 현재 세션 working chunk 를 clue 로 soft union 하고, 문서 후보가 없거나 저신뢰이면 `memory_chunks` 를 read-only fallback 으로 조회합니다.
+- `/retrieve` 는 현재 세션 working chunk 를 query context 로 soft union 하고, 문서 후보가 없거나 저신뢰이면 `memory_chunks` 를 read-only fallback 으로 조회합니다.
 
 ## 전체 플로우
 
@@ -25,13 +25,13 @@
      - deterministic query rewrite 를 Search surface 로 보강
   3. .imprint/UserPromptSubmit.md routing 룰 매칭
   4. need-retrieval gate
-     - yes: working clues + query-aware durable/external memory + fallback
-     - no: working/recent clues 중심, durable query search skip
-  5. [Project memory context] lane + routing advisory prepend
-     - Current turn clues
-     - Recent session evidence
-     - Durable evidence
-     - External fetched context
+     - yes: query context + query-aware retrieved/external context + fallback
+     - no: query/session context 중심, retrieved-memory search skip
+  5. [Project memory context] sections + routing advisory prepend
+     - Query context
+     - Session memory
+     - Retrieved memory
+     - External source context
   6. coding-agent 응답 생성
   7. Stop: 마지막 assistant 응답을 llm_response event 로 저장
 
@@ -42,7 +42,7 @@
      - section chunk 를 memory_chunks 에 직접 INSERT
 
   B. Stop response extract
-     - background model 이 응답에서 durable chunk 분류
+     - background model 이 응답에서 persistent memory chunk 분류
      - decision/error/fix/command/test_result/summary/todo/code_context/note 를 memory_chunks 에 직접 INSERT
 
 다음 turn:
@@ -54,7 +54,7 @@
   1. routed: entity resolve 선행 → scope classifier(local/feature/global)
   2. local: chunk retrieval 경로 호출
      - QN → RES → multi-rewrite → QEMB → HYB(chunks_v2 FTS5 + vector, 미가용 시 FTS/짧은 토큰 fallback) → RRF(+working overlay) → BOOST(+contradiction penalty) → low-confidence MEMFB → RG/RR → CTX
-     - working overlay: 현재 세션 memory_tier=working, session_visible=true 후보를 clue 로 soft union
+     - working overlay: 현재 세션 memory_tier=working, session_visible=true 후보를 query context 로 soft union
      - MEMFB: 후보가 0개이거나 저신뢰이면 memory_chunks read-only fallback
   3. feature/global: summaries 검색 + chunk retrieval(동일 working overlay/low-confidence MEMFB 포함) + summary_links grounding
   4. resolved entity 의 confirmed contradiction 조회
@@ -83,7 +83,7 @@ flowchart LR
       UPS["UserPromptSubmit<br/>redact + event archive"]
       MINI["Working mini-chunk<br/>raw_turn + deterministic surfaces"]
       GATE{"Need retrieval?"}
-      PREFILL["Lane prefill<br/>Current clues<br/>Recent session<br/>Durable evidence<br/>External context"]
+      PREFILL["Context section prefill<br/>Query context<br/>Session memory<br/>Retrieved memory<br/>External source context"]
       PREPEND["[Project memory context]<br/>+ routing advisory"]
       STOP["Stop hook<br/>llm_response archive"]
     end
@@ -95,14 +95,14 @@ flowchart LR
       FETCH["Read-only fetch<br/>Slack / Notion"]
       EXTCHUNK["External chunks<br/>spec / message / thread"]
       EXTRACT["Response extractor<br/>host CLI"]
-      DURABLE["Durable chunks<br/>decision / fix / todo<br/>code_context / note"]
+      DURABLE["Persistent memory chunks<br/>decision / fix / todo<br/>code_context / note"]
     end
 
     %% ===== Center-right: storage and retrieval =====
     subgraph STORE["SQLite memory store"]
       direction TB
       EVENTS[("events<br/>user_message / llm_response<br/>noise flag")]
-      MEM[("memory_chunks<br/>working / durable / external<br/>FTS5 + BM25")]
+      MEM[("memory_chunks<br/>working / retrieved / external<br/>FTS5 + BM25")]
       DOCS[("documents + chunks_v2<br/>summaries / entities<br/>contradictions")]
       PROF[("plugin.log<br/>profile.jsonl<br/>status / trace")]
     end
@@ -129,9 +129,9 @@ flowchart LR
     %% ===== Bottom: record format =====
     subgraph FORMAT["Memory / retrieval format"]
       direction LR
-      F1["working<br/>memory_tier=working<br/>evidence_level=raw_turn"]
-      F2["durable<br/>assistant_extracted<br/>grounded=false"]
-      F3["external<br/>raw_source<br/>grounded=true<br/>source_uri"]
+      F1["query context<br/>memory_tier=working<br/>provenance=raw_turn"]
+      F2["retrieved memory<br/>assistant_extracted<br/>grounded=false"]
+      F3["external source context<br/>raw_source<br/>grounded=true<br/>source_uri"]
       F4["status marker<br/>fetch_failed<br/>skipped_by_cap<br/>stale"]
       F5["trace<br/>query_surfaces<br/>fallback_reasons<br/>rerank_gate_reason"]
     end
@@ -212,7 +212,7 @@ flowchart LR
 | SQLite memory store | 실제 저장소와 운영 관측 파일 | `EVENTS` · `MEM` · `DOCS` · `PROF` |
 | Explicit /retrieve path | 사용자가 명시 호출할 때만 도는 검색 파이프라인 | `QN` · `RES` · `HYB` · `RRF` · `BOOST` · `MEMFB` · `RR` · `JSON` |
 | Generation | prepend 된 context 를 참고해 응답을 만드는 host 모델 경로 | `HOSTMODEL` · `OUT` |
-| Memory / retrieval format | 후보의 의미와 디버깅 trace 를 설명하는 metadata lane | `F1` · `F2` · `F3` · `F4` · `F5` |
+| Memory / retrieval format | 후보의 의미와 디버깅 trace 를 설명하는 context/provenance metadata | `F1` · `F2` · `F3` · `F4` · `F5` |
 
 ## hook 단계별 의존성
 
@@ -232,7 +232,7 @@ flowchart LR
 | prompt redaction | `python3`, redact rules | 실패 시 원문 대신 가능한 경로만 진행, 로그 기록 |
 | `events.user_message` 저장 | `sqlite3`, `uuidgen` | event archive 누락 |
 | working mini-chunk | `python3`, `sqlite3`, FTS5 | 첫 turn working overlay 누락, 기존 memory prefill 은 계속 시도 |
-| gate + lane prefill | `python3`, `sqlite3`, FTS5 | durable query search/lane 분리 누락, legacy shell fallback 시도 |
+| gate + context section prefill | `python3`, `sqlite3`, FTS5 | retrieved-memory search/context section 분리 누락, legacy shell fallback 시도 |
 | routing advisory | `python3`, `.imprint/UserPromptSubmit.md` | routing prepend 없음 |
 | memory prefill | `python3`, `sqlite3`, FTS5 | primary prefill 누락, legacy shell fallback 시도 |
 | lazy-fetch spawn | `python3`, host CLI, Slack/Notion MCP | 새 외부 chunk 누적 없음, 기존 chunk 는 계속 사용 |
@@ -254,7 +254,7 @@ flowchart LR
 | Notion 페이지 | H1/H2/H3 section chunk 로 저장 |
 | Slack thread | 관련 reply selection + summary |
 | Slack 단일 메시지 | 1 chunk |
-| dedup | `source_uri/url + evidence_level + text_hash` 기준, 기존 page URL cache hit 도 유지 |
+| dedup | `source_uri/url + provenance(evidence_level) + text_hash` 기준, 기존 page URL cache hit 도 유지 |
 | 갱신 | TTL 무한, `/memory refresh` 명시 명령 |
 | URL cap | source 별 turn 당 3개, 초과분은 `source_status=skipped_by_cap` |
 | 실패 표시 | `fetch_failed`, `fetch_empty`, `skipped_by_cap` marker |
@@ -268,19 +268,19 @@ flowchart LR
 | feature | feature summaries 검색 + feature chunk retrieval + summary_links grounding + contradiction 조회 |
 | global | project/document/feature summaries 검색 + key chunk retrieval + grounding + contradiction 조회 |
 
-`chunk_retrieve` 는 `chunks_v2` 후보가 있어도 현재 세션 working mini-chunk 를 clue 로 soft union 합니다. `chunks_v2` 후보가 없거나 top1 score 가 낮거나 working-only/entity-mismatch 로 저신뢰이면 `memory_chunks` fallback 을 탑니다. fallback 은 `source_status` marker 와 working chunk 를 제외합니다.
+`chunk_retrieve` 는 `chunks_v2` 후보가 있어도 현재 세션 working mini-chunk 를 query context 로 soft union 합니다. `chunks_v2` 후보가 없거나 top1 score 가 낮거나 working-only/entity-mismatch 로 저신뢰이면 `memory_chunks` fallback 을 탑니다. fallback 은 `source_status` marker 와 working chunk 를 제외합니다.
 
 confirmed contradiction 에 연결된 chunk 는 BOOST 단계에서 강하게 감점합니다. candidate contradiction 은 약하게 감점하고, routed output 의 conflict 섹션은 기존처럼 유지합니다.
 
 ## 운영 정책 수치
 
-자동 prefill gate 는 결정적 rule 기반입니다. `noise=1`, 짧은 backchannel, 단순 확인/감사/커밋 요청은 durable query search 를 생략하고, `어떻게/왜/어디/동작/정리/찾아줘` 계열 표현이나 UI/code/source 키워드가 있으면 durable/external memory 검색을 엽니다. gate 결과는 working chunk metadata 의 `need_retrieval`, `retrieval_reason` 과 `IMPRINT_PROFILE=1` 의 `cmd_prefill` record 에 남습니다.
+자동 prefill gate 는 결정적 rule 기반입니다. `noise=1`, 짧은 backchannel, 단순 확인/감사/커밋 요청은 retrieved-memory search 를 생략하고, `어떻게/왜/어디/동작/정리/찾아줘` 계열 표현이나 UI/code/source 키워드가 있으면 retrieved/external context 검색을 엽니다. gate 결과는 working chunk metadata 의 `need_retrieval`, `retrieval_reason` 과 `IMPRINT_PROFILE=1` 의 `cmd_prefill` record 에 남습니다.
 
 ### Foreground prefill / working memory
 
 | 변수 | 기본값 | 수정 위치 | 바꾸면 달라지는 것 |
 |---|---:|---|---|
-| `IMPRINT_WORKING_CONTEXT_LIMIT` | `4` | env | 자동 prefill 의 working/recent clue 최대 개수 |
+| `IMPRINT_WORKING_CONTEXT_LIMIT` | `4` | env | 자동 prefill 의 query/session context 최대 개수 |
 | `IMPRINT_PREFILL_LIMIT` | `8` | env | 자동 `[Project memory context]` 전체 chunk 상한 |
 | `IMPRINT_WORKING_TTL_HOURS` | `24` | env | working raw_turn 보관 시간 |
 | `IMPRINT_WORKING_MAX_PER_SESSION` | `20` | env | session 별 working raw_turn 최신 row 제한 |
@@ -299,7 +299,7 @@ confirmed contradiction 에 연결된 chunk 는 BOOST 단계에서 강하게 감
 | `IMPRINT_MODEL_TIMEOUT_FETCH` | `45` | env | Slack/Notion fetch timeout 초 |
 | `IMPRINT_MODEL_TIMEOUT_EXTRACT` | `30` | env | Stop response extract timeout 초 |
 | `IMPRINT_ALLOWED_TOOLS_FETCH` | Notion/Slack wildcard | env | fetch worker 에 허용할 MCP tool 범위 |
-| `CHUNK_TYPES` | 9개 durable type | `ingestion.py` | Stop extract 가 저장할 수 있는 assistant memory type |
+| `CHUNK_TYPES` | 9개 persistent memory type | `ingestion.py` | Stop extract 가 저장할 수 있는 assistant memory type |
 | `EXTERNAL_CHUNK_TYPES` | `spec/message/thread` | `ingestion.py` | Slack/Notion chunk type 구분 |
 
 ### Chunk retrieval / fusion
@@ -316,8 +316,8 @@ confirmed contradiction 에 연결된 chunk 는 BOOST 단계에서 강하게 감
 | `BOOST_CURRENT` | `0.15` | `retrieve.py` | current chunk 가산점 |
 | `BOOST_ENTITY` | `0.10` | `retrieve.py` | resolved entity match 가산점 |
 | `BOOST_RECENT` | `0.05` | `retrieve.py` | 최근 source_updated_at 가산점 |
-| `WORKING_OVERLAY_LIMIT` | `4` | `retrieve.py` | `/retrieve` 에 soft union 할 working clue 수 |
-| `WORKING_OVERLAY_SCORE` | `0.12` | `retrieve.py` | working clue 의 고정 점수 |
+| `WORKING_OVERLAY_LIMIT` | `4` | `retrieve.py` | `/retrieve` 에 soft union 할 query context 수 |
+| `WORKING_OVERLAY_SCORE` | `0.12` | `retrieve.py` | query context 의 고정 점수 |
 | `LOW_CONFIDENCE_TOP1` | `0.13` | `retrieve.py` | top1 이 낮을 때 `memory_chunks` fallback open |
 
 ### Rerank
@@ -375,7 +375,7 @@ confirmed contradiction 에 연결된 chunk 는 BOOST 단계에서 강하게 감
 | `IMPRINT_DISABLE_NLI` | `0` | env | `1`이면 NLI contradiction judge 비활성 |
 | `IMPRINT_DISABLE_MODEL_JUDGE` | `0` | env | `1`이면 model judge fallback 비활성 |
 
-`retrieve_json` / `routed_json` 은 `trace.query_surfaces`, `fallback_reasons`, `rerank_gate_reason` 과 candidate 별 `lane`, `evidence_level`, `grounded`, `source_uri`, `text_hash`, `penalties` 를 노출합니다. 이 값은 context 품질 회고와 gate/MEMFB/rerank threshold 튜닝에 사용합니다.
+`retrieve_json` / `routed_json` 은 `trace.query_surfaces`, `fallback_reasons`, `rerank_gate_reason` 과 candidate 별 `context_section`, `lane`, `evidence_level`, `grounded`, `source_uri`, `text_hash`, `penalties` 를 노출합니다. `context_section`/`lane` 은 `query_context`, `retrieved_memory`, `external_source_context` 를 사용하며, `lane` 은 이전 JSON 소비자를 위한 호환 필드입니다. `evidence_level` 은 기존 DB 호환을 위한 provenance field 입니다. 이 값은 context 품질 회고와 gate/MEMFB/rerank threshold 튜닝에 사용합니다.
 
 튜닝할 때는 env 로 조정 가능한 값부터 바꾸고, `retrieve.py`/`routing.py` 의 코드 상수는 테스트와 함께 PR 로 변경합니다. 변경 후에는 `/retrieve --json` 의 `trace` 와 `IMPRINT_PROFILE=1` 의 `retrieve_done`, `cmd_prefill` record 를 같이 확인합니다.
 

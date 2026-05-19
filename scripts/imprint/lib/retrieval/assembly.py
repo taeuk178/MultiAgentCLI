@@ -54,12 +54,12 @@ def format_for_claude(
             )
         lines.append("")
 
-    clues = [c for c in result.candidates if c.source_type == "working"]
-    evidence = [c for c in result.candidates if c.source_type != "working"]
+    query_context = [c for c in result.candidates if c.source_type == "working"]
+    retrieved_context = [c for c in result.candidates if c.source_type != "working"]
 
-    if clues:
-        lines.append("[Current Turn Clues]")
-        for i, cand in enumerate(clues, 1):
+    if query_context:
+        lines.append("[Query Context]")
+        for i, cand in enumerate(query_context, 1):
             lines.extend(_format_chunk_block(
                 i, source_type=cand.source_type, section_path=cand.section_path,
                 is_current=cand.is_current, source_updated_at=cand.source_updated_at,
@@ -68,9 +68,9 @@ def format_for_claude(
             lines.append("")
 
     lines.append("[Retrieved Context]")
-    if not evidence:
+    if not retrieved_context:
         lines.append("(검색 결과 없음)")
-    for i, cand in enumerate(evidence, 1):
+    for i, cand in enumerate(retrieved_context, 1):
         lines.extend(_format_chunk_block(
             i, source_type=cand.source_type, section_path=cand.section_path,
             is_current=cand.is_current, source_updated_at=cand.source_updated_at,
@@ -135,12 +135,12 @@ def format_routed_for_claude(
             lines.append("")
 
     # grounding chunks — summary 별 drill-down + 본 검색 chunk 합쳐 보여줌.
-    clues = [c for c in result.chunks if c.source_type == "working"]
+    query_context = [c for c in result.chunks if c.source_type == "working"]
     chunks = [c for c in result.chunks if c.source_type != "working"]
 
-    if clues:
-        lines.append("[Current Turn Clues]")
-        for i, cand in enumerate(clues, 1):
+    if query_context:
+        lines.append("[Query Context]")
+        for i, cand in enumerate(query_context, 1):
             lines.extend(_format_chunk_block(
                 i, source_type=cand.source_type, section_path=cand.section_path,
                 is_current=cand.is_current, source_updated_at=cand.source_updated_at,

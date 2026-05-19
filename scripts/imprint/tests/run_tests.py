@@ -144,7 +144,7 @@ joined="$*"
 stdin="$(cat)"
 joined="$joined $stdin"
 case "$joined" in
-  *"Extract durable knowledge chunks"*)
+  *"Extract persistent memory chunks"*)
     printf '%s\\n' '[{{"chunk_type":"decision","text":"A 버튼 클릭은 {raw_token} 없이 테스트 모드를 시작합니다.","keywords":["A 버튼","{raw_token}"]}}]'
     ;;
   *"contradiction judge"*)
@@ -181,7 +181,7 @@ joined="$*"
 stdin="$(cat)"
 joined="$joined $stdin"
 case "$joined" in
-  *"Extract durable knowledge chunks"*)
+  *"Extract persistent memory chunks"*)
     result='[{{"chunk_type":"decision","text":"A 버튼 클릭은 {raw_token} 없이 테스트 모드를 시작합니다.","keywords":["A 버튼","{raw_token}"]}}]'
     ;;
   *"contradiction judge"*)
@@ -843,7 +843,7 @@ def tc_15_first_turn_working_overlay(env: dict, home: str, case: CaseResult) -> 
             VALUES (?, ?, NULL, ?, ?, ?, ?, 0)
             """,
             (
-                "tc15-durable",
+                "tc15-retrieved",
                 ROOT_PROJECT_ID,
                 "decision",
                 "A 버튼 클릭은 테스트 모드를 시작합니다.",
@@ -966,10 +966,10 @@ def tc_15_first_turn_working_overlay(env: dict, home: str, case: CaseResult) -> 
         "working_chunk": working_ok,
         "rewrite": rewrite_ok,
         "prefill_working": (
-            "[Current turn clues]" in ups_out
+            "[Query context]" in ups_out
             and "[working] A 버튼 클릭 동작 알려줘" in ups_out
         ),
-        "prefill_durable": "테스트 모드" in ups_out,
+        "prefill_retrieved": "테스트 모드" in ups_out,
         "noise_no_working": rc_noise == 0 and noise_working == 0,
         "retrieve_union_working": any(c.get("source_type") == "working" for c in candidates),
         "retrieve_keeps_chunks_v2": "tc15-cv2" in chunk_ids,
@@ -980,14 +980,14 @@ def tc_15_first_turn_working_overlay(env: dict, home: str, case: CaseResult) -> 
     }
     case.passed = all(checks.values())
     case.detail = (
-        f"working={len(working_rows)} prefill={checks['prefill_working']}/{checks['prefill_durable']} "
+        f"working={len(working_rows)} prefill={checks['prefill_working']}/{checks['prefill_retrieved']} "
         f"retrieve={len(candidates)} union={checks['retrieve_union_working']} cv2={checks['retrieve_keeps_chunks_v2']}"
     )
     if not case.passed and ups_err:
         case.detail += f" ups_err={ups_err[:120]}"
 
 
-def tc_16_memory_lane_policy(env: dict, home: str, case: CaseResult) -> None:
+def tc_16_context_section_policy(env: dict, home: str, case: CaseResult) -> None:
     """working cleanup/gate/provenance + low-confidence MEMFB policy."""
     env_h = hook_env(env)
     env_h["IMPRINT_CLAUDE_BIN"] = make_fake_claude(home)
@@ -1027,7 +1027,7 @@ def tc_16_memory_lane_policy(env: dict, home: str, case: CaseResult) -> None:
             """
             INSERT OR REPLACE INTO memory_chunks
               (id, project_id, source_event_id, chunk_type, text, metadata_json, created_at, pinned)
-            VALUES ('tc16-durable-keep', ?, NULL, 'decision', 'durable 유지', '{}', ?, 0)
+            VALUES ('tc16-persistent-keep', ?, NULL, 'decision', 'persistent memory 유지', '{}', ?, 0)
             """,
             (ROOT_PROJECT_ID, old),
         )
@@ -1066,8 +1066,8 @@ with db() as conn:
             """,
             (ROOT_PROJECT_ID,),
         ).fetchone()[0]
-        durable_keep = conn.execute(
-            "SELECT COUNT(*) FROM memory_chunks WHERE id = 'tc16-durable-keep'",
+        persistent_keep = conn.execute(
+            "SELECT COUNT(*) FROM memory_chunks WHERE id = 'tc16-persistent-keep'",
         ).fetchone()[0]
         gate_md_raw = conn.execute(
             """
@@ -1129,11 +1129,11 @@ with db() as conn:
     low_text = "\n".join(c.get("chunk_text", "") for c in low_chunks)
 
     checks = {
-        "cleanup": rc_clean == 0 and working_clean_count <= 2 and durable_keep == 1,
+        "cleanup": rc_clean == 0 and working_clean_count <= 2 and persistent_keep == 1,
         "gate": (
             rc_gate == 0
             and gate_md.get("need_retrieval") is False
-            and "durable search skipped" in gate_out
+            and "retrieved-memory search skipped" in gate_out
         ),
         "provenance": (
             rc_prov == 0
@@ -1232,7 +1232,7 @@ with db() as conn:
             and bool(trace.get("rerank_gate_reason"))
         ),
         "candidate_meta": (
-            assistant_candidate.get("lane") == "durable_evidence"
+            assistant_candidate.get("context_section") == "retrieved_memory"
             and assistant_candidate.get("text_hash")
             and isinstance(assistant_candidate.get("penalties"), list)
         ),
@@ -1312,7 +1312,9 @@ def tc_18_codex_hook_io(env: dict, home: str, case: CaseResult) -> None:
     ups_ctx = ups_json.get("hookSpecificOutput", {}).get("additionalContext", "")
     rows = db_query(
         home,
-        "SELECT kind, text_clean FROM events WHERE kind='llm_response' ORDER BY created_at DESC LIMIT 1",
+        "SELECT kind, text_clean FROM events "
+        "WHERE kind='llm_response' AND source='codex' "
+        "ORDER BY created_at DESC, id DESC LIMIT 1",
     )
     case.metrics = {
         "session_json": bool(session_ctx),
@@ -1448,7 +1450,7 @@ CASES: list[tuple[str, str, callable]] = [
     ("TC-13", "Source status + noise + profile", tc_13_source_noise_profile),
     ("TC-14", "Retrieve memory_chunks fallback", tc_14_retrieve_memory_fallback),
     ("TC-15", "First-turn working overlay", tc_15_first_turn_working_overlay),
-    ("TC-16", "Memory lane policy", tc_16_memory_lane_policy),
+    ("TC-16", "RAG context section policy", tc_16_context_section_policy),
     ("TC-17", "Observability dedup status", tc_17_observability_dedup_status),
     ("TC-18", "Codex hook JSON I/O", tc_18_codex_hook_io),
     ("TC-19", "Legacy DB 자동 migration", tc_19_legacy_db_migration),

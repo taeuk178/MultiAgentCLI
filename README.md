@@ -59,7 +59,7 @@ export IMPRINT_CLAUDE_MODEL=haiku
 | 영역 | 설명 |
 |---|---|
 | Memory | prompt, assistant response, `/memory remember`, Slack/Notion fetch 결과를 redaction 후 `memory_chunks` 에 저장합니다. |
-| Prefill | 매 prompt 전에 현재 turn clues, 최근 session evidence, durable/external evidence 를 `[Project memory context]` 로 자동 prepend 합니다. |
+| Prefill | 매 prompt 전에 query context, session memory, retrieved memory, external source context 를 `[Project memory context]` 로 자동 prepend 합니다. |
 | `/memory` | 저장된 memory 를 검색, 확인, 주입, pin, 삭제, refresh 합니다. |
 | `/retrieve` | 문서 RAG(`chunks_v2`/`summaries`)를 우선 검색하고, 결과가 없으면 `memory_chunks` 를 read-only fallback 으로 조회합니다. |
 | Routing | `<project>/.imprint/UserPromptSubmit.md` 의 키워드 룰을 보고 routing advisory 를 prepend 합니다. |
@@ -75,7 +75,7 @@ export IMPRINT_CLAUDE_MODEL=haiku
        현재 질문 working mini-chunk 저장
        routing rule 평가
        need-retrieval gate
-       lane별 memory prefill
+       context section별 memory prefill
        lazy-fetch background spawn
   -> host 모델 응답
   -> Stop hook
@@ -120,17 +120,17 @@ fetch 실패, URL cap 초과, stale 상태는 `source_status` marker 로 남고 
 
 운영 상태는 `/memory status` 로 확인합니다. DB 접근, 최근 log/profile stage, WARN/ERROR 수,
 working TTL/max 설정을 요약합니다. retrieval 근거를 디버깅할 때는 `/retrieve --json`
-출력에서 lane, provenance, fallback/rerank trace 를 확인합니다. latency/payload 추이는
+출력에서 context section, provenance, fallback/rerank trace 를 확인합니다. latency/payload 추이는
 `IMPRINT_PROFILE=1` 로 수집한 뒤 `/memory profile` 로 요약합니다.
 
-## Memory lane
+## RAG context sections
 
-자동 prefill 은 raw 질문을 근거처럼 취급하지 않도록 lane 을 나눠 출력합니다.
+자동 prefill 은 raw 질문을 retrieved context 처럼 취급하지 않도록 context section 을 나눠 출력합니다.
 
-- `Current turn clues`: 현재 질문과 deterministic search surface
-- `Recent session evidence`: 최근 session-visible working memory
-- `Durable evidence`: decision/fix/todo/code_context/note 등 대화에서 추출된 기억
-- `External fetched context`: Slack/Notion/spec/message/thread 근거
+- `Query context`: 현재 질문과 deterministic search surface
+- `Session memory`: 최근 session-visible working memory
+- `Retrieved memory`: decision/fix/todo/code_context/note 등 저장된 long-term memory
+- `External source context`: Slack/Notion/spec/message/thread 같은 grounded source context
 
 working memory 는 기본적으로 24시간 TTL 과 session 당 최신 20개 제한을 가집니다.
 
