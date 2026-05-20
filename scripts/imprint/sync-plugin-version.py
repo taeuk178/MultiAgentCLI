@@ -10,7 +10,7 @@ The version string is shared by:
 - .claude-plugin/plugin.json
 - .claude-plugin/marketplace.json
 - .codex-plugin/plugin.json
-- .agents/plugins/marketplace.json source.ref
+- .agents/plugins/marketplace.json git-subdir source.ref
 """
 from __future__ import annotations
 
@@ -68,8 +68,9 @@ def main(argv: list[str]) -> int:
             if plugin.get("name") != "imprint":
                 continue
             source = plugin.setdefault("source", {})
-            source["source"] = "url"
+            source["source"] = "git-subdir"
             source.setdefault("url", DEFAULT_REPO)
+            source["path"] = "./.codex-plugin"
             source["ref"] = ref
 
     update_json(ROOT / ".agents" / "plugins" / "marketplace.json", update_codex_marketplace)

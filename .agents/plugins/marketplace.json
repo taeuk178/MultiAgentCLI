@@ -7,9 +7,10 @@
     {
       "name": "imprint",
       "source": {
-        "source": "url",
+        "source": "git-subdir",
         "url": "https://github.com/taeuk178/imprint.git",
-        "ref": "0.1.0"
+        "ref": "0.1.0",
+        "path": "./.codex-plugin"
       },
       "policy": {
         "installation": "AVAILABLE",
