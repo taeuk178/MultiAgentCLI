@@ -1,0 +1,21 @@
+{
+  "name": "imprint",
+  "interface": {
+    "displayName": "Imprint"
+  },
+  "plugins": [
+    {
+      "name": "imprint",
+      "source": {
+        "source": "url",
+        "url": "https://github.com/taeuk178/imprint.git",
+        "ref": "0.1.0"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

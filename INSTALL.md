@@ -19,7 +19,46 @@
 
 ## 설치 방법
 
-### 1. 로컬 마켓플레이스로 등록
+### 1. GitHub release 기반 설치
+
+Claude Code와 Codex 모두 같은 Git tag 버전을 기준으로 설치할 수 있습니다.
+
+Release 전에는 repo root에서 버전을 동기화합니다.
+
+```bash
+python3 scripts/imprint/sync-plugin-version.py 0.1.0
+git add VERSION .claude-plugin .codex-plugin .agents/plugins/marketplace.json
+git commit -m "plugin 배포 버전 0.1.0 동기화"
+git tag 0.1.0
+git push origin main 0.1.0
+gh release create 0.1.0 --title "imprint 0.1.0" --notes "Claude Code/Codex memory plugin release"
+```
+
+Claude Code에서는 `.claude-plugin/marketplace.json`을 읽습니다.
+
+```text
+/plugin marketplace add taeuk178/imprint
+/plugin install imprint@imprint
+```
+
+Codex에서는 `.agents/plugins/marketplace.json`만 sparse checkout으로 marketplace에 추가합니다.
+
+```bash
+codex plugin marketplace add taeuk178/imprint --ref 0.1.0 --sparse .agents/plugins
+codex plugin marketplace upgrade
+```
+
+Codex에서 hook을 쓰려면 `~/.codex/config.toml`에 plugin hook feature를 켜야 합니다.
+
+```toml
+[features]
+plugin_hooks = true
+
+[plugins."imprint@imprint"]
+enabled = true
+```
+
+### 2. 로컬 마켓플레이스로 등록
 
 Coding agent 세션 안에서 이 repo의 절대 경로를 사용합니다.
 
@@ -47,7 +86,7 @@ bash <ABSOLUTE_PATH_TO_THIS_REPO>/scripts/imprint/install-codex.sh
 
 설정 후 Codex App을 완전히 재시작하거나 새 thread를 열면 `Imprint: Memory` 스킬이 목록에 표시됩니다.
 
-### 2. 직접 심볼릭 링크 (개발 모드)
+### 3. 직접 심볼릭 링크 (개발 모드)
 
 ```bash
 mkdir -p ~/.claude/plugins/cache/local
