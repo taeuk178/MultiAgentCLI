@@ -27,7 +27,7 @@ Release 전에는 repo root에서 버전을 동기화하고, main/tag/GitHub Rel
 
 ```bash
 python3 scripts/imprint/sync-plugin-version.py 0.1.0
-git add VERSION .claude-plugin .codex-plugin .agents/plugins/marketplace.json
+git add VERSION plugin.json .claude-plugin .codex-plugin .agents/plugins/marketplace.json
 git commit -m "plugin 배포 버전 0.1.0 동기화"
 git push origin main
 git tag 0.1.0
@@ -49,7 +49,7 @@ Claude Code에서는 `.claude-plugin/marketplace.json`을 읽습니다.
 /plugin install imprint@imprint
 ```
 
-Codex에서는 `.agents/plugins/marketplace.json`만 sparse checkout으로 marketplace에 추가합니다.
+Codex에서는 `.agents/plugins/marketplace.json`을 sparse checkout으로 marketplace에 추가하고, plugin 본문은 repo root의 `plugin.json`에서 읽습니다.
 
 ```bash
 codex plugin marketplace add taeuk178/imprint --ref 0.1.0 --sparse .agents/plugins
