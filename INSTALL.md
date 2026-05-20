@@ -23,15 +23,23 @@
 
 Claude Code와 Codex 모두 같은 Git tag 버전을 기준으로 설치할 수 있습니다.
 
-Release 전에는 repo root에서 버전을 동기화합니다.
+Release 전에는 repo root에서 버전을 동기화하고, main/tag/GitHub Release를 같은 버전으로 맞춥니다.
 
 ```bash
 python3 scripts/imprint/sync-plugin-version.py 0.1.0
 git add VERSION .claude-plugin .codex-plugin .agents/plugins/marketplace.json
 git commit -m "plugin 배포 버전 0.1.0 동기화"
+git push origin main
 git tag 0.1.0
-git push origin main 0.1.0
+git push origin 0.1.0
 gh release create 0.1.0 --title "imprint 0.1.0" --notes "Claude Code/Codex memory plugin release"
+```
+
+이미 tag나 release가 있는지 확인하려면 아래 명령을 먼저 실행합니다.
+
+```bash
+git tag --list 0.1.0
+gh release view 0.1.0
 ```
 
 Claude Code에서는 `.claude-plugin/marketplace.json`을 읽습니다.
