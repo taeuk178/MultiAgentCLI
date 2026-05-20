@@ -37,6 +37,16 @@ Codex에서 hook을 쓰려면 `~/.codex/config.toml`에 plugin hook feature를 �
 plugin_hooks = true
 ```
 
+Codex App에서 `Imprint: Memory` 스킬까지 바로 쓰려면 설치 스크립트를 실행합니다.
+
+```bash
+bash <ABSOLUTE_PATH_TO_THIS_REPO>/scripts/imprint/install-codex.sh
+```
+
+이 스크립트는 `~/.codex/config.toml`에 `plugin_hooks`, `imprint@imprint`, local marketplace 설정을 추가하고, `~/.codex/skills/memory`, `~/.agents/plugins/imprint`, `~/.local/bin/imprint` 연결을 생성합니다.
+
+설정 후 Codex App을 완전히 재시작하거나 새 thread를 열면 `Imprint: Memory` 스킬이 목록에 표시됩니다.
+
 ### 2. 직접 심볼릭 링크 (개발 모드)
 
 ```bash
