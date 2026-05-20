@@ -56,6 +56,25 @@ codex plugin marketplace add taeuk178/imprint --ref 0.1.0
 codex plugin marketplace upgrade
 ```
 
+이미 설치된 plugin을 `0.1.0` 기준으로 제거 후 다시 추가하려면 아래 순서로 실행합니다.
+
+```bash
+codex plugin marketplace remove imprint
+codex plugin marketplace add taeuk178/imprint --ref 0.1.0
+codex plugin marketplace upgrade imprint
+```
+
+Codex App에서 실제 plugin install까지 다시 필요하면, 현재 CLI에는 `plugin install` 명령이 없으므로 App UI에서 `imprint@imprint`를 설치하거나 app-server API로 설치합니다.
+
+Claude Code에서 제거 후 다시 설치하려면 Claude Code 세션 안에서 아래 명령을 실행합니다.
+
+```text
+/plugin uninstall imprint@imprint
+/plugin marketplace remove imprint
+/plugin marketplace add taeuk178/imprint
+/plugin install imprint@imprint
+```
+
 Codex에서 hook을 쓰려면 `~/.codex/config.toml`에 plugin hook feature를 켜야 합니다.
 
 ```toml
