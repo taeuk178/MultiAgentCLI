@@ -49,10 +49,10 @@ Claude Code에서는 `.claude-plugin/marketplace.json`을 읽습니다.
 /plugin install imprint@imprint
 ```
 
-Codex에서는 `.agents/plugins/marketplace.json`을 sparse checkout으로 marketplace에 추가하고, plugin 본문은 repo root의 `plugin.json`에서 읽습니다.
+Codex에서는 GitHub release tag를 marketplace로 추가합니다. plugin 본문은 repo root의 `plugin.json`에서 읽으므로 sparse checkout을 사용하지 않습니다.
 
 ```bash
-codex plugin marketplace add taeuk178/imprint --ref 0.1.0 --sparse .agents/plugins
+codex plugin marketplace add taeuk178/imprint --ref 0.1.0
 codex plugin marketplace upgrade
 ```
 
