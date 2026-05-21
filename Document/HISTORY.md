@@ -14,6 +14,12 @@
 
 기록 순서는 **최신이 위**. 항목당 한 단락 안에 변경/사유/대안 폐기 근거를 묶는다.
 
+## 2026-05-22 — 0.1.1 release metadata 동기화
+
+**무엇:** bridge/search-v2 연동과 vector setup dispatcher 가 `main`에 병합된 뒤 plugin release metadata 를 `0.1.1` 로 올렸다. `VERSION`, root/Codex/Claude plugin manifest, Claude marketplace, Codex marketplace ref 를 같은 버전으로 맞추고 설치 문서의 release 예시도 `0.1.1` 기준으로 갱신했다.
+
+**왜:** `0.1.1` 은 첫 공개 설치 기준인 `0.1.0` 이후 persistent memory 를 `chunks_v2` 검색 후보로 연결하고, optional vector 의존성 설치/모델 warmup/backfill 을 setup skill 로 제공하는 첫 patch release 다. manifest 와 marketplace ref 가 엇갈리면 Claude Code/Codex 설치 경로별로 서로 다른 코드를 받게 되므로 release tag 생성 전 metadata 를 한 번에 동기화한다.
+
 ## 2026-05-22 — vector setup skill/dispatcher 추가 및 로컬 벡터 환경 검증
 
 **무엇:** `imprint setup vector` dispatcher 와 `setup` skill 을 추가했다. `--status` 는 `sqlite-vec`/`sentence-transformers`/`transformers` import 가능 여부를 가볍게 확인하고, `--install --warmup --backfill` 은 선택 의존성 설치, BGE-M3 warmup, 현재 프로젝트 memory embedding backfill 을 한 번에 수행한다. Codex 설치 스크립트는 `memory` 하나만 링크하지 않고 `skills/` 아래 모든 skill 을 `~/.codex/skills` 로 연결하도록 바꿨고, `imprint` wrapper 에 `setup` subcommand 를 추가했다. 로컬 사용자 환경에서는 `requirements-optional.txt` 설치, BGE-M3 4096-byte embedding 생성, 임시 DB vector retrieve(`embedding_used=true`) 까지 확인했다.

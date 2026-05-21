@@ -9,7 +9,7 @@
     {
       "name": "imprint",
       "description": "Per-project context memory for Claude Code: persistent memory chunks, prefill context injection, lazy fetch from Slack/Notion. OAuth subscription based.",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "source": "./",
       "category": "productivity",
       "tags": [
@@ -20,5 +20,5 @@
       ]
     }
   ],
-  "version": "0.1.0"
+  "version": "0.1.1"
 }

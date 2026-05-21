@@ -1,6 +1,6 @@
 {
   "name": "imprint",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Per-project context memory for Codex/GPT and Claude Code. Local SQLite + FTS5, prefill injection, lazy fetch from Slack/Notion.",
   "author": {
     "name": "Imprint contributors"
