@@ -195,11 +195,13 @@ IMPRINT_HOME=/tmp/imprint-test python3 scripts/imprint/tests/run_tests.py
 
 기본 설치만으로도 FTS5(키워드) 검색으로 동작합니다. **의미(유사도) 기반 검색이 필요할 때만** 아래 의존성을 추가하세요. plugin 에 포함되지 않으므로 **사용자별로 각자 설치**해야 하며, 미설치 시 키워드 검색으로 자동 폴백합니다.
 
+설치 입력 파일은 repo root 의 `requirements-optional.txt` 를 유지합니다. 이 파일은 문서가 아니라 `pip install -r requirements-optional.txt` 로 바로 사용할 수 있는 선택 의존성 목록입니다. 설치 이유와 적용 범위 설명만 이 문서에서 관리합니다.
+
 현재 적용 범위에 주의하세요.
 
-- `sentence-transformers`: `chunks_v2` / `summaries` 의 embedding 생성과 `/retrieve` vector 후보 검색에 사용합니다.
-- `transformers`: contradiction NLI 판정에 사용합니다.
-- `sqlite-vec`: 향후 ANN/extension 경로 후보입니다. 현재 `/retrieve` 는 embedding BLOB 을 Python cosine 으로 순회하는 fallback 구현을 사용합니다.
+- `sentence-transformers`: `BAAI/bge-m3` embedding 생성과 `BAAI/bge-reranker-v2-m3` cross-encoder rerank 에 사용합니다. 없으면 `/retrieve` 는 vector/rerank 없이 FTS5 중심으로 동작합니다.
+- `transformers`: contradiction NLI 판정에 사용합니다. 없으면 Claude/LLM judge 또는 rule fallback 으로 내려갑니다.
+- `sqlite-vec`: SQLite vector extension 로드 후보입니다. 없으면 현재 `/retrieve` 는 embedding BLOB 을 Python cosine 으로 순회하는 fallback 구현을 사용합니다.
 
 아직 `memory_chunks`(자동 hook memory, `/memory remember`)에는 embedding 컬럼과 backfill 이 없습니다. 따라서 선택 ML 을 설치해도 자동 저장 memory 는 bridge/backfill 구현 전까지 FTS5/LIKE 검색 대상입니다. 큰 틀·개념 질문 품질을 올리려면 먼저 `memory_chunks → chunks_v2` bridge 또는 `memory_chunks` embedding + 백필 구현이 필요합니다.
 
