@@ -109,9 +109,9 @@ Codex App에서 `Imprint: Memory` 스킬까지 바로 쓰려면 설치 스크립
 bash <ABSOLUTE_PATH_TO_THIS_REPO>/scripts/imprint/install-codex.sh
 ```
 
-이 스크립트는 `~/.codex/config.toml`에 `plugin_hooks`, `imprint@imprint`, local marketplace 설정을 추가하고, `~/.codex/skills/memory`, `~/.agents/plugins/imprint`, `~/.local/bin/imprint` 연결을 생성합니다.
+이 스크립트는 `~/.codex/config.toml`에 `plugin_hooks`, `imprint@imprint`, local marketplace 설정을 추가하고, `~/.codex/skills/` 아래 imprint skills, `~/.agents/plugins/imprint`, `~/.local/bin/imprint` 연결을 생성합니다.
 
-설정 후 Codex App을 완전히 재시작하거나 새 thread를 열면 `Imprint: Memory` 스킬이 목록에 표시됩니다.
+설정 후 Codex App을 완전히 재시작하거나 새 thread를 열면 `Imprint: Memory`, `Imprint: Setup` 같은 스킬이 목록에 표시됩니다.
 
 ### 3. 직접 심볼릭 링크 (개발 모드)
 
@@ -194,6 +194,18 @@ IMPRINT_HOME=/tmp/imprint-test python3 scripts/imprint/tests/run_tests.py
 ## 선택: ML 의존성
 
 기본 설치만으로도 FTS5(키워드) 검색으로 동작합니다. **의미(유사도) 기반 검색이 필요할 때만** 아래 의존성을 추가하세요. plugin 에 포함되지 않으므로 **사용자별로 각자 설치**해야 하며, 미설치 시 키워드 검색으로 자동 폴백합니다.
+
+권장 경로는 setup dispatcher 입니다. 의존성 설치, BGE-M3 warmup, 현재 프로젝트 memory embedding backfill 을 한 번에 처리합니다.
+
+```bash
+imprint setup vector --install --warmup --backfill
+```
+
+상태 확인만 하려면:
+
+```bash
+imprint setup vector --status
+```
 
 설치 입력 파일은 repo root 의 `requirements-optional.txt` 를 유지합니다. 이 파일은 문서가 아니라 `pip install -r requirements-optional.txt` 로 바로 사용할 수 있는 선택 의존성 목록입니다. 설치 이유와 적용 범위 설명만 이 문서에서 관리합니다.
 

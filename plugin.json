@@ -13,7 +13,10 @@
     "memory",
     "context",
     "slack",
-    "notion"
+    "notion",
+    "setup",
+    "vector",
+    "rag"
   ],
   "skills": "./skills/",
   "hooks": "./hooks/hooks.json",
@@ -29,7 +32,8 @@
     "defaultPrompt": [
       "Show recent project memory",
       "Search memory for this feature",
-      "Explain retrieved context"
+      "Explain retrieved context",
+      "Set up vector search"
     ],
     "brandColor": "#2563EB"
   }

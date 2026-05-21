@@ -48,16 +48,13 @@ TOTAL  20 PASS / 0 FAIL
 |---|---|---|
 | 세션 종료 후 대화 맥락 저장 | **부분 충족**. `events` 에 raw I/O archive, `memory_chunks` 에 working/extracted/manual chunk 를 저장합니다. 다만 실제 재사용은 추출된 chunk 중심이라 response extract 실패나 누락 시 recall 이 약합니다. | Stop extract 품질 eval, raw event 를 장기 요약/백필 대상으로 삼는 경로 검토. |
 | Codex / Claude Code 간 동일 문맥 공유 | **대체로 방향 일치**. 기본 DB 는 `~/.imprint/app.sqlite` 로 통합됐고 legacy Claude DB migration 도 있습니다. 단 양쪽 host 에서 hook 이 실제 동일하게 설치·실행되는지 통합 검증이 필요합니다. | Codex/Claude 각각에서 같은 project_id 로 user/assistant/memory chunk 가 쌓이는 smoke test 추가. |
-| 큰 틀·개념 질문으로 맥락 상기 | **부분 개선**. persistent memory 는 `chunks_v2` 후보로 bridge 됐지만 기본 상태는 embedding 없이 FTS 중심입니다. | 선택 ML 설치 후 `bridge-memory --all --embed` 로 벡터 후보를 채우고 개념 질의 eval 을 실행. |
+| 큰 틀·개념 질문으로 맥락 상기 | **부분 개선**. persistent memory 는 `chunks_v2` 후보가 되고, setup 경로로 embedding/backfill 도 실행할 수 있습니다. 아직 실제 프로젝트 eval 은 부족합니다. | 개념 질의 eval 세트를 만들어 키워드/벡터 결과를 비교. |
 | 다른 개발자에게 공유 가능한 기록 | **장기 미구현**. 로컬 SQLite 는 개인 세션 연속성에는 맞지만, 팀 공유에는 사람이 읽고 리뷰 가능한 Markdown/ADR export 가 필요합니다. | 로컬 RAG 안정화 후 `decision`/`summary` export, git commit/PR 참조 흐름 설계. |
 
 ## 다음 우선순위
 
-1. **임베딩(벡터) 검색 활성화 및 개념 질의 검증** *(2026-05-22, 최우선)*
-   `memory_chunks → chunks_v2` bridge 는 1차 완료됐습니다. 다음은 선택 ML 환경에서 bridge row embedding 을 채우고, "로그인 feature 의 공유하기는 어떻게 구현됐었지" 류 개념·자연어 질문이 키워드 폴백 대비 실제로 더 나은 근거를 끌어오는지 비교하는 것입니다.
-   - 실행 기준: `sentence-transformers` + `BAAI/bge-m3` 설치 후 `python3 -m retrieval.cli bridge-memory <project_id> --all --embed`.
-   - 회귀 기준: `/retrieve --json` candidate 에 bridged `chunks_v2` row 가 나타나고 `embedding_used=true` 일 때 vector rank 가 채워짐.
-   - 운영 기준: `IMPRINT_MEMORY_BRIDGE_EMBEDDING=1` 를 기본으로 켤지 여부는 latency/profile 측정 후 결정.
+1. **개념 질의 eval 세트 구성**
+   "로그인 feature 의 공유하기는 어떻게 구현됐었지" 류 자연어 질문 20~30개를 고정하고 `/retrieve_json` trace 를 비교합니다. 키워드와 벡터가 각각 어떤 후보를 회수하는지, `embedding_used`, `vector_rank`, top1 score, fallback 이유를 같이 기록합니다.
 
 2. **bridge 후속 pipeline 판단**
    bridge row 를 summary/entity/contradiction queue 에 자동 연결할지 결정합니다. 현재는 검색 후보 연결까지만 하고, queue 통합은 profile 과 eval 결과를 본 뒤 진행합니다.
@@ -68,8 +65,8 @@ TOTAL  20 PASS / 0 FAIL
 4. **실제 프로젝트 사용성 테스트**
    저장한 기억이 다음 turn, `/memory`, `/retrieve --json` 에서 실제 답변 근거로 충분히 보이는지 확인합니다.
 
-5. **작은 eval 세트 구성**
-   자주 쓸 질문 20~30개를 고정하고 `/retrieve_json` trace 를 비교합니다. 예: UI 동작, 설정 동기화, Slack/Notion 실패, 짧은 backchannel, contradiction. 키워드 vs 벡터(하이브리드) 결과 차이도 함께 기록합니다.
+5. **setup UX 보강 여부 판단**
+   `imprint setup vector` 실사용 중 HF Hub 인증, 네트워크 실패, PEP 668 pip 실패, Claude Code skill 동기화에서 막히는 지점을 기록합니다. 필요하면 `HF_TOKEN` 안내와 실패 복구 메시지를 보강합니다.
 
 6. **운영 정책 캘리브레이션**
    `IMPRINT_PROFILE=1` 로 1~2주 데이터를 모아 gate, MEMFB threshold, rerank 조건, working TTL/cap, stale 기준을 조정합니다.
@@ -131,12 +128,13 @@ GROUP BY 1;
 - host CLI background 모델 호출은 10초 이상 걸릴 수 있으므로 동기 경로에 넣지 않습니다.
 - 선택 ML 의존성 미설치 상태에서도 FTS-only / rule fallback 이 정상이어야 합니다.
 - 선택 ML 의존성을 설치해도 bridge row embedding 을 채우기 전에는 자동 메모리가 vector 검색 대상이 아니라는 점을 사용자 문서에 계속 명시합니다.
+- `IMPRINT_MEMORY_BRIDGE_EMBEDDING=1` 상시 활성화가 hook latency 를 얼마나 늘리는지 profile 로 확인하기 전에는 기본값으로 켜지 않습니다.
 - 운영 피드백은 바로 기능 추가로 옮기기보다 `/retrieve_json` trace 와 profile 데이터로 먼저 확인합니다.
 
 ## 다음 세션 시작 순서
 
 1. `git status -sb` 로 작업 상태 확인.
 2. `python3 scripts/imprint/tests/run_tests.py` 로 기준선 확인.
-3. 선택 ML 설치 여부를 확인하고, 설치된 환경이면 `bridge-memory <project_id> --all --embed` 로 기존 memory embedding 을 채움.
+3. `imprint setup vector --status` 로 벡터 런타임 상태 확인.
 4. 실제 프로젝트에서 개념 질의 1~2개로 `/retrieve --json` trace 와 `embedding_used` 확인.
 5. `/memory status --json`, `/memory profile --json`, `plugin.log` 로 실패/지연 신호 확인.

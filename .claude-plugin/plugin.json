@@ -12,7 +12,10 @@
     "memory",
     "context",
     "slack",
-    "notion"
+    "notion",
+    "setup",
+    "vector",
+    "rag"
   ],
   "skills": "./skills/"
 }

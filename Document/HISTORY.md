@@ -14,6 +14,14 @@
 
 기록 순서는 **최신이 위**. 항목당 한 단락 안에 변경/사유/대안 폐기 근거를 묶는다.
 
+## 2026-05-22 — vector setup skill/dispatcher 추가 및 로컬 벡터 환경 검증
+
+**무엇:** `imprint setup vector` dispatcher 와 `setup` skill 을 추가했다. `--status` 는 `sqlite-vec`/`sentence-transformers`/`transformers` import 가능 여부를 가볍게 확인하고, `--install --warmup --backfill` 은 선택 의존성 설치, BGE-M3 warmup, 현재 프로젝트 memory embedding backfill 을 한 번에 수행한다. Codex 설치 스크립트는 `memory` 하나만 링크하지 않고 `skills/` 아래 모든 skill 을 `~/.codex/skills` 로 연결하도록 바꿨고, `imprint` wrapper 에 `setup` subcommand 를 추가했다. 로컬 사용자 환경에서는 `requirements-optional.txt` 설치, BGE-M3 4096-byte embedding 생성, 임시 DB vector retrieve(`embedding_used=true`) 까지 확인했다.
+
+**왜:** plugin 설치만으로 RAG 경험이 완성되는 서드파티와 달리, imprint 는 API key 없는 로컬 우선 설계라 semantic vector 를 쓰려면 Python optional deps, 모델 cache, 기존 memory backfill 이 필요하다. 이 절차를 문서로만 두면 사용자가 `<project_id>`/pip/환경 변수 순서를 직접 기억해야 한다. 별도 원격 embedding API 를 기본값으로 넣는 대안은 과금·키 관리·네트워크 의존이 생기고, plugin 에 torch/model 을 vendoring 하는 대안은 크기와 OS 호환성 부담이 크다. 따라서 현 단계에서는 얇은 setup dispatcher 로 설치 UX 를 모으는 것이 가장 단순하다.
+
+**남은 점:** `IMPRINT_MEMORY_BRIDGE_EMBEDDING=1` 을 기본값으로 켤지는 아직 결정하지 않았다. 모델 cold-load 가 hook latency 를 늘릴 수 있으므로, setup 은 backfill 과 warmup 을 지원하되 자동 embedding 상시 활성화는 사용자 opt-in 으로 둔다. HF Hub 인증 토큰(`HF_TOKEN`) 안내, 실패 재시도, Claude Code 설치 동기화 UX 는 실사용 피드백 뒤 보강한다.
+
 ## 2026-05-22 — `memory_chunks → chunks_v2` bridge 1차 구현
 
 **무엇:** persistent `memory_chunks` 를 synthetic `documents`/`chunks_v2` row 로 승격하는 bridge 를 추가했다. Stop extract, external lazy-fetch, `/memory remember` 로 저장되는 비-working memory 는 `chunks_v2` 후보로도 보이며, 기존 row 는 `python3 -m retrieval.cli bridge-memory <project_id> --all [--embed] [limit]` 로 backfill 할 수 있다. `source_status` marker 와 working raw turn 은 context section 분리 원칙에 따라 bridge 대상에서 제외한다. `chunks_v2.metadata_json` 을 추가해 원본 `memory_chunks.id`, `source_event_id`, `chunk_type`, `source_type`, `evidence_level`, `text_hash` 를 보존하고 retrieve JSON 후보에도 provenance 를 노출한다.

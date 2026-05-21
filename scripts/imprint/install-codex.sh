@@ -28,7 +28,10 @@ link_force() {
 mkdir -p "$MARKETPLACE_ROOT/plugins" "$CODEX_HOME/skills" "$LOCAL_BIN"
 
 link_force "$IMPRINT_ROOT" "$MARKETPLACE_ROOT/plugins/imprint"
-link_force "$IMPRINT_ROOT/skills/memory" "$CODEX_HOME/skills/memory"
+for skill in "$IMPRINT_ROOT"/skills/*; do
+  [[ -d "$skill" && -f "$skill/SKILL.md" ]] || continue
+  link_force "$skill" "$CODEX_HOME/skills/$(basename "$skill")"
+done
 
 MARKETPLACE_FILE="$MARKETPLACE_ROOT/plugins/marketplace.json" python3 - <<'PY'
 import json
@@ -116,8 +119,12 @@ case "\${1:-}" in
     shift
     exec "\$IMPRINT_PLUGIN_ROOT/scripts/imprint/retrieve.sh" "\$@"
     ;;
+  setup)
+    shift
+    exec "\$IMPRINT_PLUGIN_ROOT/scripts/imprint/setup.sh" "\$@"
+    ;;
   *)
-    echo "usage: imprint <memory|retrieve> [args]" >&2
+    echo "usage: imprint <memory|retrieve|setup> [args]" >&2
     exit 2
     ;;
 esac
@@ -125,4 +132,4 @@ SH
 chmod +x "$LOCAL_BIN/imprint"
 
 echo "Imprint Codex install complete."
-echo "Restart Codex App or open a new thread, then search for 'Imprint: Memory'."
+echo "Restart Codex App or open a new thread, then search for 'Imprint: Memory' or 'Imprint: Setup'."

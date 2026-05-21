@@ -201,7 +201,7 @@ RAG 기본 루프가 안정된 뒤 진입합니다.
 
 필요성이 실사용에서 확인될 때만 진행합니다.
 
-- 벡터 검색 기본 활성화 경험: `sentence-transformers`/`bge-m3` 설치 가이드와, 미설치 시 "지금 키워드 폴백 중" 임을 사용자에게 더 분명히 알리는 신호.
+- 벡터 검색 setup 경험: `imprint setup vector` 의 설치/모델 warmup/backfill 실패 복구, HF Hub 인증 안내, 현재 "키워드 폴백 중" 신호를 더 분명히 알리는 UX.
 - 청크 규모 증가 대비 ANN 인덱스(HNSW/IVF, `sqlite-vec`) 도입 — 현재 brute-force 코사인의 한계가 실측될 때.
 - unified storage 검토 — bridge 운영이 안정된 뒤 `memory_chunks` 와 `chunks_v2` 를 계속 분리할지 판단합니다.
 - entity merge/split UI.
