@@ -11,6 +11,7 @@ usage:
   python3 -m retrieval.cli classify <query>
   python3 -m retrieval.cli summarize <project_id> [document_id]
   python3 -m retrieval.cli contradiction-scan <project_id>
+  python3 -m retrieval.cli bridge-memory <project_id> <memory_chunk_id|--all> [--embed] [limit]
 """
 from __future__ import annotations
 
@@ -20,6 +21,7 @@ import sys
 from . import contradiction as cd_mod
 from . import dispatch as dispatch_mod
 from . import ingest_queue
+from . import memory_bridge
 from . import summary as summary_mod
 from .assembly import format_for_claude, format_routed_for_claude
 from .ingest import ingest_document
@@ -210,6 +212,52 @@ def cmd_contradiction_scan(argv: list[str]) -> int:
     return 0
 
 
+def cmd_bridge_memory(argv: list[str]) -> int:
+    if len(argv) < 2:
+        print("usage: bridge-memory <project_id> <memory_chunk_id|--all> [--embed] [limit]", file=sys.stderr)
+        return 2
+    project_id = argv[0]
+    target = argv[1]
+    generate_embedding = "--embed" in argv[2:]
+    limit = None
+    for arg in argv[2:]:
+        if arg == "--embed":
+            continue
+        try:
+            limit = int(arg)
+        except ValueError:
+            print(f"invalid limit: {arg}", file=sys.stderr)
+            return 2
+    if target == "--all":
+        stats = memory_bridge.bridge_project_memory(
+            project_id,
+            limit=limit,
+            generate_embedding=generate_embedding,
+        )
+        print(json.dumps(stats.__dict__, ensure_ascii=False))
+        return 0
+
+    from ._common import db_connect
+
+    conn = db_connect()
+    try:
+        ok = memory_bridge.bridge_memory_chunk(
+            conn,
+            target,
+            generate_embedding=generate_embedding,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    print(json.dumps({
+        "examined": 1,
+        "bridged": 1 if ok else 0,
+        "skipped": 0 if ok else 1,
+        "embedding_used": bool(generate_embedding and ok),
+    }, ensure_ascii=False))
+    return 0
+
+
 def cmd_extract_entities(argv: list[str]) -> int:
     """청크 → entity mention 추출 + alias 자동 등록 (review queue)."""
     if not argv:
@@ -335,6 +383,7 @@ COMMANDS = {
     "classify": cmd_classify,
     "summarize": cmd_summarize,
     "contradiction-scan": cmd_contradiction_scan,
+    "bridge-memory": cmd_bridge_memory,
     "extract-entities": cmd_extract_entities,
     "entities": cmd_entities,
 }

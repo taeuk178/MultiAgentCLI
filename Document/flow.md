@@ -9,7 +9,7 @@
 - 자동 hook 경로는 현재 turn 을 working mini-chunk 로 먼저 저장하고 gate 결과에 따라 `memory_chunks` 를 context section 별로 prefill 합니다.
 - `/retrieve` 는 사용자가 명시 호출했을 때만 `chunks_v2`/`summaries` retrieval 을 수행합니다.
 - `/retrieve` 는 현재 세션 working chunk 를 query context 로 soft union 하고, 문서 후보가 없거나 저신뢰이면 `memory_chunks` 를 read-only fallback 으로 조회합니다.
-- 현재 자동 저장 memory(`memory_chunks`)는 FTS/LIKE 기반입니다. embedding/vector 검색은 `chunks_v2`/`summaries` 에만 적용되며, bridge/backfill 구현 전까지 자동 memory 는 의미 검색 대상이 아닙니다.
+- persistent 자동 저장 memory 는 `memory_chunks → chunks_v2` bridge 로 검색 후보에 복제됩니다. 기본 bridge 는 embedding 을 만들지 않으므로 vector 검색은 `--embed` backfill 또는 `IMPRINT_MEMORY_BRIDGE_EMBEDDING=1` 이후에 참여합니다.
 
 ## 전체 플로우
 
@@ -41,12 +41,14 @@
      - background model 이 prompt 키워드/URL 분석
      - prompt URL 또는 sources.json 기반 Slack/Notion read-only fetch
      - section chunk 를 memory_chunks 에 직접 INSERT
-     - 현재는 ingest_queue/chunks_v2 로 자동 전달하지 않음
+     - persistent external chunk 는 bridge 로 chunks_v2 후보에도 복제
+     - source_status marker 는 bridge 대상에서 제외
 
   B. Stop response extract
      - background model 이 응답에서 persistent memory chunk 분류
      - decision/error/fix/command/test_result/summary/todo/code_context/note 를 memory_chunks 에 직접 INSERT
-     - 현재는 embedding/backfill 대상이 아니며 FTS/LIKE 로만 검색
+     - persistent extracted chunk 는 bridge 로 chunks_v2 후보에도 복제
+     - 기본 bridge 는 embedding 을 생성하지 않음
 
 다음 turn:
   새로 저장된 memory_chunks 가 다시 prefill 후보가 됩니다.
@@ -273,7 +275,7 @@ flowchart LR
 
 `chunk_retrieve` 는 `chunks_v2` 후보가 있어도 현재 세션 working mini-chunk 를 query context 로 soft union 합니다. `chunks_v2` 후보가 없거나 top1 score 가 낮거나 working-only/entity-mismatch 로 저신뢰이면 `memory_chunks` fallback 을 탑니다. fallback 은 `source_status` marker 와 working chunk 를 제외합니다.
 
-현재 vector 검색 범위는 `chunks_v2` 와 `summaries` 입니다. 자동 hook 과 `/memory remember` 가 직접 저장하는 `memory_chunks` 는 bridge/backfill 전까지 FTS5/LIKE fallback 으로만 조회됩니다. 따라서 `sentence-transformers` 를 설치해도 자동 저장 memory 의 의미 검색 품질은 바로 좋아지지 않습니다.
+현재 vector 검색 범위는 `chunks_v2` 와 `summaries` 입니다. persistent `memory_chunks` 는 bridge 로 `chunks_v2` 에 복제되지만, embedding BLOB 이 없는 bridge row 는 FTS5 후보로만 동작합니다. `sentence-transformers` 설치 후 `bridge-memory <project_id> --all --embed` 로 기존 bridge row 를 채우거나, 새 저장 시 `IMPRINT_MEMORY_BRIDGE_EMBEDDING=1` 을 켜야 자동 저장 memory 도 vector path 에 참여합니다.
 
 confirmed contradiction 에 연결된 chunk 는 BOOST 단계에서 강하게 감점합니다. candidate contradiction 은 약하게 감점하고, routed output 의 conflict 섹션은 기존처럼 유지합니다.
 

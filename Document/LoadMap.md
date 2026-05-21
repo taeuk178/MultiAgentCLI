@@ -6,7 +6,7 @@
 - 결정 사유와 폐기한 대안은 `HISTORY.md` 를 봅니다.
 - 설치와 사용자 명령은 `README.md`, 상세 hook/retrieval 플로우는 `flow.md` 를 봅니다.
 
-최종 업데이트: 2026-05-21.
+최종 업데이트: 2026-05-22.
 
 ## 방향
 
@@ -66,9 +66,9 @@ API key 없이 host 의 OAuth 구독을 그대로 사용합니다. 무거운 LLM
 
 `memory_chunks` 는 기본 사용자 RAG 기억입니다. working mini-chunk, Stop hook 추출, external lazy-fetch, `/memory remember` 가 여기에 저장합니다. 다음 turn prefill, `/memory search/list/show/inject`, `/retrieve` fallback 이 이 테이블을 읽습니다.
 
-`documents` / `chunks_v2` / `summaries` 는 retrieval v2 문서 RAG 계층입니다. 명시 ingestion 된 문서는 chunking, versioning, summary, contradiction, entity alias pipeline 을 탑니다.
+`documents` / `chunks_v2` / `summaries` 는 retrieval v2 문서 RAG 계층입니다. 명시 ingestion 된 문서는 chunking, versioning, summary, contradiction, entity alias pipeline 을 탑니다. 2026-05-22부터 persistent `memory_chunks` 는 synthetic document/chunk 로도 bridge 되어 `chunks_v2` 검색 후보에 들어갑니다.
 
-현재 중요한 비대칭이 있습니다. `memory_chunks` 는 자동 세션 기억의 주 저장소이지만 FTS/LIKE 검색만 제공하고, `chunks_v2`/`summaries` 만 embedding 컬럼을 가집니다. 따라서 자동 저장 memory 는 아직 의미 검색·summary/entity/contradiction 파이프라인과 직접 연결돼 있지 않습니다.
+남은 비대칭은 embedding 과 후속 pipeline 입니다. 자동 bridge 는 hook latency 를 피하기 위해 기본적으로 embedding 을 생성하지 않으며, working raw turn 과 `source_status` marker 는 bridge 대상에서 제외합니다. `bridge-memory --all --embed` 또는 `IMPRINT_MEMORY_BRIDGE_EMBEDDING=1` 로 embedding 을 채우면 `chunks_v2` vector path 에 들어갈 수 있습니다.
 
 ### Retrieval 계층
 
@@ -99,11 +99,11 @@ retrieval v2 ingestion 은 `ingest_queue` 를 통해 후속 작업을 순차 처
 - `contradiction_scan`: priority 5.
 - `ner_extract`: priority 9.
 
-자동 hook 의 `memory_chunks` 직접 INSERT 경로는 현재 queue 를 거치지 않습니다. WAL + busy_timeout 으로 일반 동시성은 흡수하고, 필요해질 때만 통합을 검토합니다.
+자동 hook 의 `memory_chunks` 직접 INSERT 경로는 bridge 까지만 수행하고, 현재 queue 를 거치지 않습니다. WAL + busy_timeout 으로 일반 동시성은 흡수하고, summary/entity/contradiction queue 통합은 필요해질 때만 검토합니다.
 
 ## 현재 기준선
 
-2026-05-16 기준 RAG 기본 기능과 1차 운영 관측성은 적용 완료입니다.
+2026-05-22 기준 RAG 기본 기능, 1차 운영 관측성, `memory_chunks → chunks_v2` bridge 는 적용 완료입니다.
 
 - redaction coverage.
 - hook memory loop smoke test.
@@ -114,19 +114,20 @@ retrieval v2 ingestion 은 `ingest_queue` 를 통해 후속 작업을 순차 처
 - external source 상태 가시화.
 - events noise soft flag.
 - `/retrieve` memory fallback + JSON trace.
+- persistent memory bridge/backfill.
 - text_hash 기반 dedup.
-- 테스트 기준선: `19 PASS / 0 FAIL`.
+- 테스트 기준선: `20 PASS / 0 FAIL`.
 
 완료된 결정과 이유는 `HISTORY.md` 에 남깁니다.
 
-## 알려진 핵심 갭 (2026-05-21 발견)
+## 알려진 핵심 갭 (2026-05-21 발견, 2026-05-22 1차 대응)
 
-자동 저장 메모리와 의미(벡터) 검색이 연결돼 있지 않습니다. 제품 핵심 목적의 직접 병목입니다.
+자동 저장 메모리와 의미(벡터) 검색이 연결돼 있지 않았습니다. 제품 핵심 목적의 직접 병목이었고, 2026-05-22 bridge 로 `chunks_v2` 후보 연결은 1차 대응했습니다.
 
-- `memory_chunks`(대화 자동 저장·`/memory remember`)에는 embedding 컬럼이 없고(`schema.sql`), `/retrieve` 의 memory_chunks fallback 도 FTS5 키워드만 사용합니다(`retrieve.py` `_memory_chunks_fallback_search`).
-- 따라서 `sentence-transformers` 설치 여부와 **무관하게** 자동 메모리에는 의미 검색이 제공된 적이 없습니다. 임베딩을 옵션으로 둔 설계가 이 경로에서는 효과가 없습니다 — 미설치 문제가 아니라 미구현 문제입니다.
-- 벡터 검색은 명시 ingestion 된 `chunks_v2` 에만 존재하며, 백필/reindex 경로가 없어 모델 설치 후에도 기존 데이터는 재 ingest 해야 채워집니다.
-- 대응: 아래 로드맵에서 `memory_chunks → chunks_v2` bridge(또는 `memory_chunks` 임베딩 컬럼 + 백필)를 **최우선으로 승격**합니다. "사용성 검증" 보다 앞섭니다 — 검증할 의미 검색이 아직 없기 때문입니다. 단기 실행 계획은 `HANDOFF.md` 다음 우선순위 1번을 봅니다.
+- `memory_chunks` 자체에는 embedding 컬럼이 없지만, persistent row 는 `documents.source_ref = memory_chunks:<id>` 형태의 synthetic document 와 `chunks_v2.metadata_json` provenance 로 복제됩니다.
+- 기본 bridge 는 embedding 을 만들지 않습니다. 선택 ML cold-load 가 hook 을 느리게 만들 수 있기 때문입니다.
+- 벡터 검색 검증은 `sentence-transformers` 설치 후 `python3 -m retrieval.cli bridge-memory <project_id> --all --embed` 로 기존 bridge row embedding 을 채운 뒤 진행합니다.
+- 아직 summary/entity/contradiction pipeline 자동 연결은 하지 않습니다. bridge 의 검색 품질과 운영 비용을 먼저 측정합니다.
 
 ## 목표별 현재 일치도
 
@@ -136,24 +137,24 @@ retrieval v2 ingestion 은 `ingest_queue` 를 통해 후속 작업을 순차 처
 |---|---|---|
 | 세션 종료 후 문맥 저장 | 부분 일치. raw event archive 와 memory chunk 저장은 있으나, 재상기는 추출 chunk 품질과 키워드 검색에 크게 의존합니다. | raw event → persistent memory/summary 로 승격하는 경로와 backfill 을 갖춥니다. |
 | Codex / Claude Code 간 동일 문맥 | 방향 일치. 기본 저장소는 `~/.imprint` 로 통합됐습니다. | 설치/manifest/hook 검증을 양 host 회귀 테스트로 고정합니다. |
-| 큰 틀·개념 질문으로 맥락 상기 | 핵심 미충족. 자동 memory 가 vector/search-v2 대상이 아닙니다. | `memory_chunks → chunks_v2` bridge 를 기본 경로로 만들고, 의미 검색 + feature/project summary 로 끌어올립니다. |
+| 큰 틀·개념 질문으로 맥락 상기 | 부분 개선. persistent 자동 memory 는 `chunks_v2` 후보가 됐지만, embedding/backfill 과 eval 이 아직 남았습니다. | `bridge-memory --all --embed` 기반 의미 검색 검증 후 feature/project summary 로 끌어올립니다. |
 | 다른 개발자도 참고하는 공유 기록 | 장기 미구현. 로컬 SQLite 는 개인 기억에 적합하지만 팀 지식 공유에는 부적합합니다. | decision/summary chunk 를 ADR/Markdown 으로 export 해 git/PR review 에 얹습니다. |
 
 ## 로드맵
 
 ### 1. 자동 메모리 의미 검색 기반 구축
 
-현재 최우선 단계입니다.
+1차 bridge 는 완료됐습니다. 남은 작업은 embedding 채움과 검증입니다.
 
-- `memory_chunks → chunks_v2` bridge 를 구현해 자동 hook, external lazy-fetch, `/memory remember` 로 저장된 memory 를 retrieval v2 후보로 복제합니다.
-- 기존 `memory_chunks` 를 bridge 대상으로 재처리하는 backfill/reindex 명령을 제공합니다.
+- 자동 hook, external lazy-fetch, `/memory remember` 로 저장된 persistent memory 는 retrieval v2 후보로 복제됩니다.
+- 기존 `memory_chunks` 는 `bridge-memory <project_id> --all [--embed] [limit]` 로 backfill/reindex 합니다.
 - bridge row 의 provenance 는 원본 `memory_chunks.id`, `source_event_id`, `chunk_type`, `source_type`, `evidence_level`, `text_hash` 를 보존합니다.
-- 신규/기존 memory 가 `/retrieve --json` 에서 `chunks_v2` 후보로 보이고, embedding 가용 시 vector path 에 들어가는지 테스트합니다.
+- 신규/기존 memory 가 `/retrieve --json` 에서 `chunks_v2` 후보로 보이는 것은 테스트로 고정했습니다. 다음은 embedding 가용 시 vector path 품질 검증입니다.
 - fallback 으로 남는 `memory_chunks` read-only search 는 migration 안정화 기간 동안 유지합니다.
 
 ### 2. RAG 사용성 검증과 운영 캘리브레이션
 
-자동 메모리가 의미 검색 경로에 연결된 뒤 진행합니다.
+자동 메모리 bridge 가 들어간 상태에서 진행합니다.
 
 - 실제 프로젝트에서 자동 prefill 과 수동 `/memory` 경로가 충분히 유용한지 확인.
 - `/retrieve --json` trace 가 사용자의 “근거 확인” 기대를 만족하는지 확인.
@@ -291,7 +292,7 @@ Slack/Notion fetch 실패, stale, URL cap 초과를 사용자가 모르면 RAG �
 - LLM judge fallback.
 - optional requirements 로 분리.
 - 단, 미설치 시 의미(벡터) 검색이 꺼져 "개념·자연어 질문으로 맥락 상기" 라는 핵심 목적이 키워드 수준으로 떨어집니다. graceful fallback 이 곧 "기능 동일" 은 아니라는 점을 사용자에게 명확히 알립니다(2026-05-21 실측에서 사용자 오해 확인).
-- 또한 bridge/backfill 구현 전에는 `sentence-transformers` 를 설치해도 자동 저장 memory 자체는 vector 대상이 아닙니다. 선택 ML 은 현재 `chunks_v2`/`summaries` 에 먼저 적용됩니다.
+- persistent memory 는 bridge 후 `chunks_v2` 후보가 되지만, embedding BLOB 이 없으면 여전히 FTS 중심입니다. `bridge-memory --all --embed` 나 `IMPRINT_MEMORY_BRIDGE_EMBEDDING=1` 로 embedding 을 채운 뒤에야 자동 저장 memory 도 vector path 에 참여합니다.
 
 ## 영구 deferred
 

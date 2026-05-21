@@ -1,5 +1,10 @@
 # imprint 결정 사유 로그
 
+**imprint 만든 이유**
+- claude code, codex 사용 시 session이 종료되면 구현 사항에 대한 히스토리를 확인하기 어려워 해당 내용을 저장시켜 추후에도 확인하게 하기 위함
+  - 코드 구현부를 보고 imprint에 물어봤을 때 관련 구현 세부 내용(왜 이렇게 구현했는지), 부가 설명을 듣기 위함
+- 여러 LLM provider 사용 시 같은 히스토리 공유 목적
+
 **문서 책임**
 - 본 문서는 **왜 이렇게 했는가**를 남긴다. 코드만 보면 알 수 없는 트레이드오프, 폐기된 대안, 결정 시점의 제약을 사실 위주로 기록한다.
 - 큰 그림(비전·Phase 정의·아키텍처): `LoadMap.md`
@@ -8,6 +13,14 @@
 - 사용·설치: `README.md`
 
 기록 순서는 **최신이 위**. 항목당 한 단락 안에 변경/사유/대안 폐기 근거를 묶는다.
+
+## 2026-05-22 — `memory_chunks → chunks_v2` bridge 1차 구현
+
+**무엇:** persistent `memory_chunks` 를 synthetic `documents`/`chunks_v2` row 로 승격하는 bridge 를 추가했다. Stop extract, external lazy-fetch, `/memory remember` 로 저장되는 비-working memory 는 `chunks_v2` 후보로도 보이며, 기존 row 는 `python3 -m retrieval.cli bridge-memory <project_id> --all [--embed] [limit]` 로 backfill 할 수 있다. `source_status` marker 와 working raw turn 은 context section 분리 원칙에 따라 bridge 대상에서 제외한다. `chunks_v2.metadata_json` 을 추가해 원본 `memory_chunks.id`, `source_event_id`, `chunk_type`, `source_type`, `evidence_level`, `text_hash` 를 보존하고 retrieve JSON 후보에도 provenance 를 노출한다.
+
+**왜:** imprint 생성 목적은 세션이 끝난 뒤 구현 의도와 히스토리를 자연어로 다시 떠올리는 것이다. 2026-05-21 실측에서 자동 저장 memory 가 retrieval v2 와 분리되어 있어, 임베딩을 설치해도 핵심 memory 가 vector/search-v2 후보가 되지 않는 구조적 갭이 확인됐다. `memory_chunks` 자체에 embedding 컬럼을 붙이는 대안은 빠르지만 저장소 이중화가 계속 커진다. 반대로 bridge 는 기존 `chunks_v2` FTS/vector/retrieve/metadata 경로를 재사용하고, migration 안정화 기간 동안 legacy `memory_chunks` fallback 도 그대로 남길 수 있어 가장 작게 목적과 정렬된다.
+
+**남은 점:** 기본 자동 bridge 는 hook latency 와 의존성 cold-load 를 피하기 위해 embedding 생성을 켜지 않는다. 의미 검색 품질 검증은 `sentence-transformers` 설치 후 `bridge-memory --all --embed` 또는 `IMPRINT_MEMORY_BRIDGE_EMBEDDING=1` 로 embedding 을 채운 상태에서 별도로 측정한다. bridge row 를 summary/entity/contradiction queue 에 자동 연결할지는 profile 과 eval 결과를 본 뒤 결정한다.
 
 ## 2026-05-16 — `/retrieve` memory_chunks read-only fallback 적용
 

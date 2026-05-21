@@ -138,6 +138,7 @@ CREATE TABLE IF NOT EXISTS chunks_v2 (
   is_current            INTEGER NOT NULL DEFAULT 1,
   supersedes_chunk_id   TEXT REFERENCES chunks_v2(id),
   created_at            TEXT NOT NULL,
+  metadata_json         TEXT NOT NULL DEFAULT '{}',
   UNIQUE (document_id, chunk_index)
 );
 

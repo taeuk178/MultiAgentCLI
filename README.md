@@ -58,10 +58,10 @@ export IMPRINT_CLAUDE_MODEL=haiku
 
 | 영역 | 설명 |
 |---|---|
-| Memory | prompt, assistant response, `/memory remember`, Slack/Notion fetch 결과를 redaction 후 `memory_chunks` 에 저장합니다. |
+| Memory | prompt, assistant response, `/memory remember`, Slack/Notion fetch 결과를 redaction 후 `memory_chunks` 에 저장하고, persistent memory 는 `chunks_v2` 후보로 bridge 합니다. |
 | Prefill | 매 prompt 전에 query context, session memory, retrieved memory, external source context 를 `[Project memory context]` 로 자동 prepend 합니다. |
 | `/memory` | 저장된 memory 를 검색, 확인, 주입, pin, 삭제, refresh 합니다. |
-| `/retrieve` | 문서 RAG(`chunks_v2`/`summaries`)를 우선 검색하고, 결과가 없으면 `memory_chunks` 를 read-only fallback 으로 조회합니다. |
+| `/retrieve` | 문서 RAG(`chunks_v2`/`summaries`)를 우선 검색하고, 결과가 약하면 `memory_chunks` 를 read-only fallback 으로 조회합니다. |
 | Routing | `<project>/.imprint/UserPromptSubmit.md` 의 키워드 룰을 보고 routing advisory 를 prepend 합니다. |
 | Soul | `<project>/.imprint/soul.md` 를 세션 시작·압축 후 자동 prepend 합니다. |
 | HUD | Claude Code statusline 에 5h/wk/context 사용량과 plugin 상태를 표시할 수 있습니다. |
@@ -82,7 +82,7 @@ export IMPRINT_CLAUDE_MODEL=haiku
        events.llm_response 저장
        response extract background spawn
   -> 다음 turn
-       새 memory_chunks 가 다시 prefill/search/retrieve 후보가 됨
+       새 persistent memory 가 prefill/search/retrieve 후보가 됨
 ```
 
 `/retrieve` 는 hook 이 자동 호출하지 않습니다. 사용자가 명시적으로 `/retrieve` 또는 `/retrieve --routed` 를 호출했을 때만 풀 retrieval 경로를 탑니다.

@@ -160,6 +160,10 @@ cmd_remember() {
     INSERT INTO memory_chunks (id, project_id, chunk_type, text, metadata_json, created_at, pinned)
     VALUES ('$id', '$pid', '$esc_type', '$esc_text', '$esc_md', '$now', $pinned);
   "
+  if command -v python3 >/dev/null 2>&1; then
+    (cd "$SCRIPT_DIR/lib" && python3 -m retrieval.cli bridge-memory "$pid" "$id" >/dev/null) \
+      2>>"$IMPRINT_LOG" || log_error "memory bridge failed id=$id"
+  fi
   echo "remembered $id ($chunk_type, pinned=$pinned, redacted=$redact)"
 }
 
@@ -804,6 +808,13 @@ cmd_forget() {
     exit 1
   fi
   local esc; esc=$(sql_escape "$id")
+  db_exec "
+    DELETE FROM chunks_v2
+    WHERE document_id IN (
+      SELECT id FROM documents WHERE source_ref = 'memory_chunks:$esc'
+    );
+    DELETE FROM documents WHERE source_ref = 'memory_chunks:$esc';
+  " >/dev/null 2>>"$IMPRINT_LOG" || true
   db_exec "DELETE FROM memory_chunks WHERE id = '$esc';"
   echo "deleted $id"
 }

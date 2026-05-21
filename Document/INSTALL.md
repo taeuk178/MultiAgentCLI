@@ -203,7 +203,14 @@ IMPRINT_HOME=/tmp/imprint-test python3 scripts/imprint/tests/run_tests.py
 - `transformers`: contradiction NLI 판정에 사용합니다. 없으면 Claude/LLM judge 또는 rule fallback 으로 내려갑니다.
 - `sqlite-vec`: SQLite vector extension 로드 후보입니다. 없으면 현재 `/retrieve` 는 embedding BLOB 을 Python cosine 으로 순회하는 fallback 구현을 사용합니다.
 
-아직 `memory_chunks`(자동 hook memory, `/memory remember`)에는 embedding 컬럼과 backfill 이 없습니다. 따라서 선택 ML 을 설치해도 자동 저장 memory 는 bridge/backfill 구현 전까지 FTS5/LIKE 검색 대상입니다. 큰 틀·개념 질문 품질을 올리려면 먼저 `memory_chunks → chunks_v2` bridge 또는 `memory_chunks` embedding + 백필 구현이 필요합니다.
+`memory_chunks` 자체에는 embedding 컬럼이 없지만, persistent memory 는 `memory_chunks → chunks_v2` bridge 로 검색 후보에 복제됩니다. 기본 bridge 는 hook latency 를 피하기 위해 embedding 을 만들지 않으므로, 기존 memory 의 벡터 검색까지 켜려면 선택 ML 설치 후 아래처럼 backfill 하세요.
+
+```bash
+cd scripts/imprint/lib
+python3 -m retrieval.cli bridge-memory <project_id> --all --embed
+```
+
+새 memory 저장 시점부터 embedding 도 함께 만들고 싶다면 `IMPRINT_MEMORY_BRIDGE_EMBEDDING=1` 을 설정할 수 있습니다. 이 옵션은 모델 cold-load 로 느려질 수 있어, 기본값은 꺼져 있습니다.
 
 ```bash
 pip install -r requirements-optional.txt
@@ -286,7 +293,7 @@ python3 scripts/imprint/tests/run_tests.py
 현재 기준선:
 
 ```text
-19 PASS / 0 FAIL
+20 PASS / 0 FAIL
 ```
 
 문법만 빠르게 확인:

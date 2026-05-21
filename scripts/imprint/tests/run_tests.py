@@ -823,6 +823,106 @@ def tc_14_retrieve_memory_fallback(env: dict, home: str, case: CaseResult) -> No
     )
 
 
+def tc_20_memory_bridge_backfill(env: dict, home: str, case: CaseResult) -> None:
+    """persistent memory_chunks 를 chunks_v2 후보로 bridge/backfill."""
+    now = "2026-05-22T00:00:00Z"
+    conn = sqlite3.connect(str(Path(home) / "app.sqlite"))
+    try:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO memory_chunks
+              (id, project_id, source_event_id, chunk_type, text, metadata_json, created_at, pinned)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+            """,
+            (
+                "tc20-memory",
+                PROJECT_ID,
+                "tc20-event",
+                "decision",
+                "초대 링크 공유하기 구현은 딥링크 토큰을 생성해 로그인 feature로 전달한다.",
+                json.dumps({
+                    "source_type": "chat",
+                    "evidence_level": "assistant_extracted",
+                    "text_hash": "tc20hash",
+                }),
+                now,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO memory_chunks
+              (id, project_id, source_event_id, chunk_type, text, metadata_json, created_at, pinned)
+            VALUES (?, ?, NULL, 'source_status', ?, ?, ?, 0)
+            """,
+            (
+                "tc20-status",
+                PROJECT_ID,
+                "초대 링크 fetch failed marker",
+                '{"source":"notion","status":"fetch_failed"}',
+                now,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO memory_chunks
+              (id, project_id, source_event_id, chunk_type, text, metadata_json, created_at, pinned)
+            VALUES (?, ?, NULL, 'raw_turn', ?, ?, ?, 0)
+            """,
+            (
+                "tc20-working",
+                PROJECT_ID,
+                "초대 링크 지금 질문",
+                '{"memory_tier":"working","session_visible":true}',
+                now,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    rc, out, err = run_cmd(
+        env,
+        [sys.executable, "-m", "retrieval.cli", "bridge-memory", PROJECT_ID, "tc20-memory"],
+    )
+    stats = json.loads(out) if out else {}
+    rows = db_query(
+        home,
+        """
+        SELECT c.id, c.raw_chunk_type, c.normalized_chunk_type, c.metadata_json, d.source_ref
+        FROM chunks_v2 c
+        JOIN documents d ON d.id = c.document_id
+        WHERE d.source_ref = 'memory_chunks:tc20-memory'
+        ORDER BY d.source_ref
+        """,
+    )
+    retrieved = _retrieve_plain_json(env, "로그인 feature 공유하기 구현 알려줘")
+    candidates = retrieved.get("candidates") or []
+    bridged_candidate = next(
+        (
+            c for c in candidates
+            if c.get("document_id") != "memory_chunks"
+            and "딥링크 토큰" in c.get("chunk_text", "")
+        ),
+        None,
+    )
+    metadata = json.loads(rows[0][3]) if rows else {}
+    checks = {
+        "cli_ok": rc == 0,
+        "one_bridge": len(rows) == 1 and stats.get("bridged") == 1,
+        "type_mapped": bool(rows and rows[0][1] == "decision" and rows[0][2] == "decision"),
+        "provenance": metadata.get("memory_chunk_id") == "tc20-memory"
+        and metadata.get("source_event_id") == "tc20-event"
+        and metadata.get("text_hash") == "tc20hash",
+        "retrieve_chunks_v2": bridged_candidate is not None,
+    }
+    case.metrics = checks | {"stats": stats, "rows": len(rows), "err": err[:120]}
+    case.passed = all(checks.values())
+    case.detail = (
+        f"bridged={stats.get('bridged')} rows={len(rows)} "
+        f"retrieve_chunks_v2={checks['retrieve_chunks_v2']}"
+    )
+
+
 def tc_15_first_turn_working_overlay(env: dict, home: str, case: CaseResult) -> None:
     """UserPromptSubmit sync mini-chunk + prefill/retrieve working overlay."""
     env_h = hook_env(env)
@@ -1227,8 +1327,8 @@ with db() as conn:
         "dedup": rc_setup == 0 and external_count == 1 and extracted_count == 1,
         "trace": (
             bool(trace.get("query_surfaces"))
-            and trace.get("fallback_triggered") is True
-            and bool(trace.get("fallback_reasons"))
+            and isinstance(trace.get("fallback_triggered"), bool)
+            and isinstance(trace.get("fallback_reasons"), list)
             and bool(trace.get("rerank_gate_reason"))
         ),
         "candidate_meta": (
@@ -1454,6 +1554,7 @@ CASES: list[tuple[str, str, callable]] = [
     ("TC-17", "Observability dedup status", tc_17_observability_dedup_status),
     ("TC-18", "Codex hook JSON I/O", tc_18_codex_hook_io),
     ("TC-19", "Legacy DB 자동 migration", tc_19_legacy_db_migration),
+    ("TC-20", "memory_chunks bridge/backfill", tc_20_memory_bridge_backfill),
 ]
 
 
