@@ -140,6 +140,18 @@ def db_connect(*, load_vec: bool = False) -> sqlite3.Connection:
     conn.execute("PRAGMA busy_timeout = 5000")
     conn.execute("PRAGMA foreign_keys = ON")
     conn.row_factory = sqlite3.Row
+    try:
+        has_chunks_v2 = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='chunks_v2'"
+        ).fetchone()
+        if has_chunks_v2:
+            has_metadata = conn.execute(
+                "SELECT COUNT(*) FROM pragma_table_info('chunks_v2') WHERE name = 'metadata_json'"
+            ).fetchone()[0]
+            if not has_metadata:
+                conn.execute("ALTER TABLE chunks_v2 ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}'")
+    except sqlite3.Error as exc:
+        log("WARN", f"light schema migration skipped: {exc!r}")
     if load_vec:
         _try_load_sqlite_vec(conn)
     return conn

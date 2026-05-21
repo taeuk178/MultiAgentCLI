@@ -109,9 +109,9 @@ Codex App에서 `Imprint: Memory` 스킬까지 바로 쓰려면 설치 스크립
 bash <ABSOLUTE_PATH_TO_THIS_REPO>/scripts/imprint/install-codex.sh
 ```
 
-이 스크립트는 `~/.codex/config.toml`에 `plugin_hooks`, `imprint@imprint`, local marketplace 설정을 추가하고, `~/.codex/skills/memory`, `~/.agents/plugins/imprint`, `~/.local/bin/imprint` 연결을 생성합니다.
+이 스크립트는 `~/.codex/config.toml`에 `plugin_hooks`, `imprint@imprint`, local marketplace 설정을 추가하고, `~/.codex/skills/` 아래 imprint skills, `~/.agents/plugins/imprint`, `~/.local/bin/imprint` 연결을 생성합니다.
 
-설정 후 Codex App을 완전히 재시작하거나 새 thread를 열면 `Imprint: Memory` 스킬이 목록에 표시됩니다.
+설정 후 Codex App을 완전히 재시작하거나 새 thread를 열면 `Imprint: Memory`, `Imprint: Setup` 같은 스킬이 목록에 표시됩니다.
 
 ### 3. 직접 심볼릭 링크 (개발 모드)
 
@@ -195,6 +195,18 @@ IMPRINT_HOME=/tmp/imprint-test python3 scripts/imprint/tests/run_tests.py
 
 기본 설치만으로도 FTS5(키워드) 검색으로 동작합니다. **의미(유사도) 기반 검색이 필요할 때만** 아래 의존성을 추가하세요. plugin 에 포함되지 않으므로 **사용자별로 각자 설치**해야 하며, 미설치 시 키워드 검색으로 자동 폴백합니다.
 
+권장 경로는 setup dispatcher 입니다. 의존성 설치, BGE-M3 warmup, 현재 프로젝트 memory embedding backfill 을 한 번에 처리합니다.
+
+```bash
+imprint setup vector --install --warmup --backfill
+```
+
+상태 확인만 하려면:
+
+```bash
+imprint setup vector --status
+```
+
 설치 입력 파일은 repo root 의 `requirements-optional.txt` 를 유지합니다. 이 파일은 문서가 아니라 `pip install -r requirements-optional.txt` 로 바로 사용할 수 있는 선택 의존성 목록입니다. 설치 이유와 적용 범위 설명만 이 문서에서 관리합니다.
 
 현재 적용 범위에 주의하세요.
@@ -203,7 +215,14 @@ IMPRINT_HOME=/tmp/imprint-test python3 scripts/imprint/tests/run_tests.py
 - `transformers`: contradiction NLI 판정에 사용합니다. 없으면 Claude/LLM judge 또는 rule fallback 으로 내려갑니다.
 - `sqlite-vec`: SQLite vector extension 로드 후보입니다. 없으면 현재 `/retrieve` 는 embedding BLOB 을 Python cosine 으로 순회하는 fallback 구현을 사용합니다.
 
-아직 `memory_chunks`(자동 hook memory, `/memory remember`)에는 embedding 컬럼과 backfill 이 없습니다. 따라서 선택 ML 을 설치해도 자동 저장 memory 는 bridge/backfill 구현 전까지 FTS5/LIKE 검색 대상입니다. 큰 틀·개념 질문 품질을 올리려면 먼저 `memory_chunks → chunks_v2` bridge 또는 `memory_chunks` embedding + 백필 구현이 필요합니다.
+`memory_chunks` 자체에는 embedding 컬럼이 없지만, persistent memory 는 `memory_chunks → chunks_v2` bridge 로 검색 후보에 복제됩니다. 기본 bridge 는 hook latency 를 피하기 위해 embedding 을 만들지 않으므로, 기존 memory 의 벡터 검색까지 켜려면 선택 ML 설치 후 아래처럼 backfill 하세요.
+
+```bash
+cd scripts/imprint/lib
+python3 -m retrieval.cli bridge-memory <project_id> --all --embed
+```
+
+새 memory 저장 시점부터 embedding 도 함께 만들고 싶다면 `IMPRINT_MEMORY_BRIDGE_EMBEDDING=1` 을 설정할 수 있습니다. 이 옵션은 모델 cold-load 로 느려질 수 있어, 기본값은 꺼져 있습니다.
 
 ```bash
 pip install -r requirements-optional.txt
@@ -286,7 +305,7 @@ python3 scripts/imprint/tests/run_tests.py
 현재 기준선:
 
 ```text
-19 PASS / 0 FAIL
+20 PASS / 0 FAIL
 ```
 
 문법만 빠르게 확인:

@@ -1,8 +1,8 @@
 # TestCase — imprint 보편 사용 시나리오
 
-이 문서는 imprint 플러그인의 보편 사용 케이스 10개를 정의합니다. 각 케이스는
+이 문서는 imprint 플러그인의 보편 사용 케이스를 정의합니다. 각 케이스는
 **입력 / 기대 결과 / 측정 항목 / pass 조건** 구조로 통일합니다. 자동화된 테스트
-러너는 `scripts/imprint/tests/run_tests.sh` 가 순차 실행하고 케이스당 ms / pass-fail /
+러너는 `scripts/imprint/tests/run_tests.py` 가 순차 실행하고 케이스당 ms / pass-fail /
 counts 를 출력합니다.
 
 테스트는 임시 `IMPRINT_HOME`(`mktemp -d` 결과) 에서 동작하므로 사용자의 실제

@@ -33,6 +33,7 @@ from typing import Any, Iterable
 
 from retrieval.model_runtime import run_background_model
 from retrieval._common import migrate_legacy_claude_db_if_needed
+from retrieval.memory_bridge import bridge_memory_chunk
 
 # Runtime paths. IMPRINT_HOME 으로 테스트/실사용 DB 를 쉽게 격리한다.
 IMPRINT_HOME = Path(os.environ.get("IMPRINT_HOME") or (Path.home() / ".imprint"))
@@ -150,6 +151,17 @@ def db() -> sqlite3.Connection:
     conn = sqlite3.connect(IMPRINT_DB, timeout=5.0)
     conn.execute("PRAGMA foreign_keys = ON;")
     return conn
+
+
+def bridge_memory_best_effort(conn: sqlite3.Connection, chunk_id: str) -> None:
+    try:
+        bridge_memory_chunk(
+            conn,
+            chunk_id,
+            generate_embedding=os.environ.get("IMPRINT_MEMORY_BRIDGE_EMBEDDING") == "1",
+        )
+    except Exception as exc:  # noqa: BLE001 - bridge failure must not block hooks.
+        log("WARN", f"memory bridge skipped chunk={chunk_id}: {exc!r}")
 
 
 def project_root() -> Path:
@@ -744,6 +756,7 @@ def insert_external_chunk(
         "VALUES (?, ?, NULL, ?, ?, ?, ?, 0);",
         (cid, project_id, chunk_type, text, json.dumps(metadata, ensure_ascii=False), now_iso()),
     )
+    bridge_memory_best_effort(conn, cid)
     return cid
 
 
@@ -783,6 +796,7 @@ def insert_extracted_chunk(
         "VALUES (?, ?, ?, ?, ?, ?, ?, 0);",
         (cid, project_id, source_event_id, chunk_type, text, json.dumps(md, ensure_ascii=False), now_iso()),
     )
+    bridge_memory_best_effort(conn, cid)
     return cid
 
 

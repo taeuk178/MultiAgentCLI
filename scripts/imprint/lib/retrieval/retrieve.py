@@ -241,7 +241,7 @@ def _fts_search(conn: sqlite3.Connection, project_id: str, query: str, top_n: in
         """
         SELECT c.id, c.document_id, c.retrieval_text, c.chunk_text, c.section_path,
                c.source_updated_at, c.is_current, c.raw_chunk_type, c.normalized_chunk_type,
-               d.source_type,
+               c.metadata_json, d.source_type,
                bm25(chunks_v2_fts) AS bm25_score
         FROM chunks_v2_fts
         JOIN chunks_v2 c ON c.rowid = chunks_v2_fts.rowid
@@ -293,7 +293,7 @@ def _like_fallback_search(
         f"""
         SELECT c.id, c.document_id, c.retrieval_text, c.chunk_text, c.section_path,
                c.source_updated_at, c.is_current, c.raw_chunk_type, c.normalized_chunk_type,
-               d.source_type
+               c.metadata_json, d.source_type
         FROM chunks_v2 c
         JOIN documents d ON d.id = c.document_id
         WHERE c.project_id = ?
@@ -539,7 +539,7 @@ def _vector_search(
         """
         SELECT c.id, c.document_id, c.retrieval_text, c.chunk_text, c.section_path,
                c.source_updated_at, c.is_current, c.raw_chunk_type, c.normalized_chunk_type,
-               c.embedding, d.source_type
+               c.embedding, c.metadata_json, d.source_type
         FROM chunks_v2 c
         JOIN documents d ON d.id = c.document_id
         WHERE c.project_id = ? AND c.is_current = 1 AND c.embedding IS NOT NULL
@@ -555,6 +555,12 @@ def _vector_search(
 
 
 def _row_to_candidate(row: sqlite3.Row) -> RetrievalCandidate:
+    try:
+        metadata = json.loads(row["metadata_json"] or "{}")
+        if not isinstance(metadata, dict):
+            metadata = {}
+    except (IndexError, KeyError, json.JSONDecodeError, TypeError):
+        metadata = {}
     cand = RetrievalCandidate(
         chunk_id=row["id"],
         document_id=row["document_id"],
@@ -567,8 +573,17 @@ def _row_to_candidate(row: sqlite3.Row) -> RetrievalCandidate:
         raw_chunk_type=row["raw_chunk_type"],
         normalized_chunk_type=row["normalized_chunk_type"],
     )
-    cand.evidence_level = "raw_source" if cand.source_type in {"slack", "notion"} else None
-    cand.grounded = True if cand.evidence_level == "raw_source" else None
+    cand.evidence_level = metadata.get("evidence_level")
+    if cand.evidence_level is None and cand.source_type in {"slack", "notion"}:
+        cand.evidence_level = "raw_source"
+    if "grounded" in metadata:
+        cand.grounded = bool(metadata.get("grounded"))
+    else:
+        cand.grounded = True if cand.evidence_level == "raw_source" else None
+    source_uri = metadata.get("source_uri") or metadata.get("url")
+    text_hash = metadata.get("text_hash")
+    cand.source_uri = str(source_uri) if source_uri else None
+    cand.text_hash = str(text_hash) if text_hash else None
     cand.lane = _candidate_context_section(cand)
     return cand
 
