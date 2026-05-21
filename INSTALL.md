@@ -193,7 +193,15 @@ IMPRINT_HOME=/tmp/imprint-test python3 scripts/imprint/tests/run_tests.py
 
 ## 선택: ML 의존성
 
-기본 설치만으로도 FTS5 + LIKE fallback + background model judge fallback 으로 동작합니다. 검색 품질을 높이고 싶다면:
+기본 설치만으로도 FTS5(키워드) 검색으로 동작합니다. **의미(유사도) 기반 검색이 필요할 때만** 아래 의존성을 추가하세요. plugin 에 포함되지 않으므로 **사용자별로 각자 설치**해야 하며, 미설치 시 키워드 검색으로 자동 폴백합니다.
+
+현재 적용 범위에 주의하세요.
+
+- `sentence-transformers`: `chunks_v2` / `summaries` 의 embedding 생성과 `/retrieve` vector 후보 검색에 사용합니다.
+- `transformers`: contradiction NLI 판정에 사용합니다.
+- `sqlite-vec`: 향후 ANN/extension 경로 후보입니다. 현재 `/retrieve` 는 embedding BLOB 을 Python cosine 으로 순회하는 fallback 구현을 사용합니다.
+
+아직 `memory_chunks`(자동 hook memory, `/memory remember`)에는 embedding 컬럼과 backfill 이 없습니다. 따라서 선택 ML 을 설치해도 자동 저장 memory 는 bridge/backfill 구현 전까지 FTS5/LIKE 검색 대상입니다. 큰 틀·개념 질문 품질을 올리려면 먼저 `memory_chunks → chunks_v2` bridge 또는 `memory_chunks` embedding + 백필 구현이 필요합니다.
 
 ```bash
 pip install -r requirements-optional.txt
@@ -205,7 +213,7 @@ pip install -r requirements-optional.txt
 pip install sqlite-vec sentence-transformers transformers
 ```
 
-설치하면 import 가능 여부를 보고 자동 활성화됩니다.
+설치하면 import 가능 여부를 보고 해당 경로에서 자동 활성화됩니다.
 
 모델 캐시 위치:
 
@@ -245,7 +253,7 @@ export IMPRINT_DISABLE_SQLITE_VEC=1
 - `UserPromptSubmit`: user prompt redaction, `events.user_message` 저장, working mini-chunk 저장, routing rule 평가, need-retrieval gate, context section prefill, lazy-fetch worker spawn.
 - `Stop`: 마지막 assistant 응답 redaction, `events.llm_response` 저장, persistent response extract worker spawn.
 
-자동 hook 경로는 full `/retrieve` 를 호출하지 않습니다. 사용자 turn 을 막지 않기 위해 동기 경로는 lightweight prefill 만 수행합니다.
+자동 hook 경로는 full `/retrieve` 를 호출하지 않습니다. 사용자 turn 을 막지 않기 위해 동기 경로는 lightweight prefill 만 수행합니다. 이 경로가 직접 읽는 `memory_chunks` 는 현재 FTS5/LIKE 기반입니다.
 
 ### 명시 retrieval 경로
 
@@ -253,7 +261,7 @@ export IMPRINT_DISABLE_SQLITE_VEC=1
 
 - `chunks_v2` / `summaries` 문서 RAG 우선.
 - 현재 세션 working memory 를 query context 로 soft union.
-- 후보가 없거나 저신뢰이면 `memory_chunks` read-only fallback.
+- 후보가 없거나 저신뢰이면 `memory_chunks` read-only fallback(FTS5/LIKE).
 - confirmed contradiction 은 scoring 단계에서 강하게 감점.
 - JSON mode 는 trace 와 provenance 를 노출.
 

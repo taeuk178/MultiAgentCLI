@@ -9,6 +9,7 @@
 - 자동 hook 경로는 현재 turn 을 working mini-chunk 로 먼저 저장하고 gate 결과에 따라 `memory_chunks` 를 context section 별로 prefill 합니다.
 - `/retrieve` 는 사용자가 명시 호출했을 때만 `chunks_v2`/`summaries` retrieval 을 수행합니다.
 - `/retrieve` 는 현재 세션 working chunk 를 query context 로 soft union 하고, 문서 후보가 없거나 저신뢰이면 `memory_chunks` 를 read-only fallback 으로 조회합니다.
+- 현재 자동 저장 memory(`memory_chunks`)는 FTS/LIKE 기반입니다. embedding/vector 검색은 `chunks_v2`/`summaries` 에만 적용되며, bridge/backfill 구현 전까지 자동 memory 는 의미 검색 대상이 아닙니다.
 
 ## 전체 플로우
 
@@ -40,10 +41,12 @@
      - background model 이 prompt 키워드/URL 분석
      - prompt URL 또는 sources.json 기반 Slack/Notion read-only fetch
      - section chunk 를 memory_chunks 에 직접 INSERT
+     - 현재는 ingest_queue/chunks_v2 로 자동 전달하지 않음
 
   B. Stop response extract
      - background model 이 응답에서 persistent memory chunk 분류
      - decision/error/fix/command/test_result/summary/todo/code_context/note 를 memory_chunks 에 직접 INSERT
+     - 현재는 embedding/backfill 대상이 아니며 FTS/LIKE 로만 검색
 
 다음 turn:
   새로 저장된 memory_chunks 가 다시 prefill 후보가 됩니다.
@@ -55,7 +58,7 @@
   2. local: chunk retrieval 경로 호출
      - QN → RES → multi-rewrite → QEMB → HYB(chunks_v2 FTS5 + vector, 미가용 시 FTS/짧은 토큰 fallback) → RRF(+working overlay) → BOOST(+contradiction penalty) → low-confidence MEMFB → RG/RR → CTX
      - working overlay: 현재 세션 memory_tier=working, session_visible=true 후보를 query context 로 soft union
-     - MEMFB: 후보가 0개이거나 저신뢰이면 memory_chunks read-only fallback
+     - MEMFB: 후보가 0개이거나 저신뢰이면 memory_chunks read-only fallback(FTS/LIKE, vector 아님)
   3. feature/global: summaries 검색 + chunk retrieval(동일 working overlay/low-confidence MEMFB 포함) + summary_links grounding
   4. resolved entity 의 confirmed contradiction 조회
   5. 구조화 context block 또는 JSON 반환
@@ -102,8 +105,8 @@ flowchart LR
     subgraph STORE["SQLite memory store"]
       direction TB
       EVENTS[("events<br/>user_message / llm_response<br/>noise flag")]
-      MEM[("memory_chunks<br/>working / retrieved / external<br/>FTS5 + BM25")]
-      DOCS[("documents + chunks_v2<br/>summaries / entities<br/>contradictions")]
+      MEM[("memory_chunks<br/>working / retrieved / external<br/>FTS5 / LIKE")]
+      DOCS[("documents + chunks_v2<br/>summaries / entities<br/>embeddings / contradictions")]
       PROF[("plugin.log<br/>profile.jsonl<br/>status / trace")]
     end
 
@@ -111,7 +114,7 @@ flowchart LR
       direction TB
       QN["Normalize + multi-rewrite<br/>original / action / code"]
       RES["Entity resolve<br/>scope classifier"]
-      HYB["Hybrid search<br/>FTS5 BM25<br/>optional vector"]
+      HYB["Hybrid search<br/>chunks_v2/summaries<br/>FTS5 + optional vector"]
       RRF["RRF + working overlay"]
       BOOST["Boost / penalty<br/>recency, entity,<br/>contradiction"]
       MEMFB{"Low confidence?"}
@@ -270,6 +273,8 @@ flowchart LR
 
 `chunk_retrieve` 는 `chunks_v2` 후보가 있어도 현재 세션 working mini-chunk 를 query context 로 soft union 합니다. `chunks_v2` 후보가 없거나 top1 score 가 낮거나 working-only/entity-mismatch 로 저신뢰이면 `memory_chunks` fallback 을 탑니다. fallback 은 `source_status` marker 와 working chunk 를 제외합니다.
 
+현재 vector 검색 범위는 `chunks_v2` 와 `summaries` 입니다. 자동 hook 과 `/memory remember` 가 직접 저장하는 `memory_chunks` 는 bridge/backfill 전까지 FTS5/LIKE fallback 으로만 조회됩니다. 따라서 `sentence-transformers` 를 설치해도 자동 저장 memory 의 의미 검색 품질은 바로 좋아지지 않습니다.
+
 confirmed contradiction 에 연결된 chunk 는 BOOST 단계에서 강하게 감점합니다. candidate contradiction 은 약하게 감점하고, routed output 의 conflict 섹션은 기존처럼 유지합니다.
 
 ## 운영 정책 수치
@@ -371,7 +376,7 @@ confirmed contradiction 에 연결된 chunk 는 BOOST 단계에서 강하게 감
 | `IMPRINT_DISABLE_EXTRACT` | `0` | env | `1`이면 Stop extract 비활성 |
 | `IMPRINT_NO_SEED` | `0` | env | `1`이면 `.imprint/` 기본 파일 seed 비활성 |
 | `IMPRINT_MODEL_CACHE_DIR` | HuggingFace 기본 cache | env | optional ML 모델 cache 위치 |
-| `IMPRINT_DISABLE_EMBEDDING` | `0` | env | `1`이면 embedding/vector search 비활성 |
+| `IMPRINT_DISABLE_EMBEDDING` | `0` | env | `1`이면 `chunks_v2`/`summaries` embedding/vector search 비활성 |
 | `IMPRINT_DISABLE_NLI` | `0` | env | `1`이면 NLI contradiction judge 비활성 |
 | `IMPRINT_DISABLE_MODEL_JUDGE` | `0` | env | `1`이면 model judge fallback 비활성 |
 
@@ -444,7 +449,7 @@ UPS hook 자동 경로는 `LOG → ROUTE → PREFILL → CTX0` 만 실행해 < 5
 | `python3` 없음 | primary prefill/lazy-fetch/extract 누락 |
 | background model CLI 없음 | background model 경로 누락 |
 | Slack/Notion MCP 없음 | 외부 fetch 0건, 기존 memory 는 유지 |
-| 선택 ML 의존성 없음 | FTS-only / rule fallback |
+| 선택 ML 의존성 없음 | `chunks_v2`/`summaries` vector/rerank/NLI 비활성, FTS-only / rule fallback |
 | malformed LLM JSON | relaxed parse 실패 후 skip |
 
 `.imprint/` 폴더는 SessionStart hook 이 처음 실행될 때 자동 생성되며 기존 파일은 덮어쓰지 않습니다.
@@ -509,7 +514,7 @@ flowchart TB
 
     subgraph FALLBACK["Fallback retrieval"]
       direction TB
-      MEMFB["memory_chunks<br/>read-only fallback"]
+      MEMFB["memory_chunks<br/>read-only fallback<br/>FTS5 / LIKE"]
       FILTER["exclude source_status<br/>exclude working chunks"]
     end
 
@@ -586,3 +591,5 @@ erDiagram
         text summary_text
     }
 ```
+
+`MEMORY_CHUNKS` 에는 현재 embedding 컬럼이 없습니다. 위 ER diagram 에서 embedding 은 `CHUNKS_V2` 에만 표시됩니다.

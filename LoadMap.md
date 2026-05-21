@@ -6,11 +6,11 @@
 - 결정 사유와 폐기한 대안은 `HISTORY.md` 를 봅니다.
 - 설치와 사용자 명령은 `README.md`, 상세 hook/retrieval 플로우는 `flow.md` 를 봅니다.
 
-최종 업데이트: 2026-05-16.
+최종 업데이트: 2026-05-21.
 
 ## 방향
 
-imprint 는 Claude Code hook·skill 시스템 위에서 동작하는 로컬 개발 작업 기억 plugin 입니다. 이전 Tauri 데스크톱 앱 방향은 폐기했고, 현재 repo 는 plugin 단일 책임을 가집니다.
+imprint 는 Claude Code/Codex hook·skill 시스템 위에서 동작하는 로컬 개발 작업 기억 plugin 입니다. 이전 Tauri 데스크톱 앱 방향은 폐기했고, 현재 repo 는 plugin 단일 책임을 가집니다.
 
 핵심 목표는 기능을 많이 붙이는 것이 아니라, 실제 프로젝트에서 다음 루프가 믿을 만하게 동작하게 하는 것입니다.
 
@@ -18,14 +18,14 @@ imprint 는 Claude Code hook·skill 시스템 위에서 동작하는 로컬 개�
 사용자 입력
   -> UserPromptSubmit hook
        event archive, working mini-chunk, gate, context section prefill
-  -> Claude Code 응답
+  -> Claude Code / Codex 응답
   -> Stop hook
        response archive, persistent memory extract
   -> 다음 turn
        저장된 기억이 다시 prefill/search/retrieve 후보가 됨
 ```
 
-API key 없이 Claude Code OAuth 구독을 그대로 사용합니다. 무거운 LLM 작업(prompt 분석, Slack/Notion fetch, response extract)은 background 에서 `claude -p haiku` 로 분리합니다.
+API key 없이 host 의 OAuth 구독을 그대로 사용합니다. 무거운 LLM 작업(prompt 분석, Slack/Notion fetch, response extract)은 background 에서 host CLI(`claude` 또는 `codex`)로 분리합니다.
 
 ## 해결하려는 문제
 
@@ -44,6 +44,12 @@ API key 없이 Claude Code OAuth 구독을 그대로 사용합니다. 무거운 
 5. **로컬 우선 운영**
    SQLite + FTS5 기반으로 동작하고, 선택 ML 의존성은 없어도 graceful fallback 해야 합니다.
 
+6. **개념적 코드 히스토리 상기** *(2026-05-21 명시)*
+   세션이 끝나면 "왜 이렇게 구현했는가" 의 맥락이 사라집니다. 코드만으로는 의도와 폐기한 대안이 남지 않으므로, "로그인 feature 의 공유하기는 어떻게 구현됐었지" 같은 큰 틀·자연어 질문에 단어가 정확히 겹치지 않아도 관련 구현 맥락과 결정을 떠올려야 합니다. 이는 키워드(FTS) 만으로는 어휘 불일치로 약하고, 의미(벡터) 검색이 필요한 영역입니다. 제품의 핵심 사용 시나리오입니다.
+
+7. **팀 차원 지식 공유 (장기)** *(2026-05-21 명시)*
+   한 개발자의 작업 기억이 다른 개발자에게도 참고되도록 합니다. 단 이는 로컬 SQLite RAG(개인 세션 연속성)와는 다른 축이며, 사람이 읽고 git 으로 공유·리뷰 가능한 산출물(ADR 등)이 필요합니다. 검색 메커니즘 문제가 아니라 영속화·공유 인프라 문제로 다룹니다.
+
 ## 현재 아키텍처
 
 ### Hook 계층
@@ -61,6 +67,8 @@ API key 없이 Claude Code OAuth 구독을 그대로 사용합니다. 무거운 
 `memory_chunks` 는 기본 사용자 RAG 기억입니다. working mini-chunk, Stop hook 추출, external lazy-fetch, `/memory remember` 가 여기에 저장합니다. 다음 turn prefill, `/memory search/list/show/inject`, `/retrieve` fallback 이 이 테이블을 읽습니다.
 
 `documents` / `chunks_v2` / `summaries` 는 retrieval v2 문서 RAG 계층입니다. 명시 ingestion 된 문서는 chunking, versioning, summary, contradiction, entity alias pipeline 을 탑니다.
+
+현재 중요한 비대칭이 있습니다. `memory_chunks` 는 자동 세션 기억의 주 저장소이지만 FTS/LIKE 검색만 제공하고, `chunks_v2`/`summaries` 만 embedding 컬럼을 가집니다. 따라서 자동 저장 memory 는 아직 의미 검색·summary/entity/contradiction 파이프라인과 직접 연결돼 있지 않습니다.
 
 ### Retrieval 계층
 
@@ -111,11 +119,41 @@ retrieval v2 ingestion 은 `ingest_queue` 를 통해 후속 작업을 순차 처
 
 완료된 결정과 이유는 `HISTORY.md` 에 남깁니다.
 
+## 알려진 핵심 갭 (2026-05-21 발견)
+
+자동 저장 메모리와 의미(벡터) 검색이 연결돼 있지 않습니다. 제품 핵심 목적의 직접 병목입니다.
+
+- `memory_chunks`(대화 자동 저장·`/memory remember`)에는 embedding 컬럼이 없고(`schema.sql`), `/retrieve` 의 memory_chunks fallback 도 FTS5 키워드만 사용합니다(`retrieve.py` `_memory_chunks_fallback_search`).
+- 따라서 `sentence-transformers` 설치 여부와 **무관하게** 자동 메모리에는 의미 검색이 제공된 적이 없습니다. 임베딩을 옵션으로 둔 설계가 이 경로에서는 효과가 없습니다 — 미설치 문제가 아니라 미구현 문제입니다.
+- 벡터 검색은 명시 ingestion 된 `chunks_v2` 에만 존재하며, 백필/reindex 경로가 없어 모델 설치 후에도 기존 데이터는 재 ingest 해야 채워집니다.
+- 대응: 아래 로드맵에서 `memory_chunks → chunks_v2` bridge(또는 `memory_chunks` 임베딩 컬럼 + 백필)를 **최우선으로 승격**합니다. "사용성 검증" 보다 앞섭니다 — 검증할 의미 검색이 아직 없기 때문입니다. 단기 실행 계획은 `HANDOFF.md` 다음 우선순위 1번을 봅니다.
+
+## 목표별 현재 일치도
+
+원래 제품 목적 기준의 장기 판단입니다.
+
+| 목표 | 현재 일치도 | 장기 방향 |
+|---|---|---|
+| 세션 종료 후 문맥 저장 | 부분 일치. raw event archive 와 memory chunk 저장은 있으나, 재상기는 추출 chunk 품질과 키워드 검색에 크게 의존합니다. | raw event → persistent memory/summary 로 승격하는 경로와 backfill 을 갖춥니다. |
+| Codex / Claude Code 간 동일 문맥 | 방향 일치. 기본 저장소는 `~/.imprint` 로 통합됐습니다. | 설치/manifest/hook 검증을 양 host 회귀 테스트로 고정합니다. |
+| 큰 틀·개념 질문으로 맥락 상기 | 핵심 미충족. 자동 memory 가 vector/search-v2 대상이 아닙니다. | `memory_chunks → chunks_v2` bridge 를 기본 경로로 만들고, 의미 검색 + feature/project summary 로 끌어올립니다. |
+| 다른 개발자도 참고하는 공유 기록 | 장기 미구현. 로컬 SQLite 는 개인 기억에 적합하지만 팀 지식 공유에는 부적합합니다. | decision/summary chunk 를 ADR/Markdown 으로 export 해 git/PR review 에 얹습니다. |
+
 ## 로드맵
 
-### 1. RAG 사용성 검증과 운영 캘리브레이션
+### 1. 자동 메모리 의미 검색 기반 구축
 
 현재 최우선 단계입니다.
+
+- `memory_chunks → chunks_v2` bridge 를 구현해 자동 hook, external lazy-fetch, `/memory remember` 로 저장된 memory 를 retrieval v2 후보로 복제합니다.
+- 기존 `memory_chunks` 를 bridge 대상으로 재처리하는 backfill/reindex 명령을 제공합니다.
+- bridge row 의 provenance 는 원본 `memory_chunks.id`, `source_event_id`, `chunk_type`, `source_type`, `evidence_level`, `text_hash` 를 보존합니다.
+- 신규/기존 memory 가 `/retrieve --json` 에서 `chunks_v2` 후보로 보이고, embedding 가용 시 vector path 에 들어가는지 테스트합니다.
+- fallback 으로 남는 `memory_chunks` read-only search 는 migration 안정화 기간 동안 유지합니다.
+
+### 2. RAG 사용성 검증과 운영 캘리브레이션
+
+자동 메모리가 의미 검색 경로에 연결된 뒤 진행합니다.
 
 - 실제 프로젝트에서 자동 prefill 과 수동 `/memory` 경로가 충분히 유용한지 확인.
 - `/retrieve --json` trace 가 사용자의 “근거 확인” 기대를 만족하는지 확인.
@@ -125,7 +163,7 @@ retrieval v2 ingestion 은 `ingest_queue` 를 통해 후속 작업을 순차 처
 
 구체 체크리스트는 `HANDOFF.md` 에 둡니다.
 
-### 2. 운영 정책 정착
+### 3. 운영 정책 정착
 
 측정 데이터가 모인 뒤 아래 정책을 확정합니다.
 
@@ -138,7 +176,7 @@ retrieval v2 ingestion 은 `ingest_queue` 를 통해 후속 작업을 순차 처
 - daemon 분리 필요 여부.
 - 과거 사용자 DB raw secret 청소 정책.
 
-### 3. Workflow skill
+### 4. Workflow skill
 
 RAG 기본 루프가 안정된 뒤 진입합니다.
 
@@ -149,7 +187,7 @@ RAG 기본 루프가 안정된 뒤 진입합니다.
 
 목표는 staged diff, 최근 memory, 테스트 결과를 결합해 개발 워크플로 산출물을 만드는 것입니다.
 
-### 4. Skill registry
+### 5. Skill registry
 
 후순위 확장입니다.
 
@@ -158,16 +196,28 @@ RAG 기본 루프가 안정된 뒤 진입합니다.
 - project-local override 와 global skill 우선순위.
 - manifest 포맷과 신뢰/서명 정책.
 
-### 5. Retrieval 고도화
+### 6. Retrieval 고도화
 
 필요성이 실사용에서 확인될 때만 진행합니다.
 
-- `memory_chunks → chunks_v2` bridge 또는 unified storage.
+- 벡터 검색 기본 활성화 경험: `sentence-transformers`/`bge-m3` 설치 가이드와, 미설치 시 "지금 키워드 폴백 중" 임을 사용자에게 더 분명히 알리는 신호.
+- 청크 규모 증가 대비 ANN 인덱스(HNSW/IVF, `sqlite-vec`) 도입 — 현재 brute-force 코사인의 한계가 실측될 때.
+- unified storage 검토 — bridge 운영이 안정된 뒤 `memory_chunks` 와 `chunks_v2` 를 계속 분리할지 판단합니다.
 - entity merge/split UI.
 - chunk lifecycle 정책.
 - contradiction threshold calibration.
 - summary 품질 평가.
 - 자동 hook memory 와 ingest_queue 후속 작업의 정렬.
+
+### 7. 팀 공유 / 지식 영속화
+
+로컬 RAG 가 개인 세션에서 안정된 뒤, 다른 개발자도 참고할 수 있는 형태로 확장합니다. RAG 검색 자체보다 "사람이 읽고 git 으로 공유 가능한 산출물" 이 핵심입니다.
+
+- `decision`/`summary` chunk 를 사람이 읽는 Markdown(ADR, Architecture Decision Record) 으로 export.
+- export 산출물을 git 에 커밋해 PR·코드 리뷰에서 자연스럽게 참조.
+- 결정 chunk 에 대상 feature/파일/커밋·날짜 메타데이터를 연결해 코드와 stale 관계를 추적.
+- 역할 분리 원칙: (A) 개인 세션 연속성 = 로컬 RAG, (B) 팀 지식베이스 = 공유 문서. 한 메커니즘으로 합치지 않습니다.
+- 팀 공용 저장소/벡터DB 동기화는 실수요가 확인되기 전까지 보류(영구 deferred 후보).
 
 ## 원칙
 
@@ -177,6 +227,7 @@ RAG 기본 루프가 안정된 뒤 진입합니다.
 - **삭제보다 표식 우선**: noise, stale, fetch failure 는 먼저 표시하고, 삭제 정책은 나중에 정합니다.
 - **working 은 query context, retrieved/external 은 retrieved context**: raw 질문을 근거처럼 과신하지 않도록 context section 을 분리합니다.
 - **민감정보는 저장 전 redaction**: raw token-shaped 문자열이 DB/FTS 에 들어가지 않도록 진입점에서 방어합니다.
+- **개인 기억과 팀 지식은 분리**: 로컬 RAG 는 개인 세션 연속성, Markdown/ADR export 는 팀 공유를 담당합니다.
 
 ## 장기 위험
 
@@ -221,6 +272,15 @@ Slack/Notion fetch 실패, stale, URL cap 초과를 사용자가 모르면 RAG �
 - `/memory status`.
 - 측정 후 tail-only parse, lockfile, daemon 분리, queue 통합 중 최소 대응 선택.
 
+### 벡터 검색 확장성
+
+현재 코사인 유사도는 `embedding.py` 의 `cosine_similarity_blob` 에서 1024차원을 파이썬 루프로 직접 계산하는 메모리 내 brute-force 방식입니다. 청크 수에 비례(O(N))해 느려집니다.
+
+대응:
+- 1024차원 float32 임베딩은 청크당 약 4KB(1만≈40MB, 10만≈400MB) 로 메모리도 함께 증가함을 전제합니다.
+- 청크가 수만 개를 넘고 latency 가 실측되면 ANN 인덱스(HNSW/IVF, `sqlite-vec`) 도입을 검토합니다.
+- 수백~수천 청크 규모에서는 brute-force 로 충분하므로 조기 최적화하지 않습니다.
+
 ### 선택 ML 의존성
 
 `sentence_transformers`, `transformers`, `sqlite-vec` 가 없을 수 있습니다.
@@ -230,6 +290,8 @@ Slack/Notion fetch 실패, stale, URL cap 초과를 사용자가 모르면 RAG �
 - LIKE fallback.
 - LLM judge fallback.
 - optional requirements 로 분리.
+- 단, 미설치 시 의미(벡터) 검색이 꺼져 "개념·자연어 질문으로 맥락 상기" 라는 핵심 목적이 키워드 수준으로 떨어집니다. graceful fallback 이 곧 "기능 동일" 은 아니라는 점을 사용자에게 명확히 알립니다(2026-05-21 실측에서 사용자 오해 확인).
+- 또한 bridge/backfill 구현 전에는 `sentence-transformers` 를 설치해도 자동 저장 memory 자체는 vector 대상이 아닙니다. 선택 ML 은 현재 `chunks_v2`/`summaries` 에 먼저 적용됩니다.
 
 ## 영구 deferred
 
@@ -245,10 +307,10 @@ Slack/Notion fetch 실패, stale, URL cap 초과를 사용자가 모르면 RAG �
 ## 최종 목표
 
 ```text
-Claude Code 세션
+Claude Code / Codex 세션
   + UserPromptSubmit hook
   + Stop hook
-  + local SQLite memory
+  + shared local SQLite memory (~/.imprint)
   + /memory skill
   + /retrieve grounding
   + optional external source fetch
