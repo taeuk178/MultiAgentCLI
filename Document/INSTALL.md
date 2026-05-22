@@ -1,6 +1,6 @@
 # Imprint — Claude/Codex Plugin 설치
 
-이 저장소는 Claude Code/Codex 플러그인입니다. 설치 후 Coding agent 세션에서 자동 hook, `/memory`, `/retrieve` 가 동작합니다.
+이 저장소는 Claude Code/Codex 플러그인입니다. 설치 후 Coding agent 세션에서 자동 hook 과 `/memory` 가 동작합니다. (`/retrieve` 는 현재 슬래시 커맨드로 등록돼 있지 않고 셸/CLI 로만 호출합니다 — 아래 "문서 RAG 명시 조회" 참조.)
 
 ## 사전 조건
 
@@ -165,16 +165,18 @@ Coding agent 세션 안에서:
 /memory status [--json]
 ```
 
-문서 RAG 명시 조회:
+문서 RAG 명시 조회 (셸/CLI — `/retrieve` 는 슬래시 커맨드로 미등록):
 
 ```text
-/retrieve "디버그 토글 누르면 어떻게 돼?"
-/retrieve --json "디버그 토글 누르면 어떻게 돼?"
-/retrieve --routed "테스트 모드 진입 UX 시나리오"
-/retrieve --routed --json "테스트 모드 진입 UX 시나리오"
+# 슬래시 커맨드가 아니라 셸에서 직접 실행합니다
+bash scripts/imprint/retrieve.sh "디버그 토글 누르면 어떻게 돼?"
+bash scripts/imprint/retrieve.sh --json "디버그 토글 누르면 어떻게 돼?"
+bash scripts/imprint/retrieve.sh --routed "테스트 모드 진입 UX 시나리오"
+bash scripts/imprint/retrieve.sh --routed --json "테스트 모드 진입 UX 시나리오"
+# 또는: (cd scripts/imprint/lib && python3 -m retrieval.cli retrieve_json <project_id> "<질문>" 5)
 ```
 
-`/retrieve --json` 과 `/retrieve --routed --json` 은 trace, context section, provenance, fallback/rerank 이유를 함께 반환합니다.
+`--json` 과 `--routed --json` 은 trace, context section, provenance, fallback/rerank 이유를 함께 반환합니다. (`/retrieve` 를 실제 슬래시 커맨드로 쓰려면 `skills/retrieve/SKILL.md` 추가가 필요합니다 — HANDOFF 우선순위 2번.)
 
 ## 데이터 위치
 

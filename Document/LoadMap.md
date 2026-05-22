@@ -128,6 +128,8 @@ retrieval v2 ingestion 은 `ingest_queue` 를 통해 후속 작업을 순차 처
 - 기본 bridge 는 embedding 을 만들지 않습니다. 선택 ML cold-load 가 hook 을 느리게 만들 수 있기 때문입니다.
 - 벡터 검색 검증은 `sentence-transformers` 설치 후 `python3 -m retrieval.cli bridge-memory <project_id> --all --embed` 로 기존 bridge row embedding 을 채운 뒤 진행합니다.
 - 아직 summary/entity/contradiction pipeline 자동 연결은 하지 않습니다. bridge 의 검색 품질과 운영 비용을 먼저 측정합니다.
+- **[2026-05-22 추가] 벡터가 채워져도 사용자 진입점이 없습니다.** `/retrieve` 는 슬래시 커맨드로 등록돼 있지 않고(셸/CLI 전용), 자동 prefill 은 키워드 FTS 한정입니다. 즉 임베딩이 생겨도 일상 사용에서 벡터를 트리거할 슬래시 커맨드가 없습니다. 진입점(`skills/retrieve/SKILL.md`)과 prefill 벡터화가 핵심 후속입니다(HANDOFF 우선순위 2·3번).
+- **[2026-05-22 추가] verbatim 세부 회수 경로가 없습니다.** 응답 원문 전체는 `events.llm_response`(+`events_fts` 인덱스, 트리거로 자동 유지)에 보관되나 이를 쿼리하는 검색기가 없어, distilled `memory_chunks` 요점만 회수됩니다. `events_fts` 키워드 기반 detailsearch 가 후보입니다(HANDOFF 우선순위 5번).
 
 ## 목표별 현재 일치도
 

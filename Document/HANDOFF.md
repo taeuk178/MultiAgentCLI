@@ -38,6 +38,8 @@ TOTAL  20 PASS / 0 FAIL
 - **FTS-only 폴백의 변별력 한계**: 한국어 자연어 질문으로 검색 시 상위 후보의 `rrf_score` 가 0.003 대로 촘촘하게 붙어 변별력이 약했고, 의미상 덜 관련된 청크(`fetchStepPerHourList` 등)도 "현재/저장" 같은 단어 매칭만으로 상위에 진입했습니다.
 - **핵심 목적과의 미스매치**: "로그인 feature 의 공유하기는 어떻게 구현됐었지" 류 큰 틀·개념 질문은 청크에 `share`/`deeplink`/`초대 링크` 등 다른 단어로 저장돼 있을 가능성이 커, 키워드만으로는 어휘 불일치로 놓치기 쉽습니다. 이 영역이 제품 핵심 목적인데 현재 가장 약합니다.
 - **[핵심 결함, 2026-05-22 1차 대응] 자동 저장 메모리는 임베딩을 켜도 벡터 검색이 안 됐음**: `memory_chunks` 테이블에는 embedding 컬럼이 없고, 과거 `/retrieve` 의 memory fallback 도 FTS5 키워드만 사용했습니다. 2026-05-22에 `memory_chunks → chunks_v2` bridge 와 backfill 명령을 추가해 persistent memory 가 `chunks_v2` 후보로 보이게 했습니다. 다만 기본 bridge 는 embedding 을 생성하지 않으므로, 실제 vector 품질 검증은 `--embed` backfill 또는 `IMPRINT_MEMORY_BRIDGE_EMBEDDING=1` 이후 진행해야 합니다.
+- **[2026-05-22 2차 확인] durable chunk 은 임베딩되지만 자동 주입은 여전히 키워드 경로**: `~/.zshrc` 에 `IMPRINT_MEMORY_BRIDGE_EMBEDDING=1` 이 적용돼, 새 세션부터 durable `memory_chunks` 가 bridge 시 `chunks_v2` 에 embedding 까지 생성됩니다 (실측: bridge 된 498 행 중 483 행 embedding 보유, 변수 적용 전 과도기 15 행만 NULL). `working` tier 와 `source_status` 는 설계상 bridge·임베딩 제외입니다. **핵심 미구현은 따로 있습니다**: 매 turn 자동 주입(`cmd_prefill → search_memory`)은 `memory_chunks` 의 FTS5/키워드/recency fallback 만 사용하므로, 생성된 embedding 은 명시 `/retrieve`(`chunks_v2`) 에서만 활용됩니다. 즉 "자동 메모리 주입에 의미 검색을 반영"하는 플로우는 미구현입니다. NULL 15 행은 `imprint setup vector --backfill`(→ `bridge-memory --all --embed`) 로 메울 수 있습니다.
+- **[2026-05-22 확인] verbatim 전체 응답은 `events` 에 있고 `events_fts` 로 이미 색인돼 있으나 검색기가 없음**: `events.llm_response` 는 응답 원문 전체(실측 1,300~2,800자)를 보관하고, `events_fts`(FTS5)가 트리거로 자동 유지됩니다(`schema.sql:65,80,84`). 그러나 이 인덱스를 쿼리하는 코드가 한 줄도 없어, 현재 어떤 검색·skill 도 `events` 를 보지 않습니다(retrieval 의 `DATA_TABLES` 는 마이그레이션 목록일 뿐 검색 대상 아님). 즉 verbatim 회수는 "검색기 연결만" 하면 되는 상태입니다. `events` 엔 embedding 컬럼이 없어 키워드(FTS) 한정이며, 의미검색까지 가려면 `events → chunks_v2` 임베딩 백필이 필요합니다. **데이터 horizon**: 현재 DB 최古 데이터가 2026-05-11(약 11일 전)이라 그 이전 시점(예: "2주 전")은 저장 자체가 없어 회수 불가 — events 보존/감쇠 정책(측정 후 결정할 안건)과 묶입니다.
 - **재현 메모**: `embedding_used` 와 변별력은 `python3 -m retrieval.cli retrieve_json <project_id> "<자연어 질문>" 5` 로 언제든 재확인할 수 있습니다. memory_chunks 스키마는 `sqlite3 ~/.imprint/app.sqlite ".schema memory_chunks"` 로 embedding 컬럼 부재를 직접 확인할 수 있습니다.
 
 ## 목표별 현재 일치도
@@ -53,25 +55,39 @@ TOTAL  20 PASS / 0 FAIL
 
 ## 다음 우선순위
 
+> 정렬 원칙: **벡터·의미 검색을 사용자에게 닿게 하는 것(제품 핵심 목적) → recall 확장·스케일 준비 → 검증·운영 → 후순위** 순. 1~3번이 핵심, 4~5번이 recall/스케일 인프라, 6~10번이 검증·운영, 11번이 backlog.
+
 1. **개념 질의 eval 세트 구성**
-   "로그인 feature 의 공유하기는 어떻게 구현됐었지" 류 자연어 질문 20~30개를 고정하고 `/retrieve_json` trace 를 비교합니다. 키워드와 벡터가 각각 어떤 후보를 회수하는지, `embedding_used`, `vector_rank`, top1 score, fallback 이유를 같이 기록합니다.
+   "로그인 feature 의 공유하기는 어떻게 구현됐었지" 류 자연어 질문 20~30개를 고정하고 `/retrieve_json` trace 를 비교합니다. 키워드와 벡터가 각각 어떤 후보를 회수하는지, `embedding_used`, `vector_rank`, top1 score, fallback 이유를 같이 기록합니다. *(측정 기반 — 벡터가 실제로 도움 되는지 증명해야 3번 투자 결정이 정당화되는 선행 조건이라 최상위.)*
 
-2. **bridge 후속 pipeline 판단**
-   bridge row 를 summary/entity/contradiction queue 에 자동 연결할지 결정합니다. 현재는 검색 후보 연결까지만 하고, queue 통합은 profile 과 eval 결과를 본 뒤 진행합니다.
+2. **[미구현] 벡터 검색의 사용자 진입점(슬래시 커맨드) 부재**
+   `/retrieve` 는 `soul.md`/`flow.md`/`skills/memory/SKILL.md` 에 사용자 커맨드처럼 서술돼 있으나, 실제로는 스킬·command 로 등록돼 있지 않습니다(등록 스킬은 `hud`/`memory`/`setup` 뿐, `plugin.json`·런타임 스킬 목록에도 없음). hybrid 파이프라인 코드(`retrieve.sh` + `lib/retrieval/`)는 셸(`bash scripts/imprint/retrieve.sh --json "<질문>" 5`)·CLI(`python3 -m retrieval.cli retrieve_json`) 로만 호출됩니다. `/memory search` 도 FTS5/LIKE 라, **현재 벡터 검색을 트리거하는 슬래시 커맨드가 하나도 없습니다.** 해결: `skills/retrieve/SKILL.md` 를 추가해 `retrieve.sh` 에 연결하거나, 문서에서 `/retrieve` 를 "셸/CLI 전용"으로 표기. *(가장 적은 노력으로 기존 벡터 엔진을 즉시 사용 가능하게 하는 항목이라 상위로 승격.)* 3번(자동 prefill 벡터화)과 함께 "벡터가 사용자에게 도달하는 경로"를 정리하는 작업입니다.
 
-3. **Codex/Claude 공유 smoke test**
-   같은 프로젝트에서 Codex 와 Claude Code 를 번갈아 열고 동일한 `~/.imprint/app.sqlite` 에 `events`/`memory_chunks` 가 쌓이는지 확인합니다. 설치 manifest 차이로 hook 이 한쪽에서 빠지는지 확인합니다.
+3. **[미구현 플로우 변경] 자동 prefill 주입의 벡터 경로 전환**
+   현재 매 turn 자동 주입(`user-prompt-submit.sh → cmd_prefill → search_memory`)은 `memory_chunks` 의 FTS5/키워드/recency fallback 만 사용합니다. bridge 로 `chunks_v2` 에 embedding 이 생겨도 자동 주입은 이를 쓰지 않고, 명시 `/retrieve` 만 벡터를 탑니다. 1번 eval 에서 벡터 우위가 확인되면, prefill 의 retrieved-memory 검색을 `chunks_v2` 벡터 경로(또는 FTS+vector hybrid)로 바꾸는 작업이 필요합니다. *(사용자 체감이 가장 큰 항목이나 1번(측정)·4번(스케일 선결) 뒤가 안전.)* 변경 시 hook latency(임베딩 쿼리 비용, Watch List 참조)와 `working` tier 제외 규칙을 함께 고려합니다.
 
-4. **실제 프로젝트 사용성 테스트**
+4. **[미구현/선결] 벡터·events 스케일 준비 — brute-force 검색 교체 + 보존 정책**
+   `_vector_search`(`retrieve.py:530-554`)는 `chunks_v2` 의 모든 current 임베딩을 매 쿼리마다 Python 코사인으로 선형 스캔합니다(O(N)). 코드 코멘트도 "데이터 규모가 커지면 sqlite-vec 로 교체"라고 명시합니다. 현재(임베딩 ~498개)는 무해하나, 3번(prefill 벡터화)·events 임베딩으로 후보가 늘면 latency budget(`flow.md` <130ms)을 초과하므로 **대규모 벡터화 이전에 `sqlite_vec`(vec0) 또는 ANN 경로 교체가 선결**입니다. 보존은 forgetting curve 방향(`events.score`/`last_accessed` 추가 → cron 으로 `score<threshold AND age>30d AND noise=1` 만 hard delete, 재사용 raw 는 영구)으로 잡습니다. 용량 실측: events 텍스트는 1년 ~50MB 로 가볍고 **무게는 임베딩(4KB/건, 텍스트의 4배)** 이므로, 'events 전부 임베딩'은 피하고 verbatim 은 events_fts 키워드(5번)로 커버합니다.
+
+5. **[미구현] verbatim/detail recall 경로 (events_fts 활용)**
+   응답 원문 전체는 `events.llm_response` 에 보관되고 `events_fts` 로 이미 색인돼 있으나, 이를 검색하는 코드/스킬이 없습니다. distilled `memory_chunks` 만으로는 "그때 LLM 이 말한 세부 전체"를 회수할 수 없으므로, `events_fts` 를 쿼리하는 `detailsearch` 경로(셸 dispatcher + 선택적 skill)를 검토합니다. 티어: (a) events_fts 키워드 verbatim 회수(인덱스 이미 존재, 최소 작업), (b) 날짜/source 필터, (c) 의미검색까지 가려면 `events → chunks_v2` 임베딩 백필. 회수 가능 범위는 events 보존 정책(4번·측정 후 결정할 안건)에 종속됩니다. 진짜 디테일의 원천은 git(코드)이고 events 는 verbatim 설명 보조라는 점을 함께 명시합니다.
+
+6. **실제 프로젝트 사용성 테스트**
    저장한 기억이 다음 turn, `/memory`, `/retrieve --json` 에서 실제 답변 근거로 충분히 보이는지 확인합니다.
 
-5. **setup UX 보강 여부 판단**
-   `imprint setup vector` 실사용 중 HF Hub 인증, 네트워크 실패, PEP 668 pip 실패, Claude Code skill 동기화에서 막히는 지점을 기록합니다. 필요하면 `HF_TOKEN` 안내와 실패 복구 메시지를 보강합니다.
+7. **bridge 후속 pipeline 판단**
+   bridge row 를 summary/entity/contradiction queue 에 자동 연결할지 결정합니다. 현재는 검색 후보 연결까지만 하고, queue 통합은 profile 과 eval 결과를 본 뒤 진행합니다.
 
-6. **운영 정책 캘리브레이션**
+8. **Codex/Claude 공유 smoke test**
+   같은 프로젝트에서 Codex 와 Claude Code 를 번갈아 열고 동일한 `~/.imprint/app.sqlite` 에 `events`/`memory_chunks` 가 쌓이는지 확인합니다. 설치 manifest 차이로 hook 이 한쪽에서 빠지는지 확인합니다.
+
+9. **운영 정책 캘리브레이션**
    `IMPRINT_PROFILE=1` 로 1~2주 데이터를 모아 gate, MEMFB threshold, rerank 조건, working TTL/cap, stale 기준을 조정합니다.
 
-7. **후순위 기능 확장 판단**
+10. **setup UX 보강 여부 판단**
+   `imprint setup vector` 실사용 중 HF Hub 인증, 네트워크 실패, PEP 668 pip 실패, Claude Code skill 동기화에서 막히는 지점을 기록합니다. 필요하면 `HF_TOKEN` 안내와 실패 복구 메시지를 보강합니다.
+
+11. **후순위 기능 확장 판단**
    workflow skill, registry, entity merge/split UI, unified storage 는 RAG 기본 루프가 실제 사용에서 안정된 뒤 진입합니다.
 
 ## 사용성 테스트 체크리스트
@@ -114,7 +130,7 @@ GROUP BY 1;
 
 - `IMPRINT_STALE_DAYS` 기본값이 실제 Notion/Slack 사용 주기에 맞는지.
 - `source_status` marker 를 얼마나 오래 보관할지, TTL 또는 dedup 이 필요한지.
-- `events.noise=1` row 를 계속 보존할지, 감쇠/삭제 정책을 둘지.
+- `events.noise=1` row 를 계속 보존할지, 감쇠/삭제 정책을 둘지 (forgetting curve: `events.score`/`last_accessed` 기반 soft→hard delete, 재사용 raw 영구 — 우선순위 4번).
 - working TTL/cap 이 실제 세션 길이에 맞는지.
 - `LOW_CONFIDENCE_TOP1`, `RG_MIN_CANDIDATES`, `RG_TOP1_THRESHOLD` 를 조정할지.
 - `memory_chunks → chunks_v2` bridge 를 기본 경로로 둘지, 장기적으로 unified storage 로 합칠지.
@@ -127,8 +143,9 @@ GROUP BY 1;
 - 새 hook 또는 background worker 추가 시 `IMPRINT_BYPASS_HOOKS` 가드를 반드시 확인합니다.
 - host CLI background 모델 호출은 10초 이상 걸릴 수 있으므로 동기 경로에 넣지 않습니다.
 - 선택 ML 의존성 미설치 상태에서도 FTS-only / rule fallback 이 정상이어야 합니다.
-- 선택 ML 의존성을 설치해도 bridge row embedding 을 채우기 전에는 자동 메모리가 vector 검색 대상이 아니라는 점을 사용자 문서에 계속 명시합니다.
+- bridge row embedding 이 채워져도(현재 `IMPRINT_MEMORY_BRIDGE_EMBEDDING=1` 적용) 자동 주입(prefill)은 `memory_chunks` FTS 경로라 vector 를 쓰지 않습니다. 자동 메모리의 의미 검색은 prefill 을 `chunks_v2` 벡터 경로로 전환(다음 우선순위 3번)하기 전까지 명시 `/retrieve` 한정이라는 점을 사용자 문서에 계속 명시합니다.
 - `IMPRINT_MEMORY_BRIDGE_EMBEDDING=1` 상시 활성화가 hook latency 를 얼마나 늘리는지 profile 로 확인하기 전에는 기본값으로 켜지 않습니다.
+- 벡터 검색은 현재 brute-force 입니다(`_vector_search` 가 `chunks_v2` 모든 임베딩을 O(N) 코사인 스캔). 대규모 임베딩(특히 events) 추가 전 `sqlite_vec`(vec0)/ANN 교체가 선결이며, events 는 전부 임베딩하지 않고 verbatim 은 `events_fts` 키워드로 회수합니다(우선순위 4·5번). 용량 무게는 텍스트가 아니라 임베딩(4KB/건)에 있습니다.
 - 운영 피드백은 바로 기능 추가로 옮기기보다 `/retrieve_json` trace 와 profile 데이터로 먼저 확인합니다.
 
 ## 다음 세션 시작 순서

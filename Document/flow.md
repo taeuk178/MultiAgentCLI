@@ -267,6 +267,8 @@ flowchart LR
 
 ## /retrieve 경로
 
+> 표기 주의: 본 문서의 `/retrieve` 는 검색 파이프라인을 가리키는 약칭이며, **현재 슬래시 커맨드로 등록돼 있지 않습니다**(등록 스킬은 `hud`/`memory`/`setup` 뿐). 실제 호출은 셸 `bash scripts/imprint/retrieve.sh [--routed] [--json] "<질문>"` 또는 `python3 -m retrieval.cli` 입니다. 슬래시 커맨드화는 `skills/retrieve/SKILL.md` 추가가 필요합니다(HANDOFF 우선순위 2번). 자동 hook prefill 은 이 경로를 호출하지 않습니다(키워드 FTS 한정).
+
 | scope | 동작 |
 |---|---|
 | local | `chunk_retrieve(query, top_k=10)` 후 confirmed contradiction 조회 |
