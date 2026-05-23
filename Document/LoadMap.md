@@ -20,7 +20,9 @@ imprint 는 Claude Code/Codex hook·skill 시스템 위에서 동작하는 로�
        event archive, working surface metadata, gate, context section prefill
   -> Claude Code / Codex 응답
   -> Stop hook
-       response archive, persistent search_entries extract
+       response archive, flat search_entries extract
+  -> delta/rollup
+       stale 또는 명시 session 단위로 decision-rich search_entries extract
   -> 다음 turn
        저장된 기억이 다시 prefill/search 후보가 됨
 ```
@@ -104,7 +106,7 @@ retrieval v2 ingestion 은 `ingest_queue` 를 통해 후속 작업을 순차 처
 
 ## 현재 기준선
 
-2026-05-24 기준 RAG 기본 기능, 1차 운영 관측성, `search_entries` 통합 스키마, `/search`, `/remember`, vector setup dispatcher 는 적용 완료입니다.
+2026-05-24 기준 RAG 기본 기능, 1차 운영 관측성, `search_entries` 통합 스키마, `/search`, `/remember`, delta/rollup extract, vector setup dispatcher 는 적용 완료입니다.
 
 - redaction coverage.
 - hook memory loop smoke test.
@@ -115,9 +117,10 @@ retrieval v2 ingestion 은 `ingest_queue` 를 통해 후속 작업을 순차 처
 - external source 상태 가시화.
 - events noise soft flag.
 - 명시 검색 JSON trace.
+- delta/rollup 기반 구현 결정 arc 저장과 `/search` 세부 근거 출력.
 - `search_entries` migration/backfill.
 - text_hash 기반 dedup.
-- 테스트 기준선: `23 PASS / 0 FAIL`.
+- 테스트 기준선: `31 PASS / 0 FAIL`.
 
 완료된 결정과 이유는 `HISTORY.md` 에 남깁니다.
 
@@ -136,21 +139,22 @@ persistent memory 와 의미(벡터) 검색이 연결돼 있지 않았던 문제
 
 | 목표 | 현재 일치도 | 장기 방향 |
 |---|---|---|
-| 세션 종료 후 문맥 저장 | 부분 일치. raw event archive 와 search entry 저장은 있으나, 재상기는 추출 품질과 명시 저장 품질에 크게 의존합니다. | `/remember` 선별 저장, Stop extract 품질, search entry confidence 표현을 높입니다. |
+| 세션 종료 후 문맥 저장 | 상당 부분 일치. raw event archive, flat extract, delta/rollup rich extract, `/remember` 가 모두 `search_entries` 로 모입니다. | 실제 프로젝트 eval 로 추출 품질과 stale rollup 운영성을 측정합니다. |
 | Codex / Claude Code 간 동일 문맥 | 방향 일치. 기본 저장소는 `~/.imprint` 로 통합됐습니다. | 설치/manifest/hook 검증을 양 host 회귀 테스트로 고정합니다. |
-| 큰 틀·개념 질문으로 맥락 상기 | 부분 개선. `/remember` 와 추출된 persistent memory 는 `search_entries` 후보가 됐지만, embedding/backfill 과 eval 이 아직 남았습니다. | `imprint setup vector --backfill` 기반 의미 검색 검증 후 feature/project summary 로 끌어올립니다. |
+| 큰 틀·개념 질문으로 맥락 상기 | 부분 개선. `/remember`, source document, rollup decision entry 는 `/search` 후보가 되고 세부 근거도 출력됩니다. embedding/backfill 과 eval 은 아직 남았습니다. | `imprint setup vector --backfill` 기반 의미 검색 검증 후 feature/project summary 로 끌어올립니다. |
 | 다른 개발자도 참고하는 공유 기록 | 장기 미구현. 로컬 SQLite 는 개인 기억에 적합하지만 팀 지식 공유에는 부적합합니다. | decision/summary chunk 를 ADR/Markdown 으로 export 해 git/PR review 에 얹습니다. |
 
 ## 로드맵
 
-### 1. persistent memory 의미 검색 기반 구축
+### 1. persistent memory 의미 검색 검증
 
-`search_entries` 통합은 완료됐습니다. 남은 작업은 embedding 채움과 검색 품질 검증입니다.
+`search_entries` 통합과 `/search` UX 1차 개선은 완료됐습니다. 남은 작업은 embedding 채움과 검색 품질 검증입니다.
 
 - Stop extract, external lazy-fetch, `/remember`, source document ingest 는 `search_entries` 에 직접 저장됩니다.
 - 기존 사용자 DB는 `imprint migrate search-entries` 로 명시 migration 합니다.
 - `imprint setup vector --backfill` 은 현재 프로젝트의 `search_entries.embedding` 을 채웁니다.
 - 신규/기존 memory 가 명시 검색 경로에서 `search_entries` 후보로 보이는 것은 테스트로 고정했습니다. 다음은 embedding 가용 시 vector path 품질 검증입니다.
+- rollup decision entry 의 `reason/files/symbols/tests/event_range` 가 `/search` 출력에 보이는 것은 테스트로 고정했습니다.
 - 확장 가능성: `/search` 유사도 품질과 latency 가 충분히 검증되면, 명시 검색 결과를 prefill 자동 주입으로 연결할 수 있습니다. 현재 로드맵에서는 가능성만 남기고 기본 동작으로 두지 않습니다.
 
 ### 2. RAG 사용성 검증과 confidence 표현

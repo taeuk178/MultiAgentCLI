@@ -292,7 +292,7 @@ python3 scripts/imprint/tests/run_tests.py
 현재 기준선:
 
 ```text
-23 PASS / 0 FAIL
+31 PASS / 0 FAIL
 ```
 
 문법만 빠르게 확인:
