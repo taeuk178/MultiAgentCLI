@@ -1089,6 +1089,63 @@ def tc_23_setup_vector_logging(env: dict, home: str, case: CaseResult) -> None:
     )
 
 
+def tc_24_extract_eval_harness(env: dict, home: str, case: CaseResult) -> None:
+    """Offline eval harness accepts a pluggable extractor and scores search hits."""
+    code = """
+import json, sys
+sys.path.insert(0, %r)
+import ingestion
+from retrieval.extract_eval import run_eval
+
+def fake_model(_prompt, **_kwargs):
+    return json.dumps([
+        {
+            "chunk_type": "decision",
+            "text": "ShareLinkBuilder가 공유 링크 생성을 담당한다.",
+            "keywords": ["ShareLinkBuilder", "공유 링크"],
+        }
+    ], ensure_ascii=False)
+
+ingestion.run_background_model = fake_model
+fixture = {
+    "id": "decision-rich-baseline",
+    "turns": [
+        {"role": "user", "text": "공유 링크 생성을 LoginViewModel에 넣어도 될까요?"},
+        {"role": "assistant", "text": "결정: ShareLinkBuilder가 공유 링크 생성을 담당한다. 이유: LoginViewModel 책임을 분리하기 위해서다."},
+    ],
+    "questions": [
+        {"query": "ShareLinkBuilder 왜 만들었지", "expected_terms": ["ShareLinkBuilder"]},
+    ],
+}
+with ingestion.db() as conn:
+    out = run_eval(
+        conn,
+        project_id=%r,
+        fixture=fixture,
+        extractor=ingestion.extract_chunks_from_response,
+    )
+print(json.dumps(out, ensure_ascii=False))
+""" % (str(LIB_DIR), PROJECT_ID)
+    rc, out, err = run_python(env, code)
+    try:
+        result = json.loads(out)
+    except json.JSONDecodeError:
+        result = {}
+    checks = {
+        "ok": rc == 0,
+        "inserted": result.get("inserted") == 1,
+        "matched": result.get("matched") == 1 and result.get("total") == 1,
+        "pluggable": result.get("fixture_id") == "decision-rich-baseline",
+    }
+    case.metrics = checks | {"result": result, "err": err[:120]}
+    case.passed = all(checks.values())
+    case.detail = (
+        f"inserted={result.get('inserted')} matched={result.get('matched')}/{result.get('total')}"
+    )
+    if not case.passed:
+        case.detail += f" err={err[:120]}"
+
+
 def tc_15_first_turn_working_overlay(env: dict, home: str, case: CaseResult) -> None:
     """UserPromptSubmit sync mini-chunk + prefill/search working overlay."""
     env_h = hook_env(env)
@@ -1776,6 +1833,7 @@ CASES: list[tuple[str, str, callable]] = [
     ("TC-21", "Search skill dispatcher", tc_21_search_skill_dispatcher),
     ("TC-22", "Remember skill dispatcher", tc_22_remember_skill_dispatcher),
     ("TC-23", "Setup vector progress logging", tc_23_setup_vector_logging),
+    ("TC-24", "Extract eval harness", tc_24_extract_eval_harness),
 ]
 
 
