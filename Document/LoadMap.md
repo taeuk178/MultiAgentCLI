@@ -189,7 +189,7 @@ RAG 기본 루프가 안정된 뒤 진입합니다.
 
 필요성이 실사용에서 확인될 때만 진행합니다.
 
-- 벡터 검색 setup 경험: `imprint setup vector` 의 설치/모델 warmup/backfill 실패 복구, HF Hub 인증 안내, 현재 "키워드 폴백 중" 신호를 더 분명히 알리는 UX.
+- 벡터 검색 setup 경험: `imprint setup vector` 는 단계별 진행 로그와 실패 힌트를 남깁니다. 다음은 실제 설치 실패 사례를 모아 HF Hub 인증, Python 환경 정책, 현재 "키워드 폴백 중" 신호를 더 분명히 다듬는 일입니다.
 - entity merge/split UI.
 - chunk lifecycle 정책.
 - contradiction threshold calibration.

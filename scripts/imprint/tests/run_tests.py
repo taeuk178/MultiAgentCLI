@@ -1072,6 +1072,36 @@ def tc_22_remember_skill_dispatcher(env: dict, home: str, case: CaseResult) -> N
     )
 
 
+def tc_23_setup_vector_logging(env: dict, home: str, case: CaseResult) -> None:
+    """Vector setup reports Korean progress and rejects typo options with logs."""
+    rc, out, err = run_cmd(env, ["bash", "scripts/imprint/setup.sh", "vector", "--status"])
+    rc_bad, _, err_bad = run_cmd(env, ["bash", "scripts/imprint/setup.sh", "vector", "--bogus"])
+    log_text = (Path(home) / "plugin.log").read_text() if (Path(home) / "plugin.log").exists() else ""
+
+    checks = {
+        "status_ok": rc == 0,
+        "stdout_progress": "[imprint setup] status 시작" in out
+        and "[imprint setup] status 완료" in out
+        and "vector_ready:" in out,
+        "log_progress": "setup: status 시작" in log_text
+        and "setup: status 완료" in log_text,
+        "typo_rejected": rc_bad == 2
+        and "알 수 없는 vector 옵션: --bogus" in err_bad
+        and "ERROR: setup: 알 수 없는 vector 옵션: --bogus" in log_text,
+    }
+    case.metrics = checks | {
+        "status_rc": rc,
+        "bad_rc": rc_bad,
+        "stdout": out[:160],
+        "stderr": (err or err_bad)[:160],
+    }
+    case.passed = all(checks.values())
+    case.detail = (
+        f"status={checks['status_ok']} progress={checks['stdout_progress']} "
+        f"log={checks['log_progress']} typo={checks['typo_rejected']}"
+    )
+
+
 def tc_15_first_turn_working_overlay(env: dict, home: str, case: CaseResult) -> None:
     """UserPromptSubmit sync mini-chunk + prefill/search working overlay."""
     env_h = hook_env(env)
@@ -1706,6 +1736,7 @@ CASES: list[tuple[str, str, callable]] = [
     ("TC-20", "memory_chunks bridge/backfill", tc_20_memory_bridge_backfill),
     ("TC-21", "Search skill dispatcher", tc_21_search_skill_dispatcher),
     ("TC-22", "Remember skill dispatcher", tc_22_remember_skill_dispatcher),
+    ("TC-23", "Setup vector progress logging", tc_23_setup_vector_logging),
 ]
 
 

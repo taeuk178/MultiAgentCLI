@@ -35,9 +35,60 @@ USAGE
 
 require_python() {
   if ! command -v python3 >/dev/null 2>&1; then
-    echo "python3 not found in PATH" >&2
-    exit 1
+    setup_error "PATH에서 python3를 찾을 수 없습니다"
+    return 1
   fi
+}
+
+setup_log() {
+  local msg="$*"
+  echo "[imprint setup] $msg"
+  log_info "setup: $msg"
+}
+
+setup_error() {
+  local msg="$*"
+  echo "[imprint setup] ERROR: $msg" >&2
+  log_error "setup: $msg"
+}
+
+setup_hint() {
+  local label="$1"
+  case "$label" in
+    install)
+      echo "[imprint setup] 힌트: network, pip, Python 환경 정책 때문에 install이 막혔을 수 있습니다." >&2
+      echo "[imprint setup] 힌트: 인터넷 연결을 확인한 뒤 다시 실행하고, 필요하면 $IMPRINT_LOG 를 확인하세요." >&2
+      ;;
+    warmup)
+      echo "[imprint setup] 힌트: model 다운로드 또는 cache 접근이 막혔을 수 있습니다. HF_TOKEN을 설정하면 HuggingFace rate limit이 완화됩니다." >&2
+      echo "[imprint setup] 힌트: Python traceback은 $IMPRINT_LOG 에서 확인하세요." >&2
+      ;;
+    backfill)
+      echo "[imprint setup] 힌트: project id를 확인하고 'imprint setup vector --status' 를 먼저 실행해 보세요." >&2
+      echo "[imprint setup] 힌트: bridge/backfill 상세 내용은 $IMPRINT_LOG 에서 확인하세요." >&2
+      ;;
+    status)
+      echo "[imprint setup] 힌트: status는 import 가능 여부만 확인합니다. python3 사용 가능 여부와 $IMPRINT_LOG 를 확인하세요." >&2
+      ;;
+  esac
+}
+
+run_step() {
+  local label="$1"
+  shift
+  local start
+  start=$(date +%s)
+  setup_log "$label 시작"
+  if "$@"; then
+    local end
+    end=$(date +%s)
+    setup_log "$label 완료 ($((end - start))s)"
+    return 0
+  fi
+  local rc=$?
+  setup_error "$label 실패 (exit=$rc)"
+  setup_hint "$label"
+  return "$rc"
 }
 
 vector_status() {
@@ -64,7 +115,12 @@ PY
 
 vector_install() {
   require_python
-  python3 -m pip install --user --break-system-packages -r "$IMPRINT_PLUGIN_ROOT/requirements-optional.txt"
+  local req="$IMPRINT_PLUGIN_ROOT/requirements-optional.txt"
+  if python3 -m pip help install 2>/dev/null | grep -q -- '--break-system-packages'; then
+    python3 -m pip install --user --break-system-packages -r "$req"
+  else
+    python3 -m pip install --user -r "$req"
+  fi
 }
 
 vector_warmup() {
@@ -74,9 +130,9 @@ from retrieval import embedding
 
 blob = embedding.embed_text("imprint vector setup warmup")
 if blob is None:
-    print("embedding_warmup: failed")
+    print("embedding_warmup: 실패")
     raise SystemExit(1)
-print(f"embedding_warmup: ok bytes={len(blob)}")
+print(f"embedding_warmup: 완료 bytes={len(blob)}")
 PY
 }
 
@@ -106,29 +162,34 @@ cmd_vector() {
       --project-id) pid="${2:-}"; shift 2 ;;
       --print-env) do_print_env=1; shift ;;
       -h|--help) usage; exit 0 ;;
-      *) echo "unknown option: $1" >&2; usage >&2; exit 2 ;;
+      *) setup_error "알 수 없는 vector 옵션: $1"; usage >&2; exit 2 ;;
     esac
   done
 
+  setup_log "vector setup 로그: $IMPRINT_LOG"
+  setup_log "vector 실행 계획: status=$do_status install=$do_install warmup=$do_warmup backfill=$do_backfill print_env=$do_print_env project_id=${pid:-auto}"
+
   if (( do_print_env )); then
+    setup_log "새 memory 자동 embedding 설정을 출력합니다"
     echo "export IMPRINT_MEMORY_BRIDGE_EMBEDDING=1"
   fi
 
   if (( do_install )); then
-    vector_install
+    run_step install vector_install
   fi
 
   if (( do_warmup )); then
-    vector_warmup
+    run_step warmup vector_warmup
   fi
 
   if (( do_backfill )); then
     [[ -n "$pid" ]] || pid=$(project_id)
-    vector_backfill "$pid"
+    setup_log "project_id 확인: $pid"
+    run_step backfill vector_backfill "$pid"
   fi
 
   if (( do_status || (do_install == 0 && do_warmup == 0 && do_backfill == 0 && do_print_env == 0) )); then
-    vector_status
+    run_step status vector_status
   fi
 }
 
@@ -143,7 +204,7 @@ main() {
       usage
       ;;
     *)
-      echo "unknown target: $1" >&2
+      setup_error "알 수 없는 setup target: $1"
       usage >&2
       exit 2
       ;;

@@ -199,6 +199,7 @@ IMPRINT_HOME=/tmp/imprint-test python3 scripts/imprint/tests/run_tests.py
 기본 설치만으로도 FTS5(키워드) 검색으로 동작합니다. **의미(유사도) 기반 검색이 필요할 때만** 아래 의존성을 추가하세요. plugin 에 포함되지 않으므로 **사용자별로 각자 설치**해야 하며, 미설치 시 키워드 검색으로 자동 폴백합니다.
 
 권장 경로는 setup dispatcher 입니다. 의존성 설치, BGE-M3 warmup, 현재 프로젝트 memory embedding backfill 을 한 번에 처리합니다.
+실행 중에는 `[imprint setup] status 시작/완료`, `install 실패 ...` 형식의 진행 로그가 출력되고, 같은 내용은 `~/.imprint/plugin.log` 에도 남습니다. 실패하면 단계별 복구 힌트를 먼저 확인하세요.
 
 ```bash
 imprint setup vector --install --warmup --backfill

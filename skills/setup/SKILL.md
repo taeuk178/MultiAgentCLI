@@ -54,3 +54,5 @@ Only edit `~/.zshrc` or another shell rc file when the user explicitly asks. Oth
 - `--warmup` may download the BGE-M3 model into the HuggingFace cache.
 - `--backfill` only touches the current project id unless `--project-id <id>` is passed.
 - The script uses `IMPRINT_MEMORY_BRIDGE_EMBEDDING=1` only when the user chooses to persist it; default plugin behavior stays lightweight.
+- The dispatcher prints `[imprint setup]` progress lines for each step and writes the same setup events to `~/.imprint/plugin.log`.
+- On failure, report the failed step, exit code, and hint shown by the dispatcher. Ask the user to inspect `~/.imprint/plugin.log` when the Python traceback or pip output is needed.

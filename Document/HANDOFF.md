@@ -6,7 +6,7 @@
 - 결정 사유와 폐기한 대안은 `HISTORY.md` 를 봅니다.
 - 설치와 사용자 명령은 `README.md`, 상세 플로우와 의존성은 `flow.md` 를 봅니다.
 
-최종 업데이트: 2026-05-23.
+최종 업데이트: 2026-05-24.
 
 ## 현재 기준선
 
@@ -25,7 +25,7 @@ RAG 기본 기능과 1차 운영 관측성은 적용 완료된 상태입니다.
 
 ```text
 python3 scripts/imprint/tests/run_tests.py
-TOTAL  22 PASS / 0 FAIL
+TOTAL  23 PASS / 0 FAIL
 ```
 
 테스트는 임시 `IMPRINT_HOME=/tmp/...` 방식으로 격리합니다. 사용자 홈 `~/.imprint` 직접 수정은 명시 동의 전까지 하지 않습니다.
@@ -59,9 +59,6 @@ TOTAL  22 PASS / 0 FAIL
 
 2. **[미구현] `/search` confidence 수치화와 표시 기준**
    현재 `confidence` 는 확률값이 아니라 `final_score`, `LOW_CONFIDENCE_TOP1`, `fallback_reasons`, `rerank_gate_reason`, `embedding_used`, `vector_rank` 를 조합한 내부 휴리스틱입니다. 사용자에게 그대로 0~1 확률처럼 노출하면 오해가 생기므로, 먼저 eval 세트에서 top1 score 분포와 fallback 사유를 모아 `evidence_strength=strong|medium|weak` 또는 calibrated numeric score 를 정의합니다. 출력에는 숫자만 두지 말고 "왜 weak 인지"(예: `top1_below_threshold`, `memory_fallback`, `entity_mismatch`) 를 함께 보여줍니다.
-
-3. **setup UX 보강 여부 판단**
-   `imprint setup vector` 실사용 중 HF Hub 인증, 네트워크 실패, PEP 668 pip 실패, Claude Code skill 동기화에서 막히는 지점을 기록합니다. 필요하면 `HF_TOKEN` 안내와 실패 복구 메시지를 보강합니다.
 
 ## 사용성 테스트 체크리스트
 
@@ -113,6 +110,7 @@ GROUP BY 1;
 - host CLI background 모델 호출은 10초 이상 걸릴 수 있으므로 동기 경로에 넣지 않습니다.
 - 선택 ML 의존성 미설치 상태에서도 FTS-only / rule fallback 이 정상이어야 합니다.
 - `IMPRINT_MEMORY_BRIDGE_EMBEDDING=1` 상시 활성화가 hook latency 를 얼마나 늘리는지 profile 로 확인하기 전에는 기본값으로 켜지 않습니다.
+- `imprint setup vector --status/--install/--warmup/--backfill` 이 `[imprint setup] status 시작/완료`, `install 실패 ...` 같은 한국어 진행 로그와 실패 힌트를 화면과 `plugin.log` 양쪽에 남기는지 확인합니다.
 - 운영 피드백은 바로 기능 추가로 옮기기보다 내부 retrieval trace 와 profile 데이터로 먼저 확인합니다.
 
 ## 다음 세션 시작 순서

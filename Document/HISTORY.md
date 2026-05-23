@@ -15,6 +15,12 @@
 
 기록 순서는 **최신이 위**. 항목당 한 단락 안에 변경/사유/대안 폐기 근거를 묶는다.
 
+## 2026-05-24 — setup vector 진행 로그와 실패 힌트 보강
+
+**무엇:** `imprint setup vector` 가 `--status`, `--install`, `--warmup`, `--backfill` 단계마다 `[imprint setup] status 시작/완료`, `install 실패 ...` 같은 한국어 진행 로그를 stdout/stderr 와 `plugin.log` 에 남기도록 보강했다. 실패 시 단계별 힌트(`pip`/네트워크/PEP 668, HF Hub 인증·모델 cache, project id/backfill 확인)를 출력하고, 알 수 없는 옵션은 사용자가 입력한 오타를 그대로 저장하거나 무시하지 않고 에러와 로그로 남긴다. `TC-23` 으로 status 진행 로그와 오타 옵션 거부를 회귀 테스트에 추가했다.
+
+**왜:** optional vector setup 은 Python site-packages 설치, HuggingFace 모델 다운로드, 기존 memory backfill 처럼 실패 지점이 많고 시간이 걸릴 수 있다. 사용자가 “멈춘 것인지, 설치 중인지, 어떤 단계에서 실패했는지”를 바로 알 수 있어야 setup 을 신뢰할 수 있다. 전체 설치를 자동 복구하는 대안은 사용자 Python 환경과 네트워크 정책을 과하게 건드리므로 보류하고, 현재는 진행 상태와 복구 단서가 명확히 보이는 UX 를 먼저 적용한다.
+
 ## 2026-05-23 — `/remember` 명시 저장 스킬 추가
 
 **무엇:** `skills/remember/SKILL.md` 와 `scripts/imprint/remember.sh` 를 추가해 기존 `/memory remember` 저장 경로를 사용자-facing `/remember` 로 노출했다. Codex 설치 wrapper 에도 `imprint remember` subcommand 를 추가했고, plugin keyword/default prompt 와 사용 문서를 `/remember` 기준으로 보강했다. `/remember` 는 새 저장소를 만들지 않고 `memory_chunks` 에 저장한 뒤 기존 bridge 를 통해 `chunks_v2` 검색 후보로 승격한다. public 중요도 플래그는 `--require` / `--high` / `--middle` / `--low` 로 두고 기본값은 `middle` 이며, metadata 의 `importance` 로 보존한다. 알 수 없는 `--옵션` 은 텍스트로 저장하지 않고 에러와 plugin log 를 남긴다.
