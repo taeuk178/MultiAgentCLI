@@ -324,6 +324,104 @@ confirmed contradiction 에 연결된 chunk 는 BOOST 단계에서 강하게 감
 | `contradictions` | 같은 entity/scope 에서 충돌 가능성이 있는 chunk pair 판정 캐시입니다. | candidate 는 약한 감점, confirmed 는 강한 감점 |
 | `ingest_queue` | summary/NER/contradiction 같은 후속 작업 queue 입니다. 현재 `memory_chunks` 직접 저장 경로는 queue 를 거치지 않고 bridge 까지만 수행합니다. | priority 낮을수록 먼저 처리 |
 
+## 제안: `search_entries` 통합 스키마 초안
+
+> **상태: 구현 전 설계 초안.** 위 "SQLite 테이블 역할"이 현재 실제 코드/DB 기준이고, 이 섹션은 **구현 예정 구조**다. 구현이 들어가기 전까지 두 섹션은 공존하며, 구현 완료 후 위 현재-스키마 서술을 이 구조로 교체한다. 결정 사유와 폐기된 대안은 `HISTORY.md` 2026-05-24 항목 참조.
+
+### 동기
+
+현재 `memory_chunks → documents → chunks_v2` bridge 는 memory 1건을 synthetic `documents` 1건 + `chunks_v2` 1건으로 승격해, 같은 텍스트를 최대 5벌(`memory_chunks.text`, `documents.raw_text`, `chunks_v2.chunk_text`/`retrieval_text`, FTS 2벌)로 저장한다. `documents` 에 `memory_chunks:<id>` synthetic 문서가 섞여 "원본 문서" 의미가 깨지고, `/search` 는 chunks_v2 primary + memory_chunks fallback 으로 같은 내용을 두 경로로 찾는다. 통합하면 bridge·synthetic document·이중 FTS·fallback 이 사라진다.
+
+### 현재 → 제안 매핑
+
+| 현재 | 제안 | 변화 |
+|---|---|---|
+| `events` | `events` | 유지. raw 대화 로그, 검색 제외, working overlay 소스. `events_fts`/트리거는 제거 |
+| `memory_chunks` | (제거 → `search_entries` 흡수) | working raw turn 은 저장 안 함, persistent memory 는 search_entries 로 |
+| `documents` | `source_documents` | 진짜 원본만(Slack/Notion/PRD/Plan/ADR/file). synthetic 문서 금지 |
+| `chunks_v2` | `search_entries` | 검색 가능한 모든 단위의 단일 인덱스 |
+| `summaries` | `search_summaries` | 이름만 |
+| `chunk_entities` | `entry_entities` | `chunk_id → entry_id` |
+| `contradictions` | `contradictions` | `chunk_a_id`/`chunk_b_id → entry_a_id`/`entry_b_id` (이름만) |
+| `summary_links` | `summary_links` | `child_kind` 의 `chunk → entry` |
+
+`projects`, `conversations`, `entities`, `entity_aliases`, `ingest_queue` 는 유지.
+
+### `search_entries` DDL 초안
+
+```sql
+-- chunks_v2 + memory_chunks 흡수. 검색 가능한 모든 단위의 단일 인덱스.
+-- working overlay 정보는 search_entries에 저장하지 않고,
+-- events.metadata_json의 query_surfaces / need_retrieval / retrieval_reason을 사용한다.
+CREATE TABLE search_entries (
+  id                  TEXT PRIMARY KEY,
+  project_id          TEXT NOT NULL REFERENCES projects(id),
+  source_document_id  TEXT REFERENCES source_documents(id),  -- nullable
+  source_event_id     TEXT REFERENCES events(id),            -- nullable
+  origin              TEXT NOT NULL,   -- manual_remember | assistant_extract | source_document
+  raw_type            TEXT,            -- 아래 raw_type 목록
+  normalized_type     TEXT,            -- requirement | decision | discussion | code_note (2층)
+  chunk_index         INTEGER,         -- source_document child일 때만 의미, 단건은 0
+  section_path        TEXT,
+  text                TEXT NOT NULL,   -- 원문
+  context_prefix      TEXT,
+  retrieval_text      TEXT NOT NULL,   -- 임베딩·FTS 기준 (context_prefix + text)
+  embedding           BLOB,
+  plan_key            TEXT,            -- nullable, day-1 대부분 NULL
+  feature_key         TEXT,            -- nullable, entities와 통합 정책 미정
+  source_created_at   TEXT,
+  source_updated_at   TEXT,
+  valid_from          TEXT,
+  valid_to            TEXT,
+  is_current          INTEGER NOT NULL DEFAULT 1,
+  supersedes_entry_id TEXT REFERENCES search_entries(id),
+  pinned              INTEGER NOT NULL DEFAULT 0,
+  metadata_json       TEXT NOT NULL DEFAULT '{}',  -- importance 등
+  created_at          TEXT NOT NULL
+);
+-- source_document child 중복 방지: source_document_id 가 있을 때만
+--   (source_document_id, chunk_index) UNIQUE (partial index).
+
+CREATE VIRTUAL TABLE search_entries_fts USING fts5(  -- chunks_v2_fts + memory_chunks_fts 대체
+  retrieval_text, content='search_entries', content_rowid='rowid', tokenize='trigram');
+```
+
+### type 2층
+
+retrieval routing/boost 가 `normalized_type` 을 쓰므로 2층을 유지한다.
+
+- `raw_type`: `decision | fix | todo | code_context | note | plan_step | requirement | message | thread | command | error | test_result | summary`
+- `normalized_type`: `decision | requirement | discussion | code_note`
+
+`raw_type=summary` 는 assistant extract 의 "요약 메모"이고, `search_summaries` 테이블의 feature/global 요약과는 다른 개념이다. 이름이 겹치므로 문서·코드에서 구분을 명확히 한다.
+
+### `origin` 별 저장 경로
+
+```
+대화 전체             → events (검색 제외)
+세션 working overlay   → 검색 시점에 events에서 session_id로 읽어 soft union (search_entries에 저장 안 함)
+/remember             → search_entries(origin=manual_remember, source_event_id=…)
+assistant 추출         → search_entries(origin=assistant_extract, source_event_id=…)
+Slack/Notion/PRD/Plan  → source_documents → search_entries(origin=source_document, source_document_id=…)
+/search               → search_entries primary → search_summaries optional → events 자동 fallback 없음 (raw events는 explicit debug에서만)
+```
+
+### `plan_key` / `feature_key` 기대치
+
+- 컬럼 자리만 둔다. **day-1 대부분 NULL** 이다.
+- 값을 채우는 추출/ingest 경로는 **별도 과제**다.
+- `feature_key` 는 `entities`/`entity_aliases` 와 중복될 수 있어, 통합 정책은 나중에 정한다.
+
+### 미결 (구현 전 확정 필요)
+
+1. **working overlay** — events 에서 뽑으면 기존 working mini-chunk 의 가공 정보(query_surfaces / need_retrieval / retrieval_reason)를 잃는다. 결정: working mini-chunk 테이블을 없애되, 이 surface metadata 를 `events.metadata_json` 에 저장하고 overlay 는 검색 시점에 현재 session_id 의 최근 user_message 에서 읽는다.
+2. **plan_key / feature_key 채우는 경로** — entity/NER 통합 여부 포함 미정.
+3. **`source_documents` 재수집(checksum 변경)** 시 child `search_entries` 의 validity(`valid_from/valid_to/is_current/supersedes_entry_id`) 캐리오버 정책.
+
+### migration 방향
+
+drop/recreate 가 아니라, 현재 도그푸딩 DB 를 새 스키마로 옮기는 **one-shot migration** 으로 진행한다. `chunks_v2` 의 비-bridge row 와 `memory_chunks` 의 persistent row 를 `search_entries` 로 합치고, `memory_chunks:<id>` synthetic `documents` 는 버린다.
+
 ## 운영 정책 수치
 
 UserPromptSubmit gate 는 결정적 rule 기반입니다. `noise=1`, 짧은 backchannel, 단순 확인/감사/커밋 요청은 retrieved-memory search 를 생략하고, `어떻게/왜/어디/동작/정리/찾아줘` 계열 표현이나 UI/code/source 키워드가 있으면 retrieved/external context 검색을 엽니다. gate 결과는 working chunk metadata 의 `need_retrieval`, `retrieval_reason` 과 `IMPRINT_PROFILE=1` 의 `cmd_prefill` record 에 남습니다.
