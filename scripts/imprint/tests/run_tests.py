@@ -1146,6 +1146,78 @@ print(json.dumps(out, ensure_ascii=False))
         case.detail += f" err={err[:120]}"
 
 
+def tc_25_retrieval_text_override(env: dict, home: str, case: CaseResult) -> None:
+    """Search entry writes can store a capped curated retrieval surface."""
+    code = """
+import json, sys
+sys.path.insert(0, %r)
+from retrieval._common import db_connect
+from retrieval.entries import build_retrieval_surface, insert_search_entry
+
+surface = build_retrieval_surface(
+    text="공유 링크 생성 책임을 분리했다.",
+    reason="LoginViewModel 책임이 커져서 별도 builder로 뺐다.",
+    files=["Sources/Auth/ShareLinkBuilder.swift"],
+    symbols=["ShareLinkBuilder"],
+)
+capped = build_retrieval_surface(
+    text="짧은 결정",
+    reason="r" * 400,
+    max_chars=120,
+)
+conn = db_connect()
+try:
+    eid = insert_search_entry(
+        conn,
+        project_id=%r,
+        origin="assistant_extract",
+        raw_type="decision",
+        text="공유 링크 생성 책임을 분리했다.",
+        retrieval_text=surface,
+        metadata={"source_uri": "tc25", "evidence_level": "middle"},
+    )
+    row = conn.execute(
+        "SELECT text, retrieval_text FROM search_entries WHERE id = ?",
+        (eid,),
+    ).fetchone()
+    conn.commit()
+finally:
+    conn.close()
+print(json.dumps({
+    "entry_id": eid,
+    "text": row[0],
+    "retrieval_text": row[1],
+    "capped_len": len(capped),
+    "capped": capped,
+}, ensure_ascii=False))
+""" % (str(LIB_DIR), PROJECT_ID)
+    rc, out, err = run_python(env, code)
+    try:
+        result = json.loads(out)
+    except json.JSONDecodeError:
+        result = {}
+    retrieved = _retrieve_plain_json(env, "ShareLinkBuilder 왜")
+    candidates = retrieved.get("candidates") or []
+    hit = next((c for c in candidates if c.get("entry_id") == result.get("entry_id")), None)
+    retrieval_text = result.get("retrieval_text") or ""
+    checks = {
+        "ok": rc == 0,
+        "display_text_plain": result.get("text") == "공유 링크 생성 책임을 분리했다.",
+        "surface_has_file": "Sources/Auth/ShareLinkBuilder.swift" in retrieval_text,
+        "surface_has_symbol": "ShareLinkBuilder" in retrieval_text,
+        "surface_capped": result.get("capped_len", 9999) <= 120,
+        "search_hit": hit is not None,
+    }
+    case.metrics = checks | {"result": result, "err": err[:120]}
+    case.passed = all(checks.values())
+    case.detail = (
+        f"hit={checks['search_hit']} capped={result.get('capped_len')} "
+        f"surface={len(retrieval_text)}"
+    )
+    if not case.passed:
+        case.detail += f" err={err[:120]}"
+
+
 def tc_15_first_turn_working_overlay(env: dict, home: str, case: CaseResult) -> None:
     """UserPromptSubmit sync mini-chunk + prefill/search working overlay."""
     env_h = hook_env(env)
@@ -1834,6 +1906,7 @@ CASES: list[tuple[str, str, callable]] = [
     ("TC-22", "Remember skill dispatcher", tc_22_remember_skill_dispatcher),
     ("TC-23", "Setup vector progress logging", tc_23_setup_vector_logging),
     ("TC-24", "Extract eval harness", tc_24_extract_eval_harness),
+    ("TC-25", "Retrieval text override", tc_25_retrieval_text_override),
 ]
 
 

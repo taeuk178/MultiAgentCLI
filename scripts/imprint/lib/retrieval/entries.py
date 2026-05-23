@@ -12,6 +12,9 @@ from ._common import new_id, now_iso
 from .normalize import normalize_chunk_type
 
 
+RETRIEVAL_SURFACE_MAX_CHARS = 1500
+
+
 @dataclass
 class EntryStats:
     examined: int = 0
@@ -31,6 +34,31 @@ def metadata_dict(raw: str | None) -> dict[str, Any]:
     except (TypeError, json.JSONDecodeError):
         return {}
     return value if isinstance(value, dict) else {}
+
+
+def cap_retrieval_text(text: str, max_chars: int = RETRIEVAL_SURFACE_MAX_CHARS) -> str:
+    normalized = (text or "").strip()
+    if len(normalized) <= max_chars:
+        return normalized
+    return normalized[:max_chars].rstrip()
+
+
+def build_retrieval_surface(
+    *,
+    text: str,
+    reason: str | None = None,
+    files: list[str] | None = None,
+    symbols: list[str] | None = None,
+    max_chars: int = RETRIEVAL_SURFACE_MAX_CHARS,
+) -> str:
+    lines = [text.strip()]
+    if reason:
+        lines.append(f"Reason: {reason.strip()}")
+    if files:
+        lines.append("Files: " + ", ".join(v.strip() for v in files if v and v.strip()))
+    if symbols:
+        lines.append("Symbols: " + ", ".join(v.strip() for v in symbols if v and v.strip()))
+    return cap_retrieval_text("\n".join(line for line in lines if line), max_chars=max_chars)
 
 
 def dedup_exists(
@@ -95,16 +123,19 @@ def insert_search_entry(
     entry_id: str | None = None,
     embedding: bytes | None = None,
     generate_embedding: bool = False,
+    retrieval_text: str | None = None,
 ) -> str:
     if origin == "source_document" and not source_document_id:
         raise ValueError("origin=source_document requires source_document_id")
     safe_text = text.strip()
-    retrieval_text = f"{context_prefix}\n{safe_text}" if context_prefix else safe_text
+    index_text = cap_retrieval_text(retrieval_text) if retrieval_text else (
+        f"{context_prefix}\n{safe_text}" if context_prefix else safe_text
+    )
     md = dict(metadata or {})
     md.setdefault("text_hash", stable_text_hash(safe_text))
     normalized_type = normalize_chunk_type(raw_type)
     if embedding is None and generate_embedding and emb_mod.is_available():
-        embedding = emb_mod.embed_text(retrieval_text)
+        embedding = emb_mod.embed_text(index_text)
     eid = entry_id or new_id()
     ts = now_iso()
     conn.execute(
@@ -150,7 +181,7 @@ def insert_search_entry(
             section_path,
             safe_text,
             context_prefix,
-            retrieval_text,
+            index_text,
             embedding,
             md.get("plan_key"),
             md.get("feature_key"),
