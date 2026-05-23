@@ -122,13 +122,12 @@ retrieval v2 ingestion 은 `ingest_queue` 를 통해 후속 작업을 순차 처
 
 ## 알려진 핵심 갭 (2026-05-21 발견, 2026-05-22 1차 대응)
 
-자동 저장 메모리와 의미(벡터) 검색이 연결돼 있지 않았습니다. 제품 핵심 목적의 직접 병목이었고, 2026-05-22 bridge 로 `chunks_v2` 후보 연결은 1차 대응했습니다.
+persistent memory 와 의미(벡터) 검색이 연결돼 있지 않았습니다. 제품 핵심 목적의 직접 병목이었고, 2026-05-22 bridge 로 `chunks_v2` 후보 연결은 1차 대응했습니다.
 
 - `memory_chunks` 자체에는 embedding 컬럼이 없지만, persistent row 는 `documents.source_ref = memory_chunks:<id>` 형태의 synthetic document 와 `chunks_v2.metadata_json` provenance 로 복제됩니다.
 - 기본 bridge 는 embedding 을 만들지 않습니다. 선택 ML cold-load 가 hook 을 느리게 만들 수 있기 때문입니다.
 - 벡터 검색 검증은 `sentence-transformers` 설치 후 `python3 -m retrieval.cli bridge-memory <project_id> --all --embed` 로 기존 bridge row embedding 을 채운 뒤 진행합니다.
 - 아직 summary/entity/contradiction pipeline 자동 연결은 하지 않습니다. bridge 의 검색 품질과 운영 비용을 먼저 측정합니다.
-- **[2026-05-22 추가] verbatim 세부 회수 경로가 없습니다.** 응답 원문 전체는 `events.llm_response`(+`events_fts` 인덱스, 트리거로 자동 유지)에 보관되나 이를 쿼리하는 검색기가 없어, distilled `memory_chunks` 요점만 회수됩니다. `events_fts` 키워드 기반 detailsearch 가 후보입니다(HANDOFF 우선순위 5번).
 
 ## 목표별 현재 일치도
 
@@ -136,50 +135,37 @@ retrieval v2 ingestion 은 `ingest_queue` 를 통해 후속 작업을 순차 처
 
 | 목표 | 현재 일치도 | 장기 방향 |
 |---|---|---|
-| 세션 종료 후 문맥 저장 | 부분 일치. raw event archive 와 memory chunk 저장은 있으나, 재상기는 추출 chunk 품질과 키워드 검색에 크게 의존합니다. | raw event → persistent memory/summary 로 승격하는 경로와 backfill 을 갖춥니다. |
+| 세션 종료 후 문맥 저장 | 부분 일치. raw event archive 와 memory chunk 저장은 있으나, 재상기는 추출 chunk 품질과 명시 저장 품질에 크게 의존합니다. | `/remember` 선별 저장과 Stop extract 품질을 높이고, persistent memory bridge 를 안정화합니다. |
 | Codex / Claude Code 간 동일 문맥 | 방향 일치. 기본 저장소는 `~/.imprint` 로 통합됐습니다. | 설치/manifest/hook 검증을 양 host 회귀 테스트로 고정합니다. |
-| 큰 틀·개념 질문으로 맥락 상기 | 부분 개선. persistent 자동 memory 는 `chunks_v2` 후보가 됐지만, embedding/backfill 과 eval 이 아직 남았습니다. | `bridge-memory --all --embed` 기반 의미 검색 검증 후 feature/project summary 로 끌어올립니다. |
+| 큰 틀·개념 질문으로 맥락 상기 | 부분 개선. `/remember` 와 추출된 persistent memory 는 `chunks_v2` 후보가 됐지만, embedding/backfill 과 eval 이 아직 남았습니다. | `bridge-memory --all --embed` 기반 의미 검색 검증 후 feature/project summary 로 끌어올립니다. |
 | 다른 개발자도 참고하는 공유 기록 | 장기 미구현. 로컬 SQLite 는 개인 기억에 적합하지만 팀 지식 공유에는 부적합합니다. | decision/summary chunk 를 ADR/Markdown 으로 export 해 git/PR review 에 얹습니다. |
 
 ## 로드맵
 
-### 1. 자동 메모리 의미 검색 기반 구축
+### 1. persistent memory 의미 검색 기반 구축
 
 1차 bridge 는 완료됐습니다. 남은 작업은 embedding 채움과 검증입니다.
 
-- 자동 hook, external lazy-fetch, `/remember` 로 저장된 persistent memory 는 retrieval v2 후보로 복제됩니다.
+- Stop extract, external lazy-fetch, `/remember` 로 저장된 persistent memory 는 retrieval v2 후보로 복제됩니다.
 - 기존 `memory_chunks` 는 `bridge-memory <project_id> --all [--embed] [limit]` 로 backfill/reindex 합니다.
 - bridge row 의 provenance 는 원본 `memory_chunks.id`, `source_event_id`, `chunk_type`, `source_type`, `evidence_level`, `text_hash` 를 보존합니다.
 - 신규/기존 memory 가 명시 검색 경로에서 `chunks_v2` 후보로 보이는 것은 테스트로 고정했습니다. 다음은 embedding 가용 시 vector path 품질 검증입니다.
 - fallback 으로 남는 `memory_chunks` read-only search 는 migration 안정화 기간 동안 유지합니다.
 - 확장 가능성: `/search` 유사도 품질과 latency 가 충분히 검증되면, 명시 검색 결과를 prefill 자동 주입으로 연결할 수 있습니다. 현재 로드맵에서는 가능성만 남기고 기본 동작으로 두지 않습니다.
 
-### 2. RAG 사용성 검증과 운영 캘리브레이션
+### 2. RAG 사용성 검증과 confidence 표현
 
-자동 메모리 bridge 가 들어간 상태에서 진행합니다.
+memory bridge 가 들어간 상태에서 진행합니다.
 
-- 실제 프로젝트에서 `/search` 와 수동 `/memory` 경로가 충분히 유용한지 확인.
+- 실제 프로젝트에서 `/remember` 로 선별 저장한 기억이 `/search` 에서 충분히 유용한지 확인.
 - 명시 검색 trace 가 사용자의 “근거 확인” 기대를 만족하는지 확인.
-- 작은 eval 세트로 gate, fallback, rerank, contradiction penalty 를 관찰.
+- 작은 eval 세트로 `embedding_used`, `vector_rank`, top1 score, fallback reason 을 관찰.
+- `/search` 결과의 `confidence` 를 확률처럼 보이지 않게 `evidence_strength=strong|medium|weak` 또는 calibration 된 수치로 표현할지 결정.
 - `IMPRINT_PROFILE=1` 로 latency, payload, background worker 상태를 측정.
-- `events.noise`, `source_status`, stale chunk 누적량을 보고 운영 정책 결정.
 
 구체 체크리스트는 `HANDOFF.md` 에 둡니다.
 
-### 3. 운영 정책 정착
-
-측정 데이터가 모인 뒤 아래 정책을 확정합니다.
-
-- stale 기준(`IMPRINT_STALE_DAYS`) 조정.
-- `source_status` marker TTL 또는 dedup.
-- noise row 감쇠/삭제 여부.
-- working TTL/cap 조정.
-- low-confidence MEMFB threshold 와 rerank gate 조정.
-- plugin.log 회전과 반복 실패 알림.
-- daemon 분리 필요 여부.
-- 과거 사용자 DB raw secret 청소 정책.
-
-### 4. Workflow skill
+### 3. Workflow skill
 
 RAG 기본 루프가 안정된 뒤 진입합니다.
 
@@ -190,7 +176,7 @@ RAG 기본 루프가 안정된 뒤 진입합니다.
 
 목표는 staged diff, 최근 memory, 테스트 결과를 결합해 개발 워크플로 산출물을 만드는 것입니다.
 
-### 5. Skill registry
+### 4. Skill registry
 
 후순위 확장입니다.
 
@@ -199,20 +185,18 @@ RAG 기본 루프가 안정된 뒤 진입합니다.
 - project-local override 와 global skill 우선순위.
 - manifest 포맷과 신뢰/서명 정책.
 
-### 6. Retrieval 고도화
+### 5. Retrieval 고도화
 
 필요성이 실사용에서 확인될 때만 진행합니다.
 
 - 벡터 검색 setup 경험: `imprint setup vector` 의 설치/모델 warmup/backfill 실패 복구, HF Hub 인증 안내, 현재 "키워드 폴백 중" 신호를 더 분명히 알리는 UX.
-- 청크 규모 증가 대비 ANN 인덱스(HNSW/IVF, `sqlite-vec`) 도입 — 현재 brute-force 코사인의 한계가 실측될 때.
-- unified storage 검토 — bridge 운영이 안정된 뒤 `memory_chunks` 와 `chunks_v2` 를 계속 분리할지 판단합니다.
 - entity merge/split UI.
 - chunk lifecycle 정책.
 - contradiction threshold calibration.
 - summary 품질 평가.
 - 자동 hook memory 와 ingest_queue 후속 작업의 정렬.
 
-### 7. 팀 공유 / 지식 영속화
+### 6. 팀 공유 / 지식 영속화
 
 로컬 RAG 가 개인 세션에서 안정된 뒤, 다른 개발자도 참고할 수 있는 형태로 확장합니다. RAG 검색 자체보다 "사람이 읽고 git 으로 공유 가능한 산출물" 이 핵심입니다.
 
@@ -275,15 +259,6 @@ Slack/Notion fetch 실패, stale, URL cap 초과를 사용자가 모르면 RAG �
 - `/memory status`.
 - 측정 후 tail-only parse, lockfile, daemon 분리, queue 통합 중 최소 대응 선택.
 
-### 벡터 검색 확장성
-
-현재 코사인 유사도는 `embedding.py` 의 `cosine_similarity_blob` 에서 1024차원을 파이썬 루프로 직접 계산하는 메모리 내 brute-force 방식입니다. 청크 수에 비례(O(N))해 느려집니다.
-
-대응:
-- 1024차원 float32 임베딩은 청크당 약 4KB(1만≈40MB, 10만≈400MB) 로 메모리도 함께 증가함을 전제합니다.
-- 청크가 수만 개를 넘고 latency 가 실측되면 ANN 인덱스(HNSW/IVF, `sqlite-vec`) 도입을 검토합니다.
-- 수백~수천 청크 규모에서는 brute-force 로 충분하므로 조기 최적화하지 않습니다.
-
 ### 선택 ML 의존성
 
 `sentence_transformers`, `transformers`, `sqlite-vec` 가 없을 수 있습니다.
@@ -294,7 +269,7 @@ Slack/Notion fetch 실패, stale, URL cap 초과를 사용자가 모르면 RAG �
 - LLM judge fallback.
 - optional requirements 로 분리.
 - 단, 미설치 시 의미(벡터) 검색이 꺼져 "개념·자연어 질문으로 맥락 상기" 라는 핵심 목적이 키워드 수준으로 떨어집니다. graceful fallback 이 곧 "기능 동일" 은 아니라는 점을 사용자에게 명확히 알립니다(2026-05-21 실측에서 사용자 오해 확인).
-- persistent memory 는 bridge 후 `chunks_v2` 후보가 되지만, embedding BLOB 이 없으면 여전히 FTS 중심입니다. `bridge-memory --all --embed` 나 `IMPRINT_MEMORY_BRIDGE_EMBEDDING=1` 로 embedding 을 채운 뒤에야 자동 저장 memory 도 vector path 에 참여합니다.
+- persistent memory 는 bridge 후 `chunks_v2` 후보가 되지만, embedding BLOB 이 없으면 여전히 FTS 중심입니다. `bridge-memory --all --embed` 나 `IMPRINT_MEMORY_BRIDGE_EMBEDDING=1` 로 embedding 을 채운 뒤에야 vector path 에 참여합니다.
 
 ## 영구 deferred
 

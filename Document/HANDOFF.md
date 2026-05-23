@@ -37,8 +37,7 @@ TOTAL  22 PASS / 0 FAIL
 - **벡터 검색이 꺼진 채 동작 중**: `embedding.is_available()` 이 `False`, `retrieve_json` 응답의 `embedding_used` 도 `False`. 즉 `sentence-transformers` 미설치로 `BAAI/bge-m3` 가 로드되지 않아 FTS-only 키워드 검색으로 폴백되어 있습니다. 설계상 의도된 graceful fallback 이지만, 사용자는 자신이 벡터 검색을 쓰고 있다고 오해하기 쉽습니다.
 - **FTS-only 폴백의 변별력 한계**: 한국어 자연어 질문으로 검색 시 상위 후보의 `rrf_score` 가 0.003 대로 촘촘하게 붙어 변별력이 약했고, 의미상 덜 관련된 청크(`fetchStepPerHourList` 등)도 "현재/저장" 같은 단어 매칭만으로 상위에 진입했습니다.
 - **핵심 목적과의 미스매치**: "로그인 feature 의 공유하기는 어떻게 구현됐었지" 류 큰 틀·개념 질문은 청크에 `share`/`deeplink`/`초대 링크` 등 다른 단어로 저장돼 있을 가능성이 커, 키워드만으로는 어휘 불일치로 놓치기 쉽습니다. 이 영역이 제품 핵심 목적인데 현재 가장 약합니다.
-- **[핵심 결함, 2026-05-22 1차 대응] 자동 저장 메모리는 임베딩을 켜도 벡터 검색이 안 됐음**: `memory_chunks` 테이블에는 embedding 컬럼이 없고, 과거 명시 search 의 memory fallback 도 FTS5 키워드만 사용했습니다. 2026-05-22에 `memory_chunks → chunks_v2` bridge 와 backfill 명령을 추가해 persistent memory 가 `chunks_v2` 후보로 보이게 했습니다. 다만 기본 bridge 는 embedding 을 생성하지 않으므로, 실제 vector 품질 검증은 `--embed` backfill 또는 `IMPRINT_MEMORY_BRIDGE_EMBEDDING=1` 이후 진행해야 합니다.
-- **[2026-05-22 확인] verbatim 전체 응답은 `events` 에 있고 `events_fts` 로 이미 색인돼 있으나 검색기가 없음**: `events.llm_response` 는 응답 원문 전체(실측 1,300~2,800자)를 보관하고, `events_fts`(FTS5)가 트리거로 자동 유지됩니다(`schema.sql:65,80,84`). 그러나 이 인덱스를 쿼리하는 코드가 한 줄도 없어, 현재 어떤 검색·skill 도 `events` 를 보지 않습니다(retrieval 의 `DATA_TABLES` 는 마이그레이션 목록일 뿐 검색 대상 아님). 즉 verbatim 회수는 "검색기 연결만" 하면 되는 상태입니다. `events` 엔 embedding 컬럼이 없어 키워드(FTS) 한정이며, 의미검색까지 가려면 `events → chunks_v2` 임베딩 백필이 필요합니다. **데이터 horizon**: 현재 DB 최古 데이터가 2026-05-11(약 11일 전)이라 그 이전 시점(예: "2주 전")은 저장 자체가 없어 회수 불가 — events 보존/감쇠 정책(측정 후 결정할 안건)과 묶입니다.
+- **[핵심 결함, 2026-05-22 1차 대응] persistent memory 는 임베딩을 켜도 벡터 검색이 안 됐음**: `memory_chunks` 테이블에는 embedding 컬럼이 없고, 과거 명시 search 의 memory fallback 도 FTS5 키워드만 사용했습니다. 2026-05-22에 `memory_chunks → chunks_v2` bridge 와 backfill 명령을 추가해 persistent memory 가 `chunks_v2` 후보로 보이게 했습니다. 다만 기본 bridge 는 embedding 을 생성하지 않으므로, 실제 vector 품질 검증은 `--embed` backfill 또는 `IMPRINT_MEMORY_BRIDGE_EMBEDDING=1` 이후 진행해야 합니다.
 - **재현 메모**: `embedding_used` 와 변별력은 `python3 -m retrieval.cli retrieve_json <project_id> "<자연어 질문>" 5` 로 언제든 재확인할 수 있습니다. memory_chunks 스키마는 `sqlite3 ~/.imprint/app.sqlite ".schema memory_chunks"` 로 embedding 컬럼 부재를 직접 확인할 수 있습니다.
 
 ## 목표별 현재 일치도
@@ -47,44 +46,22 @@ TOTAL  22 PASS / 0 FAIL
 
 | 목표 | 현재 상태 | 다음 액션 |
 |---|---|---|
-| 세션 종료 후 대화 맥락 저장 | **부분 충족**. `events` 에 raw I/O archive, `memory_chunks` 에 working/extracted/manual chunk 를 저장합니다. 다만 실제 재사용은 추출된 chunk 중심이라 response extract 실패나 누락 시 recall 이 약합니다. | Stop extract 품질 eval, raw event 를 장기 요약/백필 대상으로 삼는 경로 검토. |
-| Codex / Claude Code 간 동일 문맥 공유 | **대체로 방향 일치**. 기본 DB 는 `~/.imprint/app.sqlite` 로 통합됐고 legacy Claude DB migration 도 있습니다. 단 양쪽 host 에서 hook 이 실제 동일하게 설치·실행되는지 통합 검증이 필요합니다. | Codex/Claude 각각에서 같은 project_id 로 user/assistant/memory chunk 가 쌓이는 smoke test 추가. |
+| 세션 종료 후 대화 맥락 저장 | **부분 충족**. `events` 에 raw I/O archive, `memory_chunks` 에 working/extracted/manual chunk 를 저장합니다. 다만 실제 재사용은 추출 chunk 와 `/remember` 로 선별 저장한 기억 중심입니다. | Stop extract 품질과 `/remember` 저장 품질을 eval 에서 같이 확인. |
 | 큰 틀·개념 질문으로 맥락 상기 | **부분 개선**. persistent memory 는 `chunks_v2` 후보가 되고, setup 경로로 embedding/backfill 도 실행할 수 있습니다. 아직 실제 프로젝트 eval 은 부족합니다. | 개념 질의 eval 세트를 만들어 키워드/벡터 결과를 비교. |
 | 다른 개발자에게 공유 가능한 기록 | **장기 미구현**. 로컬 SQLite 는 개인 세션 연속성에는 맞지만, 팀 공유에는 사람이 읽고 리뷰 가능한 Markdown/ADR export 가 필요합니다. | 로컬 RAG 안정화 후 `decision`/`summary` export, git commit/PR 참조 흐름 설계. |
 
 ## 다음 우선순위
 
-> 정렬 원칙: **벡터·의미 검색 결과를 명시 검색으로 확인하는 것(제품 핵심 목적) → confidence 표현·recall 확장·스케일 준비 → 검증·운영 → 후순위** 순. 1번이 핵심, 2번이 사용자 신뢰도 표현, 3~4번이 recall/스케일 인프라, 5~9번이 검증·운영, 10번이 backlog.
+> 정렬 원칙: **벡터·의미 검색 결과를 명시 검색으로 확인하는 것(제품 핵심 목적) → confidence 표현 → 운영 피드백 수집** 순. 큰 기능 확장은 이 문서의 즉시 우선순위에서 제외합니다.
 
 1. **개념 질의 eval 세트 구성**
-   "로그인 feature 의 공유하기는 어떻게 구현됐었지" 류 자연어 질문 20~30개를 고정하고 `/search` 출력과 내부 retrieval JSON trace 를 비교합니다. 키워드와 벡터가 각각 어떤 후보를 회수하는지, `embedding_used`, `vector_rank`, top1 score, fallback 이유를 같이 기록합니다. *(측정 기반 — 벡터가 실제로 도움 되는지 먼저 확인해야 다음 투자가 정당화되므로 최상위.)*
+   "로그인 feature 의 공유하기는 어떻게 구현됐었지" 류 자연어 질문 20~30개를 고정하고 `/remember` 로 선별 저장한 기억이 `/search` 에서 어떻게 회수되는지 확인합니다. `/search` 출력과 내부 retrieval JSON trace 를 비교해 키워드와 벡터가 각각 어떤 후보를 회수하는지, `embedding_used`, `vector_rank`, top1 score, fallback 이유를 같이 기록합니다. bridge row 를 summary/entity/contradiction queue 에 자동 연결할지는 이 eval 에서 검색 품질과 운영 비용을 본 뒤 판단합니다. *(측정 기반 — 벡터가 실제로 도움 되는지 먼저 확인해야 다음 투자가 정당화되므로 최상위.)*
 
 2. **[미구현] `/search` confidence 수치화와 표시 기준**
    현재 `confidence` 는 확률값이 아니라 `final_score`, `LOW_CONFIDENCE_TOP1`, `fallback_reasons`, `rerank_gate_reason`, `embedding_used`, `vector_rank` 를 조합한 내부 휴리스틱입니다. 사용자에게 그대로 0~1 확률처럼 노출하면 오해가 생기므로, 먼저 eval 세트에서 top1 score 분포와 fallback 사유를 모아 `evidence_strength=strong|medium|weak` 또는 calibrated numeric score 를 정의합니다. 출력에는 숫자만 두지 말고 "왜 weak 인지"(예: `top1_below_threshold`, `memory_fallback`, `entity_mismatch`) 를 함께 보여줍니다.
 
-3. **[미구현/선결] 벡터·events 스케일 준비 — brute-force 검색 교체 + 보존 정책**
-   `_vector_search`(`retrieve.py:530-554`)는 `chunks_v2` 의 모든 current 임베딩을 매 쿼리마다 Python 코사인으로 선형 스캔합니다(O(N)). 코드 코멘트도 "데이터 규모가 커지면 sqlite-vec 로 교체"라고 명시합니다. 현재(임베딩 ~498개)는 무해하나, events 임베딩으로 후보가 늘면 latency budget(`flow.md` <130ms)을 초과하므로 **대규모 벡터화 이전에 `sqlite_vec`(vec0) 또는 ANN 경로 교체가 선결**입니다. 보존은 forgetting curve 방향(`events.score`/`last_accessed` 추가 → cron 으로 `score<threshold AND age>30d AND noise=1` 만 hard delete, 재사용 raw 는 영구)으로 잡습니다. 용량 실측: events 텍스트는 1년 ~50MB 로 가볍고 **무게는 임베딩(4KB/건, 텍스트의 4배)** 이므로, 'events 전부 임베딩'은 피하고 verbatim 은 events_fts 키워드(4번)로 커버합니다.
-
-4. **[미구현] verbatim/detail recall 경로 (events_fts 활용)**
-   응답 원문 전체는 `events.llm_response` 에 보관되고 `events_fts` 로 이미 색인돼 있으나, 이를 검색하는 코드/스킬이 없습니다. distilled `memory_chunks` 만으로는 "그때 LLM 이 말한 세부 전체"를 회수할 수 없으므로, `events_fts` 를 쿼리하는 `detailsearch` 경로(셸 dispatcher + 선택적 skill)를 검토합니다. 티어: (a) events_fts 키워드 verbatim 회수(인덱스 이미 존재, 최소 작업), (b) 날짜/source 필터, (c) 의미검색까지 가려면 `events → chunks_v2` 임베딩 백필. 회수 가능 범위는 events 보존 정책(3번·측정 후 결정할 안건)에 종속됩니다. 진짜 디테일의 원천은 git(코드)이고 events 는 verbatim 설명 보조라는 점을 함께 명시합니다.
-
-5. **실제 프로젝트 사용성 테스트**
-   저장한 기억이 다음 turn, `/memory`, 명시 검색 경로에서 실제 답변 근거로 충분히 보이는지 확인합니다.
-
-6. **bridge 후속 pipeline 판단**
-   bridge row 를 summary/entity/contradiction queue 에 자동 연결할지 결정합니다. 현재는 검색 후보 연결까지만 하고, queue 통합은 profile 과 eval 결과를 본 뒤 진행합니다.
-
-7. **Codex/Claude 공유 smoke test**
-   같은 프로젝트에서 Codex 와 Claude Code 를 번갈아 열고 동일한 `~/.imprint/app.sqlite` 에 `events`/`memory_chunks` 가 쌓이는지 확인합니다. 설치 manifest 차이로 hook 이 한쪽에서 빠지는지 확인합니다.
-
-8. **운영 정책 캘리브레이션**
-   `IMPRINT_PROFILE=1` 로 1~2주 데이터를 모아 gate, MEMFB threshold, rerank 조건, working TTL/cap, stale 기준을 조정합니다.
-
-9. **setup UX 보강 여부 판단**
+3. **setup UX 보강 여부 판단**
    `imprint setup vector` 실사용 중 HF Hub 인증, 네트워크 실패, PEP 668 pip 실패, Claude Code skill 동기화에서 막히는 지점을 기록합니다. 필요하면 `HF_TOKEN` 안내와 실패 복구 메시지를 보강합니다.
-
-10. **후순위 기능 확장 판단**
-   workflow skill, registry, entity merge/split UI, unified storage 는 RAG 기본 루프가 실제 사용에서 안정된 뒤 진입합니다.
 
 ## 사용성 테스트 체크리스트
 
@@ -97,8 +74,6 @@ TOTAL  22 PASS / 0 FAIL
 - 명시 검색 경로가 기대 context 를 사람이 읽을 수 있게 반환하는지.
 - 문서 chunk 가 있으면 명시 검색 경로가 `chunks_v2` 를 우선하고, 저신뢰일 때만 `memory_chunks` fallback 을 여는지.
 - bridge/backfill 후, 자동 저장된 과거 `memory_chunks` 가 `chunks_v2` 후보로 회수되는지. 선택 ML 환경에서는 `--embed` 후 vector 후보로도 회수되는지.
-- Codex 와 Claude Code 에서 같은 프로젝트를 열었을 때 동일한 `~/.imprint/app.sqlite` 와 project_id 를 공유하는지.
-- Slack/Notion fetch 실패, URL cap 초과, stale 외부 chunk 가 `/memory list/show/status` 에서 관찰 가능한지.
 
 ## 관찰할 지표
 
@@ -125,11 +100,9 @@ GROUP BY 1;
 ## 측정 후 결정할 안건
 
 - `IMPRINT_STALE_DAYS` 기본값이 실제 Notion/Slack 사용 주기에 맞는지.
-- `source_status` marker 를 얼마나 오래 보관할지, TTL 또는 dedup 이 필요한지.
-- `events.noise=1` row 를 계속 보존할지, 감쇠/삭제 정책을 둘지 (forgetting curve: `events.score`/`last_accessed` 기반 soft→hard delete, 재사용 raw 영구 — 우선순위 3번).
 - working TTL/cap 이 실제 세션 길이에 맞는지.
 - `LOW_CONFIDENCE_TOP1`, `RG_MIN_CANDIDATES`, `RG_TOP1_THRESHOLD` 를 조정할지.
-- `memory_chunks → chunks_v2` bridge 를 기본 경로로 둘지, 장기적으로 unified storage 로 합칠지.
+- `memory_chunks → chunks_v2` bridge 후속 pipeline 을 어디까지 자동화할지.
 - `stop.transcript_reparse`, `QEMB`, `HYB`, `RR` 중 daemon 분리가 필요한 병목이 있는지.
 - plugin.log 회전 정책과 반복 실패 사용자 알림을 둘지.
 
@@ -140,7 +113,6 @@ GROUP BY 1;
 - host CLI background 모델 호출은 10초 이상 걸릴 수 있으므로 동기 경로에 넣지 않습니다.
 - 선택 ML 의존성 미설치 상태에서도 FTS-only / rule fallback 이 정상이어야 합니다.
 - `IMPRINT_MEMORY_BRIDGE_EMBEDDING=1` 상시 활성화가 hook latency 를 얼마나 늘리는지 profile 로 확인하기 전에는 기본값으로 켜지 않습니다.
-- 벡터 검색은 현재 brute-force 입니다(`_vector_search` 가 `chunks_v2` 모든 임베딩을 O(N) 코사인 스캔). 대규모 임베딩(특히 events) 추가 전 `sqlite_vec`(vec0)/ANN 교체가 선결이며, events 는 전부 임베딩하지 않고 verbatim 은 `events_fts` 키워드로 회수합니다(우선순위 3·4번). 용량 무게는 텍스트가 아니라 임베딩(4KB/건)에 있습니다.
 - 운영 피드백은 바로 기능 추가로 옮기기보다 내부 retrieval trace 와 profile 데이터로 먼저 확인합니다.
 
 ## 다음 세션 시작 순서
