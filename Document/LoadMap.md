@@ -6,7 +6,7 @@
 - 결정 사유와 폐기한 대안은 `HISTORY.md` 를 봅니다.
 - 설치와 사용자 명령은 `README.md`, 상세 hook/retrieval 플로우는 `flow.md` 를 봅니다.
 
-최종 업데이트: 2026-05-22.
+최종 업데이트: 2026-05-24.
 
 ## 방향
 
@@ -103,7 +103,7 @@ retrieval v2 ingestion 은 `ingest_queue` 를 통해 후속 작업을 순차 처
 
 ## 현재 기준선
 
-2026-05-22 기준 RAG 기본 기능, 1차 운영 관측성, `memory_chunks → chunks_v2` bridge 는 적용 완료입니다.
+2026-05-24 기준 RAG 기본 기능, 1차 운영 관측성, `memory_chunks → chunks_v2` bridge, `/search`, `/remember`, vector setup dispatcher 는 적용 완료입니다.
 
 - redaction coverage.
 - hook memory loop smoke test.
@@ -116,7 +116,7 @@ retrieval v2 ingestion 은 `ingest_queue` 를 통해 후속 작업을 순차 처
 - 명시 검색 memory fallback + JSON trace.
 - persistent memory bridge/backfill.
 - text_hash 기반 dedup.
-- 테스트 기준선: `21 PASS / 0 FAIL`.
+- 테스트 기준선: `23 PASS / 0 FAIL`.
 
 완료된 결정과 이유는 `HISTORY.md` 에 남깁니다.
 
