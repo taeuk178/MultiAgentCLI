@@ -179,6 +179,25 @@ imprint search "테스트 모드 진입 UX 시나리오"
 
 `/search` 는 기본적으로 질문에 따라 local/feature/global 범위를 고릅니다. 현재 사용자-facing dispatcher 는 옵션 없이 자연어 질문만 받습니다.
 
+## 기존 DB migration
+
+imprint 는 두 종류의 migration 을 구분합니다.
+
+| migration | 실행 방식 | 설명 |
+|---|---|---|
+| 저장 위치 migration | 자동 | 기존 `~/.claude/imprint/app.sqlite` 만 있고 새 `~/.imprint/app.sqlite` 가 비어 있으면 첫 실행 때 새 위치로 복사합니다. 새 DB에 이미 데이터가 있으면 덮어쓰지 않습니다. |
+| `search_entries` 스키마 migration | 명시 실행 | legacy `memory_chunks`, `documents`, `chunks_v2` 데이터를 새 `search_entries` 중심 스키마로 옮깁니다. 자동 실행하지 않습니다. |
+
+기존 imprint DB를 새 검색 구조로 옮기려면 설치 후 한 번 실행합니다.
+
+```bash
+imprint migrate search-entries
+```
+
+이 명령은 백업을 만든 뒤 legacy memory/document/search row 를 `source_documents`, `search_entries`, `search_summaries` 쪽으로 옮깁니다. `memory_chunks:<id>` synthetic document 는 새 구조에 남기지 않고, persistent memory row 만 `search_entries` 로 흡수합니다.
+
+이미 migration 된 DB에서 다시 실행하면 no-op 이며, 새 사용자는 별도 migration 없이 새 스키마로 시작합니다.
+
 ## 데이터 위치
 
 ```text
