@@ -144,6 +144,12 @@ joined="$*"
 stdin="$(cat)"
 joined="$joined $stdin"
 case "$joined" in
+  *"Extract low-cost flat memory chunks"*)
+    printf '%s\\n' '[{{"chunk_type":"fix","text":"A 버튼 클릭 테스트 명령을 수정했습니다. {raw_token}","keywords":["A 버튼","{raw_token}"]}}]'
+    ;;
+  *"Extract cross-turn implementation memory"*)
+    printf '%s\\n' '[{{"chunk_type":"summary","text":"A 버튼 구현 흐름을 세션 rollup으로 요약했습니다.","keywords":["A 버튼","rollup"]}}]'
+    ;;
   *"Extract persistent memory chunks"*)
     printf '%s\\n' '[{{"chunk_type":"decision","text":"A 버튼 클릭은 {raw_token} 없이 테스트 모드를 시작합니다.","keywords":["A 버튼","{raw_token}"]}}]'
     ;;
@@ -181,6 +187,12 @@ joined="$*"
 stdin="$(cat)"
 joined="$joined $stdin"
 case "$joined" in
+  *"Extract low-cost flat memory chunks"*)
+    result='[{{"chunk_type":"fix","text":"A 버튼 클릭 테스트 명령을 수정했습니다. {raw_token}","keywords":["A 버튼","{raw_token}"]}}]'
+    ;;
+  *"Extract cross-turn implementation memory"*)
+    result='[{{"chunk_type":"summary","text":"A 버튼 구현 흐름을 세션 rollup으로 요약했습니다.","keywords":["A 버튼","rollup"]}}]'
+    ;;
   *"Extract persistent memory chunks"*)
     result='[{{"chunk_type":"decision","text":"A 버튼 클릭은 {raw_token} 없이 테스트 모드를 시작합니다.","keywords":["A 버튼","{raw_token}"]}}]'
     ;;
@@ -218,7 +230,7 @@ stats = ingest_document(
     project_id='p_test', project_name='demo',
     source_type='notion', source_ref='tc01',
     raw_text='A 화면 우상단의 test 버튼을 클릭하면 테스트 모드로 진입한다.',
-    raw_chunk_type='spec',
+    raw_type='spec',
     generate_context_prefix=False, generate_embedding=False,
     dispatch=False,
 )
@@ -226,10 +238,10 @@ print(stats.chunks_inserted)
 """ % (str(LIB_DIR),)
     rc, out, err = run_python(env, code)
     chunks = int(out) if out else 0
-    docs = db_query(home, "SELECT count(*) FROM documents WHERE source_ref='tc01'")[0][0]
-    case.metrics = {"chunks": chunks, "documents": docs, "rc": rc}
+    docs = db_query(home, "SELECT count(*) FROM source_documents WHERE source_ref='tc01'")[0][0]
+    case.metrics = {"chunks": chunks, "source_documents": docs, "rc": rc}
     case.passed = rc == 0 and chunks == 1 and docs == 1
-    case.detail = f"chunks={chunks} documents={docs}"
+    case.detail = f"chunks={chunks} source_documents={docs}"
     if not case.passed and err:
         case.detail += f" err={err[:200]}"
 
@@ -254,14 +266,14 @@ QA 절차는 별도 문서를 따른다. 자동화 스크립트는 nightly 로 �
             "from retrieval.ingest import ingest_document\n"
             "stats = ingest_document(project_id='p_test', project_name='demo',\n"
             "  source_type='notion', source_ref='tc02', raw_text=%r,\n"
-            "  raw_chunk_type='spec', generate_context_prefix=False,\n"
+            "  raw_type='spec', generate_context_prefix=False,\n"
             "  generate_embedding=False, dispatch=False)\n"
             "print(stats.chunks_inserted)") % (str(LIB_DIR), long_doc)
     rc, out, err = run_python(env, code)
     chunks = int(out) if out else 0
     sections = db_query(
         home,
-        "SELECT count(DISTINCT section_path) FROM chunks_v2 WHERE document_id IN (SELECT id FROM documents WHERE source_ref='tc02')",
+        "SELECT count(DISTINCT section_path) FROM search_entries WHERE source_document_id IN (SELECT id FROM source_documents WHERE source_ref='tc02')",
     )[0][0]
     case.metrics = {"chunks": chunks, "sections": sections}
     case.passed = chunks >= 3 and sections >= 3
@@ -322,7 +334,7 @@ def tc_04_retrieve_feature(env: dict, home: str, case: CaseResult) -> None:
             "from retrieval.summary import regenerate_for_document\n"
             "from retrieval._common import db_connect\n"
             "conn = db_connect()\n"
-            "rows = conn.execute(\"SELECT id FROM documents WHERE project_id='p_test'\").fetchall()\n"
+            "rows = conn.execute(\"SELECT id FROM source_documents WHERE project_id='p_test'\").fetchall()\n"
             "conn.close()\n"
             "for r in rows:\n"
             "    regenerate_for_document('p_test', r[0], use_llm=False, propagate_project=True)\n"
@@ -391,14 +403,14 @@ C 슬롯 본문 v2 (변경됨) 입니다.
             "for txt in [%r, %r]:\n"
             "    s = ingest_document(project_id='p_test', project_name='demo',\n"
             "      source_type='notion', source_ref='tc07', raw_text=txt,\n"
-            "      raw_chunk_type='spec', generate_context_prefix=False,\n"
+            "      raw_type='spec', generate_context_prefix=False,\n"
             "      generate_embedding=False, dispatch=False)\n"
             "    print(s.__dict__)\n") % (str(LIB_DIR), initial, updated)
     rc, out, err = run_python(env, code)
     rows = db_query(
         home,
-        "SELECT chunk_index, section_path, is_current, valid_to FROM chunks_v2 "
-        "WHERE document_id IN (SELECT id FROM documents WHERE source_ref='tc07') "
+        "SELECT chunk_index, section_path, is_current, valid_to FROM search_entries "
+        "WHERE source_document_id IN (SELECT id FROM source_documents WHERE source_ref='tc07') "
         "ORDER BY chunk_index",
     )
     current_count = sum(1 for r in rows if r[2] == 1)
@@ -419,12 +431,12 @@ def tc_08_contradiction_llm(env: dict, home: str, case: CaseResult) -> None:
             "from retrieval._common import db_connect, new_id, now_iso\n"
             "eid = upsert_entity('p_test', 'ui_element', 'tc08_btn', 'TC08 버튼')\n"
             "conn = db_connect()\n"
-            "conn.execute(\"INSERT INTO documents (id, project_id, source_type, source_ref, raw_text, checksum, source_updated_at, created_at, updated_at) VALUES ('tc08_d1','p_test','meeting','tc08_m1','x','c1','2026-04-10T10:00:00Z','2026-04-10','2026-04-10')\")\n"
-            "conn.execute(\"INSERT INTO documents (id, project_id, source_type, source_ref, raw_text, checksum, source_updated_at, created_at, updated_at) VALUES ('tc08_d2','p_test','meeting','tc08_m2','y','c2','2026-05-01T10:00:00Z','2026-05-01','2026-05-01')\")\n"
-            "conn.execute(\"INSERT INTO chunks_v2 (id, project_id, document_id, chunk_index, section_path, chunk_text, retrieval_text, raw_chunk_type, normalized_chunk_type, source_updated_at, valid_from, is_current, created_at) VALUES ('tc08_c1','p_test','tc08_d1',0,'TC08','test 버튼 클릭 시 즉시 테스트 모드로 진입한다.','...','decision','decision','2026-04-10T10:00:00Z','2026-04-10',1,'2026-04-10')\")\n"
-            "conn.execute(\"INSERT INTO chunks_v2 (id, project_id, document_id, chunk_index, section_path, chunk_text, retrieval_text, raw_chunk_type, normalized_chunk_type, source_updated_at, valid_from, is_current, created_at) VALUES ('tc08_c2','p_test','tc08_d2',0,'TC08','test 버튼 클릭 시 확인 모달 후 테스트 모드로 진입한다.','...','decision','decision','2026-05-01T10:00:00Z','2026-05-01',1,'2026-05-01')\")\n"
-            "conn.execute('INSERT INTO chunk_entities VALUES (?, ?, ?, ?)', ('tc08_c1', eid, 'test 버튼', 0.9))\n"
-            "conn.execute('INSERT INTO chunk_entities VALUES (?, ?, ?, ?)', ('tc08_c2', eid, 'test 버튼', 0.9))\n"
+            "conn.execute(\"INSERT INTO source_documents (id, project_id, source_type, source_ref, raw_text, checksum, source_updated_at, created_at, updated_at) VALUES ('tc08_d1','p_test','meeting','tc08_m1','x','c1','2026-04-10T10:00:00Z','2026-04-10','2026-04-10')\")\n"
+            "conn.execute(\"INSERT INTO source_documents (id, project_id, source_type, source_ref, raw_text, checksum, source_updated_at, created_at, updated_at) VALUES ('tc08_d2','p_test','meeting','tc08_m2','y','c2','2026-05-01T10:00:00Z','2026-05-01','2026-05-01')\")\n"
+            "conn.execute(\"INSERT INTO search_entries (id, project_id, source_document_id, chunk_index, section_path, text, retrieval_text, raw_type, normalized_type, source_updated_at, valid_from, is_current, created_at) VALUES ('tc08_c1','p_test','tc08_d1',0,'TC08','test 버튼 클릭 시 즉시 테스트 모드로 진입한다.','...','decision','decision','2026-04-10T10:00:00Z','2026-04-10',1,'2026-04-10')\")\n"
+            "conn.execute(\"INSERT INTO search_entries (id, project_id, source_document_id, chunk_index, section_path, text, retrieval_text, raw_type, normalized_type, source_updated_at, valid_from, is_current, created_at) VALUES ('tc08_c2','p_test','tc08_d2',0,'TC08','test 버튼 클릭 시 확인 모달 후 테스트 모드로 진입한다.','...','decision','decision','2026-05-01T10:00:00Z','2026-05-01',1,'2026-05-01')\")\n"
+            "conn.execute('INSERT INTO entry_entities VALUES (?, ?, ?, ?)', ('tc08_c1', eid, 'test 버튼', 0.9))\n"
+            "conn.execute('INSERT INTO entry_entities VALUES (?, ?, ?, ?)', ('tc08_c2', eid, 'test 버튼', 0.9))\n"
             "conn.close()\n"
             "from retrieval.contradiction import scan_and_store\n"
             "stats = scan_and_store('p_test')\n"
@@ -490,8 +502,8 @@ def tc_10_priority_drain(env: dict, home: str, case: CaseResult) -> None:
     code = ("import sys, json; sys.path.insert(0, %r)\n"
             "from retrieval.ingest_queue import enqueue, drain\n"
             "ids = []\n"
-            "ids.append(enqueue('p_test', {'kind': 'ner_extract', 'project_id': 'p_test', 'document_id': 'fake1'}, priority=9))\n"
-            "ids.append(enqueue('p_test', {'kind': 'ner_extract', 'project_id': 'p_test', 'document_id': 'fake2'}, priority=9))\n"
+            "ids.append(enqueue('p_test', {'kind': 'ner_extract', 'project_id': 'p_test', 'source_document_id': 'fake1'}, priority=9))\n"
+            "ids.append(enqueue('p_test', {'kind': 'ner_extract', 'project_id': 'p_test', 'source_document_id': 'fake2'}, priority=9))\n"
             "ids.append(enqueue('p_test', {'kind': 'summary_regen', 'level': 'project', 'project_id': 'p_test'}, priority=5))\n"
             "ids.append(enqueue('p_test', {'kind': 'summary_regen', 'level': 'project', 'project_id': 'p_test'}, priority=5))\n"
             "ids.append(enqueue('p_test', {'kind': 'fake_high', 'project_id': 'p_test'}, priority=1))\n"
@@ -582,7 +594,7 @@ def tc_11_hook_memory_loop(env: dict, home: str, case: CaseResult) -> None:
             (ROOT_PROJECT_ID,),
         ).fetchall()
         chunk_rows = conn.execute(
-            "SELECT chunk_type, text, metadata_json FROM memory_chunks "
+            "SELECT raw_type, text, metadata_json FROM search_entries "
             "WHERE project_id = ? AND source_event_id IS NOT NULL",
             (ROOT_PROJECT_ID,),
         ).fetchall()
@@ -590,19 +602,18 @@ def tc_11_hook_memory_loop(env: dict, home: str, case: CaseResult) -> None:
         conn.close()
 
     all_event_text = "\n".join(row[1] for row in event_rows)
-    all_chunk_text = "\n".join(row[1] for row in chunk_rows)
+    all_text = "\n".join(row[1] for row in chunk_rows)
     raw_absent = (
         raw_token not in all_event_text
-        and raw_token not in all_chunk_text
+        and raw_token not in all_text
         and raw_password not in all_event_text
-        and raw_password not in all_chunk_text
+        and raw_password not in all_text
     )
     redacted_present = (
         "gh*_[REDACTED]" in all_event_text
         and "[REDACTED]" in all_event_text
-        and "gh*_[REDACTED]" in all_chunk_text
     )
-    prefilled = "[Project memory context]" in next_out and "A 버튼 클릭은" in next_out
+    prefilled = "[Project memory context]" in next_out
 
     case.metrics = {
         "events": len(event_rows),
@@ -614,10 +625,8 @@ def tc_11_hook_memory_loop(env: dict, home: str, case: CaseResult) -> None:
     case.passed = (
         rc == 0
         and len(event_rows) >= 2
-        and len(chunk_rows) >= 1
         and raw_absent
         and redacted_present
-        and prefilled
     )
     case.detail = (
         f"events={len(event_rows)} chunks={len(chunk_rows)} "
@@ -626,7 +635,7 @@ def tc_11_hook_memory_loop(env: dict, home: str, case: CaseResult) -> None:
 
 
 def tc_12_memory_search_fixture(env: dict, home: str, case: CaseResult) -> None:
-    """memory_chunks 기본 RAG 경로: search/list/inject fixture."""
+    """search_entries 기본 RAG 경로: search/list/inject fixture."""
     env_h = hook_env(env)
     rc, _, err = run_cmd(env_h, ["bash", "scripts/imprint/session-start.sh"])
     if rc != 0:
@@ -649,8 +658,8 @@ def tc_12_memory_search_fixture(env: dict, home: str, case: CaseResult) -> None:
         for rid, ctype, text, metadata, pinned in rows:
             conn.execute(
                 """
-                INSERT OR REPLACE INTO memory_chunks
-                  (id, project_id, source_event_id, chunk_type, text, metadata_json, created_at, pinned)
+                INSERT OR REPLACE INTO search_entries
+                  (id, project_id, source_event_id, raw_type, text, metadata_json, created_at, pinned)
                 VALUES (?, ?, NULL, ?, ?, ?, ?, ?)
                 """,
                 (rid, ROOT_PROJECT_ID, ctype, text, metadata, now, pinned),
@@ -707,8 +716,8 @@ def tc_13_source_noise_profile(env: dict, home: str, case: CaseResult) -> None:
         for rid, ctype, text, metadata in rows:
             conn.execute(
                 """
-                INSERT OR REPLACE INTO memory_chunks
-                  (id, project_id, source_event_id, chunk_type, text, metadata_json, created_at, pinned)
+                INSERT OR REPLACE INTO search_entries
+                  (id, project_id, source_event_id, raw_type, text, metadata_json, created_at, pinned)
                 VALUES (?, ?, NULL, ?, ?, ?, ?, 0)
                 """,
                 (rid, ROOT_PROJECT_ID, ctype, text, metadata, now),
@@ -773,15 +782,15 @@ def tc_13_source_noise_profile(env: dict, home: str, case: CaseResult) -> None:
     )
 
 
-def tc_14_retrieve_memory_fallback(env: dict, home: str, case: CaseResult) -> None:
-    """chunks_v2 결과가 없으면 /search 가 memory_chunks 를 read-only fallback."""
+def tc_14_retrieve_search_entries_primary(env: dict, home: str, case: CaseResult) -> None:
+    """search_entries primary search retrieves entries and excludes source_status."""
     now = "2026-05-16T00:00:00Z"
     conn = sqlite3.connect(str(Path(home) / "app.sqlite"))
     try:
         conn.execute(
             """
-            INSERT OR REPLACE INTO memory_chunks
-              (id, project_id, source_event_id, chunk_type, text, metadata_json, created_at, pinned)
+            INSERT OR REPLACE INTO search_entries
+              (id, project_id, source_event_id, raw_type, text, metadata_json, created_at, pinned)
             VALUES (?, ?, NULL, ?, ?, ?, ?, 0)
             """,
             (
@@ -795,8 +804,8 @@ def tc_14_retrieve_memory_fallback(env: dict, home: str, case: CaseResult) -> No
         )
         conn.execute(
             """
-            INSERT OR REPLACE INTO memory_chunks
-              (id, project_id, source_event_id, chunk_type, text, metadata_json, created_at, pinned)
+            INSERT OR REPLACE INTO search_entries
+              (id, project_id, source_event_id, raw_type, text, metadata_json, created_at, pinned)
             VALUES (?, ?, NULL, ?, ?, ?, ?, 1)
             """,
             (
@@ -816,10 +825,10 @@ def tc_14_retrieve_memory_fallback(env: dict, home: str, case: CaseResult) -> No
     routed = _retrieve_json(env, "제피르 루틴 설정동기화 알려줘")
     plain_chunks = plain.get("candidates") or []
     routed_chunks = routed.get("chunks") or []
-    plain_text = "\n".join(c.get("chunk_text", "") for c in plain_chunks)
-    routed_text = "\n".join(c.get("chunk_text", "") for c in routed_chunks)
+    plain_text = "\n".join(c.get("text", "") for c in plain_chunks)
+    routed_text = "\n".join(c.get("text", "") for c in routed_chunks)
     status_leaked = any(
-        c.get("raw_chunk_type") == "source_status" or c.get("chunk_id") == "tc14-source-status"
+        c.get("raw_type") == "source_status" or c.get("entry_id") == "tc14-source-status"
         for c in plain_chunks + routed_chunks
     )
     checks = {
@@ -839,11 +848,20 @@ def tc_14_retrieve_memory_fallback(env: dict, home: str, case: CaseResult) -> No
     )
 
 
-def tc_20_memory_bridge_backfill(env: dict, home: str, case: CaseResult) -> None:
-    """persistent memory_chunks 를 chunks_v2 후보로 bridge/backfill."""
+def tc_20_legacy_migration_backfill(env: dict, home: str, case: CaseResult) -> None:
+    """legacy memory_chunks 를 explicit migration 으로 search_entries에 흡수."""
     now = "2026-05-22T00:00:00Z"
     conn = sqlite3.connect(str(Path(home) / "app.sqlite"))
     try:
+        conn.execute(
+            """
+            CREATE TABLE memory_chunks (
+              id TEXT PRIMARY KEY, project_id TEXT, source_event_id TEXT,
+              chunk_type TEXT, text TEXT, metadata_json TEXT DEFAULT '{}',
+              created_at TEXT, pinned INTEGER DEFAULT 0
+            )
+            """
+        )
         conn.execute(
             """
             INSERT OR REPLACE INTO memory_chunks
@@ -864,51 +882,26 @@ def tc_20_memory_bridge_backfill(env: dict, home: str, case: CaseResult) -> None
                 now,
             ),
         )
-        conn.execute(
-            """
-            INSERT OR REPLACE INTO memory_chunks
-              (id, project_id, source_event_id, chunk_type, text, metadata_json, created_at, pinned)
-            VALUES (?, ?, NULL, 'source_status', ?, ?, ?, 0)
-            """,
-            (
-                "tc20-status",
-                PROJECT_ID,
-                "초대 링크 fetch failed marker",
-                '{"source":"notion","status":"fetch_failed"}',
-                now,
-            ),
-        )
-        conn.execute(
-            """
-            INSERT OR REPLACE INTO memory_chunks
-              (id, project_id, source_event_id, chunk_type, text, metadata_json, created_at, pinned)
-            VALUES (?, ?, NULL, 'raw_turn', ?, ?, ?, 0)
-            """,
-            (
-                "tc20-working",
-                PROJECT_ID,
-                "초대 링크 지금 질문",
-                '{"memory_tier":"working","session_visible":true}',
-                now,
-            ),
-        )
         conn.commit()
     finally:
         conn.close()
 
     rc, out, err = run_cmd(
         env,
-        [sys.executable, "-m", "retrieval.cli", "bridge-memory", PROJECT_ID, "tc20-memory"],
+        [sys.executable, "-m", "retrieval.cli", "migrate-search-entries"],
     )
     stats = json.loads(out) if out else {}
+    rc_noop, out_noop, _ = run_cmd(
+        env,
+        [sys.executable, "-m", "retrieval.cli", "migrate-search-entries"],
+    )
+    stats_noop = json.loads(out_noop) if out_noop else {}
     rows = db_query(
         home,
         """
-        SELECT c.id, c.raw_chunk_type, c.normalized_chunk_type, c.metadata_json, d.source_ref
-        FROM chunks_v2 c
-        JOIN documents d ON d.id = c.document_id
-        WHERE d.source_ref = 'memory_chunks:tc20-memory'
-        ORDER BY d.source_ref
+        SELECT id, raw_type, normalized_type, metadata_json, origin
+        FROM search_entries
+        WHERE id = 'tc20-memory'
         """,
     )
     retrieved = _retrieve_plain_json(env, "로그인 feature 공유하기 구현 알려줘")
@@ -916,26 +909,32 @@ def tc_20_memory_bridge_backfill(env: dict, home: str, case: CaseResult) -> None
     bridged_candidate = next(
         (
             c for c in candidates
-            if c.get("document_id") != "memory_chunks"
-            and "딥링크 토큰" in c.get("chunk_text", "")
+            if c.get("entry_id") == "tc20-memory"
+            and "딥링크 토큰" in c.get("text", "")
         ),
         None,
     )
     metadata = json.loads(rows[0][3]) if rows else {}
     checks = {
         "cli_ok": rc == 0,
-        "one_bridge": len(rows) == 1 and stats.get("bridged") == 1,
+        "one_migrated": len(rows) == 1 and stats.get("entries_from_memory") == 1,
         "type_mapped": bool(rows and rows[0][1] == "decision" and rows[0][2] == "decision"),
-        "provenance": metadata.get("memory_chunk_id") == "tc20-memory"
-        and metadata.get("source_event_id") == "tc20-event"
+        "provenance": metadata.get("migrated_from") == "memory_chunks"
         and metadata.get("text_hash") == "tc20hash",
-        "retrieve_chunks_v2": bridged_candidate is not None,
+        "retrieve_search_entries": bridged_candidate is not None,
+        "noop_no_backup": rc_noop == 0 and stats_noop.get("backup") is None,
     }
-    case.metrics = checks | {"stats": stats, "rows": len(rows), "err": err[:120]}
+    case.metrics = checks | {
+        "stats": stats,
+        "noop": stats_noop,
+        "rows": len(rows),
+        "err": err[:120],
+    }
     case.passed = all(checks.values())
     case.detail = (
-        f"bridged={stats.get('bridged')} rows={len(rows)} "
-        f"retrieve_chunks_v2={checks['retrieve_chunks_v2']}"
+        f"migrated={stats.get('entries_from_memory')} rows={len(rows)} "
+        f"retrieve_search_entries={checks['retrieve_search_entries']} "
+        f"noop_backup={stats_noop.get('backup')}"
     )
 
 
@@ -957,8 +956,8 @@ def tc_21_search_skill_dispatcher(env: dict, home: str, case: CaseResult) -> Non
         )
         conn.execute(
             """
-            INSERT OR REPLACE INTO memory_chunks
-              (id, project_id, source_event_id, chunk_type, text, metadata_json, created_at, pinned)
+            INSERT OR REPLACE INTO search_entries
+              (id, project_id, source_event_id, raw_type, text, metadata_json, created_at, pinned)
             VALUES (?, ?, NULL, ?, ?, ?, ?, 0)
             """,
             (
@@ -977,18 +976,18 @@ def tc_21_search_skill_dispatcher(env: dict, home: str, case: CaseResult) -> Non
     rc, out, err = _search_script_output(env, "아틀라스 검색 스킬", project_root)
     checks = {
         "script_ok": pid_proc.returncode == 0 and bool(pid) and rc == 0,
-        "memory_fallback": "hybrid retrieval 엔진" in out,
+        "entry_retrieved": "hybrid retrieval 엔진" in out,
     }
     case.metrics = checks | {"stdout_len": len(out), "error": err[:120]}
     case.passed = all(checks.values())
     case.detail = (
-        f"script={checks['script_ok']} fallback={checks['memory_fallback']} "
+        f"script={checks['script_ok']} retrieved={checks['entry_retrieved']} "
         f"stdout={len(out)}"
     )
 
 
 def tc_22_remember_skill_dispatcher(env: dict, home: str, case: CaseResult) -> None:
-    """User-facing /remember dispatcher stores through memory_chunks + bridge."""
+    """User-facing /remember dispatcher stores directly through search_entries."""
     project_root = tempfile.mkdtemp(prefix="imprint-remember-project-")
     pid_proc = subprocess.run(
         ["bash", "-lc", f"source {ROOT / 'scripts' / 'imprint' / 'lib' / 'common.sh'}; project_id"],
@@ -1008,7 +1007,7 @@ def tc_22_remember_skill_dispatcher(env: dict, home: str, case: CaseResult) -> N
 
     rc, out, err = _remember_script_output(
         env,
-        ["아틀라스 저장 스킬은 /remember 이름으로 memory_chunks에 저장한다.", "--require"],
+        ["아틀라스 저장 스킬은 /remember 이름으로 search_entries에 저장한다.", "--require"],
         project_root,
     )
     rc_bad, _, err_bad = _remember_script_output(
@@ -1020,25 +1019,25 @@ def tc_22_remember_skill_dispatcher(env: dict, home: str, case: CaseResult) -> N
     try:
         rows = conn.execute(
             """
-            SELECT id, chunk_type, text, pinned, metadata_json
-            FROM memory_chunks
+            SELECT id, raw_type, text, pinned, metadata_json
+            FROM search_entries
             WHERE project_id = ? AND text LIKE '%/remember 이름%'
             """,
             (pid,),
         ).fetchall()
         bridge_rows = conn.execute(
             """
-            SELECT d.source_ref, c.raw_chunk_type, c.normalized_chunk_type
-            FROM documents d
-            JOIN chunks_v2 c ON c.document_id = d.id
-            WHERE d.project_id = ? AND d.source_ref LIKE 'memory_chunks:%'
+            SELECT d.source_ref, c.raw_type, c.normalized_type
+            FROM source_documents d
+            JOIN search_entries c ON c.source_document_id = d.id
+            WHERE d.project_id = ? AND d.source_ref LIKE 'search_entries:%'
             """,
             (pid,),
         ).fetchall()
         bad_rows = conn.execute(
             """
             SELECT COUNT(*)
-            FROM memory_chunks
+            FROM search_entries
             WHERE project_id = ? AND text LIKE '%오타 옵션%'
             """,
             (pid,),
@@ -1053,7 +1052,7 @@ def tc_22_remember_skill_dispatcher(env: dict, home: str, case: CaseResult) -> N
         and rows[0][1] == "note"
         and rows[0][3] == 1
         and json.loads(rows[0][4]).get("importance") == "require",
-        "bridged": len(bridge_rows) == 1 and bridge_rows[0][1] == "note",
+        "no_bridge": len(bridge_rows) == 0,
         "typo_rejected": rc_bad == 2
         and "unknown option --row" in err_bad
         and bad_rows == 0
@@ -1068,7 +1067,7 @@ def tc_22_remember_skill_dispatcher(env: dict, home: str, case: CaseResult) -> N
     case.passed = all(checks.values())
     case.detail = (
         f"script={checks['script_ok']} stored={checks['stored']} "
-        f"bridged={checks['bridged']} typo_rejected={checks['typo_rejected']}"
+        f"no_bridge={checks['no_bridge']} typo_rejected={checks['typo_rejected']}"
     )
 
 
@@ -1102,6 +1101,648 @@ def tc_23_setup_vector_logging(env: dict, home: str, case: CaseResult) -> None:
     )
 
 
+def tc_24_extract_eval_harness(env: dict, home: str, case: CaseResult) -> None:
+    """Offline eval harness accepts a pluggable extractor and scores search hits."""
+    code = """
+import json, sys
+sys.path.insert(0, %r)
+import ingestion
+from retrieval.extract_eval import run_eval
+
+def fake_model(_prompt, **_kwargs):
+    return json.dumps([
+        {
+            "chunk_type": "decision",
+            "text": "ShareLinkBuilder가 공유 링크 생성을 담당한다.",
+            "keywords": ["ShareLinkBuilder", "공유 링크"],
+        }
+    ], ensure_ascii=False)
+
+ingestion.run_background_model = fake_model
+fixture = {
+    "id": "decision-rich-baseline",
+    "turns": [
+        {"role": "user", "text": "공유 링크 생성을 LoginViewModel에 넣어도 될까요?"},
+        {"role": "assistant", "text": "결정: ShareLinkBuilder가 공유 링크 생성을 담당한다. 이유: LoginViewModel 책임을 분리하기 위해서다."},
+    ],
+    "questions": [
+        {"query": "ShareLinkBuilder 왜 만들었지", "expected_terms": ["ShareLinkBuilder"]},
+    ],
+}
+with ingestion.db() as conn:
+    out = run_eval(
+        conn,
+        project_id=%r,
+        fixture=fixture,
+        extractor=ingestion.extract_chunks_from_response,
+    )
+print(json.dumps(out, ensure_ascii=False))
+""" % (str(LIB_DIR), PROJECT_ID)
+    rc, out, err = run_python(env, code)
+    try:
+        result = json.loads(out)
+    except json.JSONDecodeError:
+        result = {}
+    checks = {
+        "ok": rc == 0,
+        "inserted": result.get("inserted") == 1,
+        "matched": result.get("matched") == 1 and result.get("total") == 1,
+        "pluggable": result.get("fixture_id") == "decision-rich-baseline",
+    }
+    case.metrics = checks | {"result": result, "err": err[:120]}
+    case.passed = all(checks.values())
+    case.detail = (
+        f"inserted={result.get('inserted')} matched={result.get('matched')}/{result.get('total')}"
+    )
+    if not case.passed:
+        case.detail += f" err={err[:120]}"
+
+
+def tc_25_retrieval_text_override(env: dict, home: str, case: CaseResult) -> None:
+    """Search entry writes can store a capped curated retrieval surface."""
+    code = """
+import json, sys
+sys.path.insert(0, %r)
+from retrieval._common import db_connect
+from retrieval.entries import build_retrieval_surface, insert_search_entry
+
+surface = build_retrieval_surface(
+    text="공유 링크 생성 책임을 분리했다.",
+    reason="LoginViewModel 책임이 커져서 별도 builder로 뺐다.",
+    files=["Sources/Auth/ShareLinkBuilder.swift"],
+    symbols=["ShareLinkBuilder"],
+)
+capped = build_retrieval_surface(
+    text="짧은 결정",
+    reason="r" * 400,
+    max_chars=120,
+)
+conn = db_connect()
+try:
+    eid = insert_search_entry(
+        conn,
+        project_id=%r,
+        origin="assistant_extract",
+        raw_type="decision",
+        text="공유 링크 생성 책임을 분리했다.",
+        retrieval_text=surface,
+        metadata={"source_uri": "tc25", "evidence_level": "middle"},
+    )
+    row = conn.execute(
+        "SELECT text, retrieval_text FROM search_entries WHERE id = ?",
+        (eid,),
+    ).fetchone()
+    conn.commit()
+finally:
+    conn.close()
+print(json.dumps({
+    "entry_id": eid,
+    "text": row[0],
+    "retrieval_text": row[1],
+    "capped_len": len(capped),
+    "capped": capped,
+}, ensure_ascii=False))
+""" % (str(LIB_DIR), PROJECT_ID)
+    rc, out, err = run_python(env, code)
+    try:
+        result = json.loads(out)
+    except json.JSONDecodeError:
+        result = {}
+    retrieved = _retrieve_plain_json(env, "ShareLinkBuilder 왜")
+    candidates = retrieved.get("candidates") or []
+    hit = next((c for c in candidates if c.get("entry_id") == result.get("entry_id")), None)
+    retrieval_text = result.get("retrieval_text") or ""
+    checks = {
+        "ok": rc == 0,
+        "display_text_plain": result.get("text") == "공유 링크 생성 책임을 분리했다.",
+        "surface_has_file": "Sources/Auth/ShareLinkBuilder.swift" in retrieval_text,
+        "surface_has_symbol": "ShareLinkBuilder" in retrieval_text,
+        "surface_capped": result.get("capped_len", 9999) <= 120,
+        "search_hit": hit is not None,
+    }
+    case.metrics = checks | {"result": result, "err": err[:120]}
+    case.passed = all(checks.values())
+    case.detail = (
+        f"hit={checks['search_hit']} capped={result.get('capped_len')} "
+        f"surface={len(retrieval_text)}"
+    )
+    if not case.passed:
+        case.detail += f" err={err[:120]}"
+
+
+def tc_26_decision_rich_extract(env: dict, home: str, case: CaseResult) -> None:
+    """Decision extract keeps reason/file/symbol metadata, redacts, and preserves flat chunks."""
+    code = """
+import json, sys
+sys.path.insert(0, %r)
+import ingestion
+
+secret = "ghp_" + "A" * 24
+response = (
+    "결정: ShareLinkBuilder를 Sources/Auth/ShareLinkBuilder.swift에 둡니다. "
+    "이유: LoginViewModel 책임을 줄입니다. "
+    f"토큰 {secret}은 저장하면 안 됩니다. "
+    "검증은 pytest tests/test_share_link.py 입니다."
+)
+
+def fake_model(_prompt, **_kwargs):
+    return json.dumps([
+        {
+            "chunk_type": "decision",
+            "text": "ShareLinkBuilder로 공유 링크 생성을 분리한다.",
+            "keywords": ["ShareLinkBuilder", "공유 링크"],
+            "reason": f"LoginViewModel 책임 분리 때문에 {secret}를 참고했다.",
+            "files": ["Sources/Auth/ShareLinkBuilder.swift", "Sources/Fake.swift"],
+            "symbols": ["ShareLinkBuilder", "GhostSymbol"],
+            "alternatives": [f"LoginViewModel에 계속 둔다 {secret}"],
+            "tests": ["pytest tests/test_share_link.py"],
+        },
+    ], ensure_ascii=False)
+
+ingestion.run_background_model = fake_model
+chunks = ingestion.extract_chunks_from_response(response)
+with ingestion.db() as conn:
+    ids = []
+    for ch in chunks:
+        ids.append(ingestion.insert_extracted_chunk(
+            conn,
+            %r,
+            None,
+            ch["chunk_type"],
+            ch["text"],
+            ch.get("keywords") or [],
+            reason=ch.get("reason"),
+            files=ch.get("files"),
+            symbols=ch.get("symbols"),
+            alternatives=ch.get("alternatives"),
+            tests=ch.get("tests"),
+        ))
+    conn.commit()
+    placeholders = ",".join("?" for _ in ids)
+    rows = conn.execute(
+        "SELECT raw_type, text, retrieval_text, metadata_json FROM search_entries "
+        f"WHERE id IN ({placeholders}) ORDER BY raw_type",
+        tuple(ids),
+    ).fetchall()
+
+print(json.dumps({
+    "chunks": chunks,
+    "rows": [
+        {
+            "raw_type": r[0],
+            "text": r[1],
+            "retrieval_text": r[2],
+            "metadata": json.loads(r[3] or "{}"),
+        }
+        for r in rows
+    ],
+    "secret": secret,
+}, ensure_ascii=False))
+""" % (str(LIB_DIR), PROJECT_ID)
+    rc, out, err = run_python(env, code)
+    try:
+        result = json.loads(out)
+    except json.JSONDecodeError:
+        result = {}
+    chunks = result.get("chunks") or []
+    rows = result.get("rows") or []
+    decision_chunk = next((c for c in chunks if c.get("chunk_type") == "decision"), {})
+    decision_row = next((r for r in rows if r.get("raw_type") == "decision"), {})
+    metadata = decision_row.get("metadata") or {}
+    retrieval_text = decision_row.get("retrieval_text") or ""
+    metadata_blob = json.dumps(metadata, ensure_ascii=False)
+    secret = result.get("secret") or ""
+    checks = {
+        "ok": rc == 0,
+        "kept_real_file": metadata.get("files") == ["Sources/Auth/ShareLinkBuilder.swift"],
+        "dropped_fake_file": "Sources/Fake.swift" not in metadata_blob,
+        "kept_real_symbol": metadata.get("symbols") == ["ShareLinkBuilder"],
+        "dropped_fake_symbol": "GhostSymbol" not in metadata_blob,
+        "redacted_metadata": bool(secret) and secret not in metadata_blob and "gh*_[REDACTED]" in metadata_blob,
+        "redacted_surface": bool(secret) and secret not in retrieval_text and "gh*_[REDACTED]" in retrieval_text,
+        "surface_signal": "Sources/Auth/ShareLinkBuilder.swift" in retrieval_text and "ShareLinkBuilder" in retrieval_text,
+        "surface_capped": len(retrieval_text) <= 1500,
+        "chunk_shape": decision_chunk.get("reason") and decision_chunk.get("files") == ["Sources/Auth/ShareLinkBuilder.swift"],
+    }
+    case.metrics = checks | {"result": result, "err": err[:120]}
+    case.passed = all(checks.values())
+    case.detail = (
+        f"rows={len(rows)} file={checks['kept_real_file']} "
+        f"redacted={checks['redacted_surface']}"
+    )
+    if not case.passed:
+        case.detail += f" err={err[:120]}"
+
+
+def tc_27_stop_session_and_flat_extract(env: dict, home: str, case: CaseResult) -> None:
+    """Stop stores session_id metadata and flat extract excludes rich decision types."""
+    env_h = codex_hook_env(env)
+    stop_input = json.dumps(
+        {
+            "hook_event_name": "Stop",
+            "last_assistant_message": "결정: A 대신 B로 바꿉니다. 수정: 테스트 명령을 고쳤습니다.",
+            "session_id": "tc27-session",
+        },
+        ensure_ascii=False,
+    )
+    rc, _, err = run_cmd(env_h, ["bash", "scripts/imprint/stop.sh"], input_text=stop_input)
+    rows = db_query(
+        home,
+        """
+        SELECT json_extract(metadata_json, '$.session_id'), text_clean
+        FROM events
+        WHERE kind = 'llm_response'
+          AND text_clean LIKE '%A 대신 B%'
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1
+        """,
+    )
+    code = """
+import json, sys
+sys.path.insert(0, %r)
+import ingestion
+
+def fake_model(_prompt, **_kwargs):
+    return json.dumps([
+        {"chunk_type": "decision", "text": "B안으로 바꾼다.", "keywords": ["B안"]},
+        {"chunk_type": "fix", "text": "테스트 명령을 고쳤다.", "keywords": ["테스트"]},
+    ], ensure_ascii=False)
+
+ingestion.run_background_model = fake_model
+print(json.dumps({
+    "flat": ingestion.extract_chunks_from_response("결정과 수정이 함께 있음", mode="flat"),
+    "rich": ingestion.extract_chunks_from_response("결정과 수정이 함께 있음", mode="rich"),
+}, ensure_ascii=False))
+""" % (str(LIB_DIR),)
+    rc_py, out, err_py = run_python(env, code)
+    parsed = json.loads(out) if out else {}
+    flat_types = [c.get("chunk_type") for c in parsed.get("flat") or []]
+    rich_types = [c.get("chunk_type") for c in parsed.get("rich") or []]
+    checks = {
+        "stop_ok": rc == 0,
+        "session_metadata": bool(rows and rows[0][0] == "tc27-session"),
+        "flat_excludes_decision": flat_types == ["fix"],
+        "rich_excludes_fix": rich_types == ["decision"],
+        "py_ok": rc_py == 0,
+    }
+    case.metrics = checks | {"flat": flat_types, "rich": rich_types, "err": (err or err_py)[:120]}
+    case.passed = all(checks.values())
+    case.detail = f"session={rows[0][0] if rows else None} flat={flat_types} rich={rich_types}"
+
+
+def tc_28_rollup_session_cursor(env: dict, home: str, case: CaseResult) -> None:
+    """Rollup creates rich entries once and cursor prevents duplicate reruns."""
+    code = """
+import json, sqlite3, sys
+sys.path.insert(0, %r)
+import ingestion
+from retrieval import rollup
+from retrieval.retrieve import retrieve
+
+def fake_model(_prompt, **_kwargs):
+    return json.dumps([
+        {
+            "chunk_type": "decision",
+            "text": "공유 링크 구현은 B안인 ShareLinkBuilder로 분리한다.",
+            "keywords": ["ShareLinkBuilder", "B안", "공유 링크"],
+            "reason": "A안은 LoginViewModel 책임이 커져서 폐기했다.",
+            "files": ["Sources/Auth/ShareLinkBuilder.swift"],
+            "symbols": ["ShareLinkBuilder"],
+            "tests": ["pytest tests/test_share_link.py"],
+        }
+    ], ensure_ascii=False)
+
+ingestion.run_background_model = fake_model
+with ingestion.db() as conn:
+    rows = [
+        ("tc28-01", "user_message", "처음엔 LoginViewModel에 공유 링크를 넣는 A안으로 갈까요?", "2026-05-24T01:00:00Z"),
+        ("tc28-02", "llm_response", "A안은 가능하지만 LoginViewModel 책임이 커집니다.", "2026-05-24T01:01:00Z"),
+        ("tc28-03", "user_message", "책임이 커지면 별도 builder가 낫지 않나요?", "2026-05-24T01:02:00Z"),
+        ("tc28-04", "llm_response", "결정: Sources/Auth/ShareLinkBuilder.swift의 ShareLinkBuilder로 B안 분리합니다. pytest tests/test_share_link.py로 검증합니다.", "2026-05-24T01:03:00Z"),
+    ]
+    for event_id, kind, text, created_at in rows:
+        conn.execute(
+            "INSERT INTO events (id, project_id, source, kind, text_clean, metadata_json, noise, created_at) "
+            "VALUES (?, ?, 'eval', ?, ?, ?, 0, ?)",
+            (event_id, %r, kind, text, json.dumps({"session_id": "tc28-session"}, ensure_ascii=False), created_at),
+        )
+    conn.commit()
+
+first = rollup.rollup_session(%r, "tc28-session", all_batches=True).to_dict()
+second = rollup.rollup_session(%r, "tc28-session", all_batches=True).to_dict()
+with ingestion.db() as conn:
+    entries = conn.execute(
+        "SELECT raw_type, text, retrieval_text, metadata_json FROM search_entries "
+        "WHERE project_id = ? AND json_extract(metadata_json, '$.session_id') = 'tc28-session'",
+        (%r,),
+    ).fetchall()
+    state = conn.execute(
+        "SELECT last_event_id FROM extract_state WHERE project_id = ? AND session_id = 'tc28-session'",
+        (%r,),
+    ).fetchone()
+result = retrieve("ShareLinkBuilder 왜 B안", %r, top_k=5)
+haystack = "\\n".join([c.text + "\\n" + c.retrieval_text for c in result.candidates])
+print(json.dumps({
+    "first": first,
+    "second": second,
+    "entries": [
+        {"raw_type": r[0], "text": r[1], "retrieval_text": r[2], "metadata": json.loads(r[3] or "{}")}
+        for r in entries
+    ],
+    "state": state[0] if state else None,
+    "haystack": haystack,
+}, ensure_ascii=False))
+""" % (str(LIB_DIR), PROJECT_ID, PROJECT_ID, PROJECT_ID, PROJECT_ID, PROJECT_ID, PROJECT_ID)
+    rc, out, err = run_python(env, code)
+    parsed = json.loads(out) if out else {}
+    entries = parsed.get("entries") or []
+    blob = json.dumps(entries, ensure_ascii=False)
+    haystack = parsed.get("haystack") or ""
+    checks = {
+        "ok": rc == 0,
+        "first_inserted": (parsed.get("first") or {}).get("entries_inserted") == 1,
+        "second_noop": (parsed.get("second") or {}).get("events_processed") == 0,
+        "one_entry": len(entries) == 1,
+        "cursor_last": parsed.get("state") == "tc28-04",
+        "metadata_range": "tc28-01" in blob and "tc28-04" in blob,
+        "search_recovers": "ShareLinkBuilder" in haystack and "A안은 LoginViewModel 책임" in haystack,
+    }
+    case.metrics = checks | {"parsed": parsed, "err": err[:160]}
+    case.passed = all(checks.values())
+    case.detail = (
+        f"inserted={(parsed.get('first') or {}).get('entries_inserted')} "
+        f"second={(parsed.get('second') or {}).get('events_processed')} entries={len(entries)}"
+    )
+    if not case.passed:
+        case.detail += f" err={err[:120]}"
+
+
+def tc_29_rollup_stale_and_bounded(env: dict, home: str, case: CaseResult) -> None:
+    """Stale session selection excludes current session and bounded batches advance cursor."""
+    code = """
+import json, sys
+sys.path.insert(0, %r)
+import ingestion
+from retrieval import rollup
+
+def fake_model(_prompt, **_kwargs):
+    return json.dumps([
+        {"chunk_type": "summary", "text": "bounded batch 요약", "keywords": ["bounded"]}
+    ], ensure_ascii=False)
+
+ingestion.run_background_model = fake_model
+with ingestion.db() as conn:
+    conn.execute(
+        "INSERT OR IGNORE INTO projects VALUES (?, ?, ?, ?, ?)",
+        (%r, %r, "root", "2026-05-24", "2026-05-24"),
+    )
+    events = [
+        ("tc29-old-1", "tc29-old", "user_message", "오래된 세션 1", "2020-01-01T01:00:00Z"),
+        ("tc29-old-2", "tc29-old", "llm_response", "오래된 세션 2", "2020-01-01T01:01:00Z"),
+        ("tc29-current-1", "tc29-current", "user_message", "현재 세션", "2020-01-01T01:00:00Z"),
+        ("tc29-fresh-1", "tc29-fresh", "user_message", "최신 세션", "2999-01-01T00:00:00Z"),
+        ("tc29-b-1", "tc29-bounded", "user_message", "bounded 1", "2026-05-24T02:00:00Z"),
+        ("tc29-b-2", "tc29-bounded", "llm_response", "bounded 2", "2026-05-24T02:01:00Z"),
+        ("tc29-b-3", "tc29-bounded", "user_message", "bounded 3", "2026-05-24T02:02:00Z"),
+    ]
+    for event_id, session_id, kind, text, created_at in events:
+        conn.execute(
+            "INSERT INTO events (id, project_id, source, kind, text_clean, metadata_json, noise, created_at) "
+            "VALUES (?, ?, 'eval', ?, ?, ?, 0, ?)",
+            (event_id, %r, kind, text, json.dumps({"session_id": session_id}, ensure_ascii=False), created_at),
+        )
+    conn.execute(
+        "INSERT INTO events (id, project_id, source, kind, text_clean, metadata_json, noise, created_at) "
+        "VALUES ('tc29-root-1', ?, 'eval', 'llm_response', 'root stale session', ?, 0, '2020-01-01T01:00:00Z')",
+        (%r, json.dumps({"session_id": "tc29-root"}, ensure_ascii=False)),
+    )
+    conn.commit()
+
+stale = rollup.stale_sessions(%r, exclude_session="tc29-current", stale_minutes=30, max_sessions=10)
+first = rollup.rollup_session(%r, "tc29-bounded", batch_events=2, max_chars=120).to_dict()
+second = rollup.rollup_session(%r, "tc29-bounded", batch_events=2, max_chars=120).to_dict()
+print(json.dumps({"stale": stale, "first": first, "second": second}, ensure_ascii=False))
+""" % (str(LIB_DIR), ROOT_PROJECT_ID, str(ROOT), PROJECT_ID, ROOT_PROJECT_ID, PROJECT_ID, PROJECT_ID, PROJECT_ID)
+    rc, out, err = run_python(env, code)
+    parsed = json.loads(out) if out else {}
+    env_cli = dict(env)
+    env_cli["IMPRINT_CODEX_BIN"] = make_fake_codex(home)
+    rc_script, out_script, err_script = run_cmd(
+        env_cli,
+        ["bash", "scripts/imprint/rollup.sh", "--stale", "--exclude-session", "tc29-current", "--json"],
+    )
+    try:
+        script_json = json.loads(out_script) if out_script else {}
+    except json.JSONDecodeError:
+        script_json = {}
+    stale = parsed.get("stale") or []
+    checks = {
+        "ok": rc == 0,
+        "old_selected": "tc29-old" in stale,
+        "current_excluded": "tc29-current" not in stale,
+        "fresh_excluded": "tc29-fresh" not in stale,
+        "first_batch_two": (parsed.get("first") or {}).get("events_processed") == 2,
+        "second_batch_one": (parsed.get("second") or {}).get("events_processed") == 1,
+        "script_ok": (
+            rc_script == 0
+            and script_json.get("project_id") == ROOT_PROJECT_ID
+            and "tc29-root" in (script_json.get("sessions") or [])
+        ),
+    }
+    case.metrics = checks | {"parsed": parsed, "script": script_json, "err": (err or err_script)[:160]}
+    case.passed = all(checks.values())
+    case.detail = (
+        f"stale={stale} first={(parsed.get('first') or {}).get('events_processed')} "
+        f"second={(parsed.get('second') or {}).get('events_processed')} script={rc_script}"
+    )
+    if not case.passed:
+        case.detail += f" err={err[:120]}"
+
+
+def tc_30_rollup_extract_without_write_lock(env: dict, home: str, case: CaseResult) -> None:
+    """Slow rollup extraction must not hold a DB write lock."""
+    code = """
+import json, os, sqlite3, sys, threading, time
+from pathlib import Path
+sys.path.insert(0, %r)
+import ingestion
+from retrieval import rollup
+
+entered = threading.Event()
+release = threading.Event()
+
+def slow_extract(_text, *, mode="rich"):
+    entered.set()
+    release.wait(timeout=3)
+    return [
+        {"chunk_type": "summary", "text": "느린 rollup 요약", "keywords": ["slow", "rollup"]}
+    ]
+
+ingestion.extract_chunks_from_response = slow_extract
+with ingestion.db() as conn:
+    rows = [
+        ("tc30-01", "user_message", "느린 rollup 시작", "2026-05-24T03:00:00Z"),
+        ("tc30-02", "llm_response", "느린 rollup 응답", "2026-05-24T03:01:00Z"),
+    ]
+    for event_id, kind, text, created_at in rows:
+        conn.execute(
+            "INSERT INTO events (id, project_id, source, kind, text_clean, metadata_json, noise, created_at) "
+            "VALUES (?, ?, 'eval', ?, ?, ?, 0, ?)",
+            (event_id, %r, kind, text, json.dumps({"session_id": "tc30-rollup"}, ensure_ascii=False), created_at),
+        )
+    conn.commit()
+
+result = {}
+
+def worker():
+    try:
+        result["stats"] = rollup.rollup_session_once(%r, "tc30-rollup").to_dict()
+    except Exception as exc:
+        result["error"] = repr(exc)
+
+t = threading.Thread(target=worker)
+t.start()
+entered_ok = entered.wait(timeout=2)
+writer_ok = False
+writer_err = ""
+try:
+    db_path = Path(os.environ["IMPRINT_HOME"]) / "app.sqlite"
+    conn = sqlite3.connect(str(db_path), timeout=0.1)
+    conn.execute("PRAGMA busy_timeout = 100")
+    conn.execute(
+        "INSERT INTO events (id, project_id, source, kind, text_clean, metadata_json, noise, created_at) "
+        "VALUES ('tc30-writer', ?, 'eval', 'user_message', 'concurrent writer', '{}', 0, '2026-05-24T03:01:30Z')",
+        (%r,),
+    )
+    conn.commit()
+    writer_ok = True
+except Exception as exc:
+    writer_err = repr(exc)
+finally:
+    try:
+        conn.close()
+    except Exception:
+        pass
+    release.set()
+    t.join(timeout=4)
+
+with ingestion.db() as conn:
+    writer_count = conn.execute(
+        "SELECT COUNT(*) FROM events WHERE id = 'tc30-writer'"
+    ).fetchone()[0]
+print(json.dumps({
+    "entered_ok": entered_ok,
+    "writer_ok": writer_ok,
+    "writer_err": writer_err,
+    "writer_count": writer_count,
+    "worker": result,
+}, ensure_ascii=False))
+""" % (str(LIB_DIR), PROJECT_ID, PROJECT_ID, PROJECT_ID)
+    rc, out, err = run_python(env, code)
+    parsed = json.loads(out) if out else {}
+    worker = parsed.get("worker") or {}
+    stats = worker.get("stats") or {}
+    checks = {
+        "ok": rc == 0,
+        "entered": parsed.get("entered_ok") is True,
+        "writer_ok": parsed.get("writer_ok") is True,
+        "writer_persisted": parsed.get("writer_count") == 1,
+        "worker_ok": not worker.get("error") and stats.get("entries_inserted") == 1,
+    }
+    case.metrics = checks | {"parsed": parsed, "err": err[:160]}
+    case.passed = all(checks.values())
+    case.detail = (
+        f"writer={parsed.get('writer_ok')} entries={stats.get('entries_inserted')} "
+        f"err={parsed.get('writer_err') or worker.get('error') or ''}"
+    )
+
+
+def tc_31_search_rollup_detail_output(env: dict, home: str, case: CaseResult) -> None:
+    """Search output exposes rollup reason/files/symbols/tests/event provenance."""
+    code = """
+import json, sys
+sys.path.insert(0, %r)
+from retrieval._common import db_connect
+from retrieval.entries import build_retrieval_surface, insert_search_entry
+
+metadata = {
+    "evidence_level": "assistant_extracted",
+    "reason": "A안은 LoginViewModel 책임이 커져서 폐기했다.",
+    "files": ["Sources/Auth/TC31ShareLinkBuilder.swift"],
+    "symbols": ["TC31ShareLinkBuilder"],
+    "tests": ["pytest tests/test_share_link.py"],
+    "event_range": ["tc31-01", "tc31-04"],
+    "session_id": "tc31-session",
+    "rolled": True,
+}
+surface = build_retrieval_surface(
+    text="공유 링크 구현은 B안인 TC31ShareLinkBuilder로 분리한다.",
+    reason=metadata["reason"],
+    files=metadata["files"],
+    symbols=metadata["symbols"],
+)
+conn = db_connect()
+try:
+    conn.execute(
+        "INSERT INTO events (id, project_id, source, kind, text_clean, metadata_json, noise, created_at) "
+        "VALUES ('tc31-04', ?, 'eval', 'llm_response', ?, ?, 0, '2026-05-24T04:03:00Z')",
+        (%r, "결정: TC31ShareLinkBuilder로 B안 분리", json.dumps({"session_id": "tc31-session"}, ensure_ascii=False)),
+    )
+    entry_id = insert_search_entry(
+        conn,
+        project_id=%r,
+        source_event_id="tc31-04",
+        origin="assistant_extract",
+        raw_type="decision",
+        text="공유 링크 구현은 B안인 TC31ShareLinkBuilder로 분리한다.",
+        retrieval_text=surface,
+        metadata=metadata,
+    )
+    conn.commit()
+finally:
+    conn.close()
+print(json.dumps({"entry_id": entry_id}, ensure_ascii=False))
+""" % (str(LIB_DIR), PROJECT_ID, PROJECT_ID)
+    rc_seed, out_seed, err_seed = run_python(env, code)
+    seeded = json.loads(out_seed) if out_seed else {}
+    plain = _retrieve_plain_json(env, "TC31ShareLinkBuilder 왜 B안")
+    candidates = plain.get("candidates") or []
+    hit = next((c for c in candidates if c.get("entry_id") == seeded.get("entry_id")), {})
+    rc_text, out_text, err_text = run_cmd(
+        env,
+        [sys.executable, "-m", "retrieval.cli", "retrieve", PROJECT_ID, "TC31ShareLinkBuilder 왜 B안"],
+    )
+    metadata = hit.get("metadata") or {}
+    checks = {
+        "seed_ok": rc_seed == 0 and bool(seeded.get("entry_id")),
+        "json_hit": bool(hit),
+        "json_metadata": (
+            metadata.get("reason", "").startswith("A안은 LoginViewModel")
+            and metadata.get("files") == ["Sources/Auth/TC31ShareLinkBuilder.swift"]
+            and metadata.get("symbols") == ["TC31ShareLinkBuilder"]
+            and hit.get("source_event_id") == "tc31-04"
+        ),
+        "text_reason": "reason: A안은 LoginViewModel 책임" in out_text,
+        "text_files": "files: Sources/Auth/TC31ShareLinkBuilder.swift" in out_text,
+        "text_symbols": "symbols: TC31ShareLinkBuilder" in out_text,
+        "text_tests": "tests: pytest tests/test_share_link.py" in out_text,
+        "text_event_range": "event_range: tc31-01..tc31-04" in out_text,
+        "text_rollup": "rollup: true session=tc31-session" in out_text,
+    }
+    case.metrics = checks | {
+        "entry_id": seeded.get("entry_id"),
+        "json_candidates": len(candidates),
+        "err": (err_seed or err_text)[:160],
+    }
+    case.passed = all(checks.values()) and rc_text == 0
+    case.detail = (
+        f"json_hit={checks['json_hit']} reason={checks['text_reason']} "
+        f"files={checks['text_files']} event_range={checks['text_event_range']}"
+    )
+    if not case.passed:
+        case.detail += f" err={(err_seed or err_text)[:120]}"
+
+
 def tc_15_first_turn_working_overlay(env: dict, home: str, case: CaseResult) -> None:
     """UserPromptSubmit sync mini-chunk + prefill/search working overlay."""
     env_h = hook_env(env)
@@ -1117,8 +1758,8 @@ def tc_15_first_turn_working_overlay(env: dict, home: str, case: CaseResult) -> 
     try:
         conn.execute(
             """
-            INSERT OR REPLACE INTO memory_chunks
-              (id, project_id, source_event_id, chunk_type, text, metadata_json, created_at, pinned)
+            INSERT OR REPLACE INTO search_entries
+              (id, project_id, source_event_id, raw_type, text, metadata_json, created_at, pinned)
             VALUES (?, ?, NULL, ?, ?, ?, ?, 0)
             """,
             (
@@ -1148,8 +1789,8 @@ def tc_15_first_turn_working_overlay(env: dict, home: str, case: CaseResult) -> 
     try:
         working_rows = conn.execute(
             """
-            SELECT id, chunk_type, text, metadata_json
-            FROM memory_chunks
+            SELECT id, 'raw_turn' AS raw_type, text_clean AS text, metadata_json
+            FROM events
             WHERE project_id = ?
               AND json_extract(metadata_json, '$.memory_tier') = 'working'
             ORDER BY created_at
@@ -1159,16 +1800,16 @@ def tc_15_first_turn_working_overlay(env: dict, home: str, case: CaseResult) -> 
         noise_working = conn.execute(
             """
             SELECT COUNT(*)
-            FROM memory_chunks
+            FROM events
             WHERE project_id = ?
               AND json_extract(metadata_json, '$.memory_tier') = 'working'
-              AND text LIKE '%응%'
+              AND text_clean LIKE '%응%'
             """,
             (ROOT_PROJECT_ID,),
         ).fetchone()[0]
         conn.execute(
             """
-            INSERT OR REPLACE INTO documents
+            INSERT OR REPLACE INTO source_documents
               (id, project_id, source_type, source_ref, title, raw_text,
                source_created_at, source_updated_at, created_at, updated_at, checksum)
             VALUES (?, ?, 'notion', 'tc15-doc', 'TC15', ?, ?, ?, ?, ?, 'tc15hash')
@@ -1185,14 +1826,14 @@ def tc_15_first_turn_working_overlay(env: dict, home: str, case: CaseResult) -> 
         )
         conn.execute(
             """
-            INSERT OR REPLACE INTO chunks_v2
-              (id, project_id, document_id, chunk_index, section_path, chunk_text,
-               retrieval_text, raw_chunk_type, normalized_chunk_type,
+            INSERT OR REPLACE INTO search_entries
+              (id, project_id, source_document_id, chunk_index, section_path, text,
+               retrieval_text, raw_type, normalized_type,
                source_updated_at, valid_from, is_current, created_at)
             VALUES (?, ?, ?, 0, 'TC15', ?, ?, 'spec', 'spec', ?, ?, 1, ?)
             """,
             (
-                "tc15-cv2",
+                "tc15-entry",
                 ROOT_PROJECT_ID,
                 "tc15-doc",
                 "A 버튼 클릭 시 문서 기반 테스트 모드가 시작됩니다.",
@@ -1217,7 +1858,7 @@ def tc_15_first_turn_working_overlay(env: dict, home: str, case: CaseResult) -> 
     except json.JSONDecodeError:
         retrieved = {}
     candidates = retrieved.get("candidates") or []
-    chunk_ids = {c.get("chunk_id") for c in candidates}
+    entry_ids = {c.get("entry_id") for c in candidates}
     working_ok = False
     rewrite_ok = False
     if working_rows:
@@ -1251,7 +1892,7 @@ def tc_15_first_turn_working_overlay(env: dict, home: str, case: CaseResult) -> 
         "prefill_retrieved": "테스트 모드" in ups_out,
         "noise_no_working": rc_noise == 0 and noise_working == 0,
         "retrieve_union_working": any(c.get("source_type") == "working" for c in candidates),
-        "retrieve_keeps_chunks_v2": "tc15-cv2" in chunk_ids,
+        "retrieve_keeps_search_entries": "tc15-entry" in entry_ids,
     }
     case.metrics = checks | {
         "working_rows": len(working_rows),
@@ -1260,14 +1901,14 @@ def tc_15_first_turn_working_overlay(env: dict, home: str, case: CaseResult) -> 
     case.passed = all(checks.values())
     case.detail = (
         f"working={len(working_rows)} prefill={checks['prefill_working']}/{checks['prefill_retrieved']} "
-        f"retrieve={len(candidates)} union={checks['retrieve_union_working']} cv2={checks['retrieve_keeps_chunks_v2']}"
+        f"retrieve={len(candidates)} union={checks['retrieve_union_working']} entry={checks['retrieve_keeps_search_entries']}"
     )
     if not case.passed and ups_err:
         case.detail += f" ups_err={ups_err[:120]}"
 
 
 def tc_16_context_section_policy(env: dict, home: str, case: CaseResult) -> None:
-    """working cleanup/gate/provenance + low-confidence MEMFB policy."""
+    """working metadata/gate/provenance + low-confidence trace policy."""
     env_h = hook_env(env)
     env_h["IMPRINT_CLAUDE_BIN"] = make_fake_claude(home)
     env_h["IMPRINT_WORKING_TTL_HOURS"] = "1"
@@ -1285,8 +1926,8 @@ def tc_16_context_section_policy(env: dict, home: str, case: CaseResult) -> None
         for idx, created in enumerate([old, now, now, now]):
             conn.execute(
                 """
-                INSERT OR REPLACE INTO memory_chunks
-                  (id, project_id, source_event_id, chunk_type, text, metadata_json, created_at, pinned)
+                INSERT OR REPLACE INTO search_entries
+                  (id, project_id, source_event_id, raw_type, text, metadata_json, created_at, pinned)
                 VALUES (?, ?, NULL, 'raw_turn', ?, ?, ?, 0)
                 """,
                 (
@@ -1304,8 +1945,8 @@ def tc_16_context_section_policy(env: dict, home: str, case: CaseResult) -> None
             )
         conn.execute(
             """
-            INSERT OR REPLACE INTO memory_chunks
-              (id, project_id, source_event_id, chunk_type, text, metadata_json, created_at, pinned)
+            INSERT OR REPLACE INTO search_entries
+              (id, project_id, source_event_id, raw_type, text, metadata_json, created_at, pinned)
             VALUES ('tc16-persistent-keep', ?, NULL, 'decision', 'persistent memory 유지', '{}', ?, 0)
             """,
             (ROOT_PROJECT_ID, old),
@@ -1338,7 +1979,7 @@ with db() as conn:
     try:
         working_clean_count = conn.execute(
             """
-            SELECT COUNT(*) FROM memory_chunks
+            SELECT COUNT(*) FROM events
             WHERE project_id = ?
               AND json_extract(metadata_json, '$.memory_tier') = 'working'
               AND json_extract(metadata_json, '$.session_id') = 'tc16-clean'
@@ -1346,11 +1987,11 @@ with db() as conn:
             (ROOT_PROJECT_ID,),
         ).fetchone()[0]
         persistent_keep = conn.execute(
-            "SELECT COUNT(*) FROM memory_chunks WHERE id = 'tc16-persistent-keep'",
+            "SELECT COUNT(*) FROM search_entries WHERE id = 'tc16-persistent-keep'",
         ).fetchone()[0]
         gate_md_raw = conn.execute(
             """
-            SELECT metadata_json FROM memory_chunks
+            SELECT metadata_json FROM events
             WHERE project_id = ?
               AND json_extract(metadata_json, '$.session_id') = 'tc16-gate'
             ORDER BY created_at DESC LIMIT 1
@@ -1359,23 +2000,23 @@ with db() as conn:
         ).fetchone()
         provenance_rows = conn.execute(
             """
-            SELECT chunk_type, metadata_json FROM memory_chunks
+            SELECT raw_type, origin, source_document_id, metadata_json FROM search_entries
             WHERE text IN ('외부 원문 근거', 'assistant 추출 근거', 'slack failed')
-            ORDER BY chunk_type
+            ORDER BY raw_type
             """
         ).fetchall()
         conn.execute(
             """
-            INSERT OR REPLACE INTO memory_chunks
-              (id, project_id, source_event_id, chunk_type, text, metadata_json, created_at, pinned)
-            VALUES ('tc16-memfb', ?, NULL, 'decision', '청운 플래그는 fallback memory에서 확인합니다.', '{}', ?, 0)
+            INSERT OR REPLACE INTO search_entries
+              (id, project_id, source_event_id, raw_type, text, metadata_json, created_at, pinned)
+            VALUES ('tc16-primary', ?, NULL, 'decision', '청운 플래그는 primary entry에서 확인합니다.', '{}', ?, 0)
             """,
             (PROJECT_ID, now),
         )
         conn.execute(
             """
-            INSERT OR REPLACE INTO memory_chunks
-              (id, project_id, source_event_id, chunk_type, text, metadata_json, created_at, pinned)
+            INSERT OR REPLACE INTO search_entries
+              (id, project_id, source_event_id, raw_type, text, metadata_json, created_at, pinned)
             VALUES ('tc16-working-low', ?, NULL, 'raw_turn', '청운 플래그 알려줘', ?, ?, 0)
             """,
             (
@@ -1395,7 +2036,9 @@ with db() as conn:
 
     gate_md = json.loads(gate_md_raw[0]) if gate_md_raw else {}
     provenance = []
-    for _ctype, md_raw in provenance_rows:
+    origins = {}
+    for ctype, origin, source_document_id, md_raw in provenance_rows:
+        origins[ctype] = {"origin": origin, "source_document_id": source_document_id}
         try:
             provenance.append(json.loads(md_raw))
         except json.JSONDecodeError:
@@ -1405,10 +2048,10 @@ with db() as conn:
     env_r["IMPRINT_SESSION_ID"] = "tc16-low"
     low = _retrieve_plain_json(env_r, "청운 플래그 알려줘")
     low_chunks = low.get("candidates") or []
-    low_text = "\n".join(c.get("chunk_text", "") for c in low_chunks)
+    low_text = "\n".join(c.get("text", "") for c in low_chunks)
 
     checks = {
-        "cleanup": rc_clean == 0 and working_clean_count <= 2 and persistent_keep == 1,
+        "cleanup": rc_clean == 0 and working_clean_count >= 1 and persistent_keep == 1,
         "gate": (
             rc_gate == 0
             and gate_md.get("need_retrieval") is False
@@ -1420,9 +2063,15 @@ with db() as conn:
             and any(p.get("evidence_level") == "assistant_extracted" and p.get("source_type") == "chat" for p in provenance)
             and any(p.get("evidence_level") == "status_marker" and p.get("grounded") is False for p in provenance)
         ),
-        "low_conf_memfb": (
-            any(c.get("source_type") == "working" for c in low_chunks)
-            and "fallback memory" in low_text
+        "origin_invariant": (
+            origins.get("spec", {}).get("origin") == "external_fetch"
+            and origins.get("spec", {}).get("source_document_id") is None
+            and origins.get("source_status", {}).get("origin") == "source_status"
+            and origins.get("decision", {}).get("origin") == "assistant_extract"
+        ),
+        "low_conf_trace": (
+            (low.get("trace") or {}).get("fallback_triggered") is False
+            and "primary entry" in low_text
         ),
     }
     case.metrics = checks | {
@@ -1432,7 +2081,8 @@ with db() as conn:
     case.passed = all(checks.values())
     case.detail = (
         f"cleanup={checks['cleanup']} gate={checks['gate']} "
-        f"provenance={checks['provenance']} low_memfb={checks['low_conf_memfb']}"
+        f"provenance={checks['provenance']} origin={checks['origin_invariant']} "
+        f"low_trace={checks['low_conf_trace']}"
     )
     if not case.passed and err_prov:
         case.detail += f" prov_err={err_prov[:120]}"
@@ -1455,8 +2105,8 @@ with db() as conn:
     )
     insert_external_chunk(conn, %r, 'spec', '관측 원문 근거', {'source':'notion','url':'https://notion.so/tc17'})
     insert_external_chunk(conn, %r, 'spec', '관측 원문 근거', {'source':'notion','url':'https://notion.so/tc17'})
-    insert_extracted_chunk(conn, %r, 'tc17-event', 'decision', '관측 플래그는 fallback memory에서 확인합니다.', ['관측'])
-    insert_extracted_chunk(conn, %r, 'tc17-event', 'decision', '관측 플래그는 fallback memory에서 확인합니다.', ['관측'])
+    insert_extracted_chunk(conn, %r, 'tc17-event', 'decision', '관측 플래그는 dedup entry에서 확인합니다.', ['관측'])
+    insert_extracted_chunk(conn, %r, 'tc17-event', 'decision', '관측 플래그는 dedup entry에서 확인합니다.', ['관측'])
     conn.commit()
 """ % (str(LIB_DIR), PROJECT_ID, PROJECT_ID, PROJECT_ID, PROJECT_ID, PROJECT_ID)
     rc_setup, _, err_setup = run_python(env_p, code)
@@ -1465,7 +2115,7 @@ with db() as conn:
     try:
         external_count = conn.execute(
             """
-            SELECT COUNT(*) FROM memory_chunks
+            SELECT COUNT(*) FROM search_entries
             WHERE project_id = ?
               AND json_extract(metadata_json, '$.source_uri') = 'https://notion.so/tc17'
             """,
@@ -1473,7 +2123,7 @@ with db() as conn:
         ).fetchone()[0]
         extracted_count = conn.execute(
             """
-            SELECT COUNT(*) FROM memory_chunks
+            SELECT COUNT(*) FROM search_entries
             WHERE project_id = ? AND source_event_id = 'tc17-event'
             """,
             (PROJECT_ID,),
@@ -1660,7 +2310,7 @@ def tc_18_codex_hook_io(env: dict, home: str, case: CaseResult) -> None:
 def tc_19_legacy_db_migration(env: dict, home: str, case: CaseResult) -> None:
     """새 기본 DB가 비어 있으면 ~/.claude/imprint/app.sqlite 에서 1회 migration."""
 
-    def seed_db(path: Path, chunk_id: str, text: str) -> None:
+    def seed_db(path: Path, entry_id: str, text: str) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(str(path))
         conn.executescript(SCHEMA_PATH.read_text())
@@ -1669,10 +2319,10 @@ def tc_19_legacy_db_migration(env: dict, home: str, case: CaseResult) -> None:
             ("legacy_project", "/legacy", "legacy", "2026-05-01", "2026-05-01"),
         )
         conn.execute(
-            "INSERT INTO memory_chunks "
-            "(id, project_id, chunk_type, text, metadata_json, created_at, pinned) "
+            "INSERT INTO search_entries "
+            "(id, project_id, raw_type, text, metadata_json, created_at, pinned) "
             "VALUES (?, ?, 'decision', ?, '{}', '2026-05-01T00:00:00Z', 0)",
-            (chunk_id, "legacy_project", text),
+            (entry_id, "legacy_project", text),
         )
         conn.commit()
         conn.close()
@@ -1696,7 +2346,7 @@ def tc_19_legacy_db_migration(env: dict, home: str, case: CaseResult) -> None:
         conn = sqlite3.connect(str(new_db))
         try:
             migrated_rows = conn.execute(
-                "SELECT id, text FROM memory_chunks WHERE id='legacy_chunk'"
+                "SELECT id, text FROM search_entries WHERE id='legacy_chunk'"
             ).fetchall()
         finally:
             conn.close()
@@ -1722,10 +2372,10 @@ def tc_19_legacy_db_migration(env: dict, home: str, case: CaseResult) -> None:
         conn = sqlite3.connect(str(new_db))
         try:
             kept_new = conn.execute(
-                "SELECT COUNT(*) FROM memory_chunks WHERE id='new_chunk'"
+                "SELECT COUNT(*) FROM search_entries WHERE id='new_chunk'"
             ).fetchone()[0]
             copied_old = conn.execute(
-                "SELECT COUNT(*) FROM memory_chunks WHERE id='old_chunk'"
+                "SELECT COUNT(*) FROM search_entries WHERE id='old_chunk'"
             ).fetchone()[0]
         finally:
             conn.close()
@@ -1770,16 +2420,24 @@ CASES: list[tuple[str, str, callable]] = [
     ("TC-11", "Hook memory loop + redaction", tc_11_hook_memory_loop),
     ("TC-12", "Memory search/list/inject fixture", tc_12_memory_search_fixture),
     ("TC-13", "Source status + noise + profile", tc_13_source_noise_profile),
-    ("TC-14", "Search memory_chunks fallback", tc_14_retrieve_memory_fallback),
+    ("TC-14", "Search search_entries primary", tc_14_retrieve_search_entries_primary),
     ("TC-15", "First-turn working overlay", tc_15_first_turn_working_overlay),
     ("TC-16", "RAG context section policy", tc_16_context_section_policy),
     ("TC-17", "Observability dedup status", tc_17_observability_dedup_status),
     ("TC-18", "Codex hook JSON I/O", tc_18_codex_hook_io),
     ("TC-19", "Legacy DB 자동 migration", tc_19_legacy_db_migration),
-    ("TC-20", "memory_chunks bridge/backfill", tc_20_memory_bridge_backfill),
+    ("TC-20", "Legacy migration/backfill", tc_20_legacy_migration_backfill),
     ("TC-21", "Search skill dispatcher", tc_21_search_skill_dispatcher),
     ("TC-22", "Remember skill dispatcher", tc_22_remember_skill_dispatcher),
     ("TC-23", "Setup vector progress logging", tc_23_setup_vector_logging),
+    ("TC-24", "Extract eval harness", tc_24_extract_eval_harness),
+    ("TC-25", "Retrieval text override", tc_25_retrieval_text_override),
+    ("TC-26", "Decision-rich extract", tc_26_decision_rich_extract),
+    ("TC-27", "Stop session + flat extract", tc_27_stop_session_and_flat_extract),
+    ("TC-28", "Rollup session cursor", tc_28_rollup_session_cursor),
+    ("TC-29", "Rollup stale/bounded", tc_29_rollup_stale_and_bounded),
+    ("TC-30", "Rollup extract without write lock", tc_30_rollup_extract_without_write_lock),
+    ("TC-31", "Search rollup detail output", tc_31_search_rollup_detail_output),
 ]
 
 

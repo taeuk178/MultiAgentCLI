@@ -1,12 +1,12 @@
 """문서 → 청크 → DB 저장 파이프라인.
 
 순서:
-  1) documents upsert (checksum 비교, 동일하면 skip)
+  1) source_documents upsert (checksum 비교, 동일하면 skip)
   2) chunking
   3) context_prefix 생성 (LLM 호출 — 옵션)
   4) retrieval_text 합성 (context_prefix + chunk_text)
   5) embedding 생성 (옵션, BGE-M3)
-  6) chunks_v2 저장 (UNIQUE(document_id, chunk_index) 로 dedupe)
+  6) search_entries 저장 (UNIQUE(source_document_id, chunk_index) 로 dedupe)
 
 LLM/embedding 미가용 시 그 단계만 skip — 검색은 FTS-only 로 동작.
 """
@@ -68,7 +68,7 @@ def upsert_document(
     try:
         cur = conn.execute(
             """
-            SELECT id, checksum FROM documents
+            SELECT id, checksum FROM source_documents
             WHERE project_id = ? AND source_type = ? AND source_ref = ?
             """,
             (project_id, source_type, source_ref),
@@ -79,7 +79,7 @@ def upsert_document(
                 return row["id"], False, False
             conn.execute(
                 """
-                UPDATE documents
+                UPDATE source_documents
                 SET title = ?, author = ?, raw_text = ?, checksum = ?,
                     source_created_at = ?, source_updated_at = ?, updated_at = ?
                 WHERE id = ?
@@ -90,7 +90,7 @@ def upsert_document(
         did = new_id()
         conn.execute(
             """
-            INSERT INTO documents (id, project_id, source_type, source_ref,
+            INSERT INTO source_documents (id, project_id, source_type, source_ref,
                                    title, author, source_created_at, source_updated_at,
                                    raw_text, checksum, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -147,12 +147,15 @@ def ingest_document(
     source_created_at: str | None = None,
     source_updated_at: str | None = None,
     raw_chunk_type: str | None = None,
+    raw_type: str | None = None,
     chunk_config: ChunkConfig | None = None,
     generate_context_prefix: bool = False,
     generate_embedding: bool = True,
     dispatch: bool = True,
 ) -> IngestStats:
-    """문서 한 건을 청크화해 저장. 호출자(scheduler) 가 source 별 raw_chunk_type 지정."""
+    """문서 한 건을 청크화해 저장. 호출자(scheduler) 가 source 별 raw type 지정."""
+    if raw_chunk_type is None:
+        raw_chunk_type = raw_type
     conn = db_connect()
     try:
         document_id, inserted, updated = upsert_document(
@@ -204,8 +207,8 @@ def ingest_document(
             blob = embeddings[i] if embeddings else None
             existing = conn.execute(
                 """
-                SELECT id, chunk_text, retrieval_text FROM chunks_v2
-                WHERE document_id = ? AND chunk_index = ?
+                SELECT id, text AS chunk_text, retrieval_text FROM search_entries
+                WHERE source_document_id = ? AND chunk_index = ?
                 """,
                 (document_id, spec.chunk_index),
             ).fetchone()
@@ -216,20 +219,20 @@ def ingest_document(
                 )
                 conn.execute(
                     """
-                    UPDATE chunks_v2
+                    UPDATE search_entries
                     SET section_path = ?,
-                        chunk_text = ?,
+                        text = ?,
                         context_prefix = ?,
                         retrieval_text = ?,
                         embedding = ?,
-                        raw_chunk_type = ?,
-                        normalized_chunk_type = ?,
+                        raw_type = ?,
+                        normalized_type = ?,
                         source_created_at = ?,
                         source_updated_at = ?,
                         valid_from = CASE WHEN ? THEN ? ELSE valid_from END,
                         valid_to = NULL,
                         is_current = 1,
-                        supersedes_chunk_id = NULL
+                        supersedes_entry_id = NULL
                     WHERE id = ?
                     """,
                     (
@@ -249,23 +252,24 @@ def ingest_document(
             try:
                 conn.execute(
                     """
-                    INSERT INTO chunks_v2
-                      (id, project_id, document_id, chunk_index, section_path,
-                       chunk_text, context_prefix, retrieval_text, embedding,
-                       raw_chunk_type, normalized_chunk_type,
+                    INSERT INTO search_entries
+                      (id, project_id, source_document_id, source_event_id, origin,
+                       raw_type, normalized_type, chunk_index, section_path,
+                       text, context_prefix, retrieval_text, embedding,
                        source_created_at, source_updated_at,
                        valid_from, is_current, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+                    VALUES (?, ?, ?, NULL, 'source_document', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
                     """,
                     (
-                        cid, project_id, document_id, spec.chunk_index, spec.section_path,
+                        cid, project_id, document_id,
+                        raw_chunk_type, normalized_type,
+                        spec.chunk_index, spec.section_path,
                         spec.chunk_text,
                         spec.extra.get("context_prefix"),
                         spec.extra.get("retrieval_text"),
                         blob,
-                        raw_chunk_type, normalized_type,
                         source_created_at, source_updated_at,
-                        now_iso(), now_iso(),
+                        write_ts, write_ts,
                     ),
                 )
                 inserted_count += 1
@@ -278,9 +282,9 @@ def ingest_document(
                 placeholders = ",".join("?" for _ in seen_indexes)
                 conn.execute(
                     f"""
-                    UPDATE chunks_v2
+                    UPDATE search_entries
                     SET is_current = 0, valid_to = ?
-                    WHERE document_id = ?
+                    WHERE source_document_id = ?
                       AND chunk_index NOT IN ({placeholders})
                       AND is_current = 1
                     """,
@@ -289,9 +293,9 @@ def ingest_document(
             else:
                 conn.execute(
                     """
-                    UPDATE chunks_v2
+                    UPDATE search_entries
                     SET is_current = 0, valid_to = ?
-                    WHERE document_id = ? AND is_current = 1
+                    WHERE source_document_id = ? AND is_current = 1
                     """,
                     (write_ts, document_id),
                 )
@@ -312,7 +316,7 @@ def ingest_document(
 
         dispatch_mod.dispatch_commit(dispatch_mod.CommitChangeSet(
             project_id=project_id,
-            changed_document_ids=[document_id],
+            changed_source_document_ids=[document_id],
             decision_chunk_inserted=(normalized_type == "decision" and stats.chunks_inserted > 0),
             entity_link_changed=False,
             supersede_changed=False,

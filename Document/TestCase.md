@@ -13,7 +13,7 @@ python3 scripts/imprint/tests/run_tests.py
 현재 기준선:
 
 ```text
-TOTAL  23 PASS / 0 FAIL
+TOTAL  31 PASS / 0 FAIL
 ```
 
 ## 현재 커버리지
@@ -23,8 +23,11 @@ TOTAL  23 PASS / 0 FAIL
 - entity alias, contradiction judge/fallback
 - hook memory loop, redaction, first-turn working overlay
 - `/memory` search/list/show/inject/status/profile
-- `memory_chunks → chunks_v2` bridge/backfill
+- `search_entries` migration/backfill
 - `/search`, `/remember`, `setup vector` dispatcher
+- retrieval text override, decision-rich extract
+- Stop session metadata, delta/rollup cursor, stale session 보완
+- rollup write-lock 안전성, `/search` rollup detail 출력
 - legacy DB migration
 - source status, noise flag, profile, dedup/provenance trace
 

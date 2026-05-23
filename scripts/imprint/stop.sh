@@ -22,6 +22,15 @@ INPUT=$(cat || true)
 IMPRINT_HOST="$(imprint_detect_host "$INPUT")"
 export IMPRINT_HOST
 
+SESSION_ID=$(printf '%s' "$INPUT" | python3 -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    print(data.get("session_id") or data.get("conversation_id") or data.get("thread_id") or "")
+except Exception:
+    pass
+' 2>>"$IMPRINT_LOG" || true)
+
 LAST_TEXT=$(printf '%s' "$INPUT" | python3 -c '
 import json, sys
 try:
@@ -150,10 +159,17 @@ NOW=$(now_iso)
 EVENT_ID=$(new_id)
 ESC_TEXT=$(sql_escape "$SAFE_LAST_TEXT")
 ESC_SOURCE=$(sql_escape "$IMPRINT_HOST")
+METADATA_JSON=$(SESSION_ID="$SESSION_ID" python3 - <<'PY' 2>>"$IMPRINT_LOG" || printf '{}'
+import json, os
+sid = (os.environ.get("SESSION_ID") or "").strip()
+print(json.dumps({"session_id": sid} if sid else {}, ensure_ascii=False))
+PY
+)
+ESC_METADATA=$(sql_escape "$METADATA_JSON")
 
 db_exec "
-  INSERT INTO events (id, project_id, source, kind, text_clean, created_at)
-  VALUES ('$EVENT_ID', '$PID', '$ESC_SOURCE', 'llm_response', '$ESC_TEXT', '$NOW');
+  INSERT INTO events (id, project_id, source, kind, text_clean, metadata_json, created_at)
+  VALUES ('$EVENT_ID', '$PID', '$ESC_SOURCE', 'llm_response', '$ESC_TEXT', '$ESC_METADATA', '$NOW');
 " 2>>"$IMPRINT_LOG" || true
 
 # Chunk extraction을 백그라운드로 분리한다. assistant 응답은 이미 사용자에게 표시된

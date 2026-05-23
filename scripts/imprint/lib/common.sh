@@ -35,10 +35,9 @@ from pathlib import Path
 
 DATA_TABLES = (
     "events",
-    "memory_chunks",
-    "documents",
-    "chunks_v2",
-    "summaries",
+    "source_documents",
+    "search_entries",
+    "search_summaries",
     "entities",
     "entity_aliases",
     "contradictions",

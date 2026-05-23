@@ -17,10 +17,12 @@ imprint 는 Claude Code/Codex hook·skill 시스템 위에서 동작하는 로�
 ```text
 사용자 입력
   -> UserPromptSubmit hook
-       event archive, working mini-chunk, gate, context section prefill
+       event archive, working surface metadata, gate, context section prefill
   -> Claude Code / Codex 응답
   -> Stop hook
-       response archive, persistent memory extract
+       response archive, flat search_entries extract
+  -> delta/rollup
+       stale 또는 명시 session 단위로 decision-rich search_entries extract
   -> 다음 turn
        저장된 기억이 다시 prefill/search 후보가 됨
 ```
@@ -54,9 +56,9 @@ API key 없이 host 의 OAuth 구독을 그대로 사용합니다. 무거운 LLM
 
 ### Hook 계층
 
-- `SessionStart`: 스키마 적용, 프로젝트 row upsert, `.imprint/Guardrail.md` prepend. `startup|resume|clear|compact` matcher 로 세션 시작과 compact 이후 모두 Guardrail 을 다시 주입합니다.
-- `UserPromptSubmit`: prompt redaction, `events.user_message` 저장, working mini-chunk 저장, routing rule 평가, need-retrieval gate, context section prefill, lazy-fetch worker spawn.
-- `Stop`: assistant 응답 redaction, `events.llm_response` archive, response extract worker spawn.
+- `SessionStart`: 스키마 적용, 프로젝트 row upsert, `.imprint/Guardrail.md` prepend. `startup|resume|clear|compact` matcher 로 세션 시작과 compact 이후 모두 Guardrail 을 다시 주입합니다. 현재 session_id 를 알면 현재 세션을 제외한 stale session rollup 을 background 로 보완합니다.
+- `UserPromptSubmit`: prompt redaction, `events.user_message` 저장, working surface metadata 저장, routing rule 평가, need-retrieval gate, context section prefill, lazy-fetch worker spawn.
+- `Stop`: assistant 응답 redaction, `events.llm_response` archive 및 session_id metadata 저장, flat response extract worker spawn.
 
 동기 hook 은 사용자 turn 을 막지 않는 경량 작업만 수행합니다. 외부 fetch 와 Haiku 기반 추출은 background 로 분리합니다.
 
@@ -64,22 +66,23 @@ API key 없이 host 의 OAuth 구독을 그대로 사용합니다. 무거운 LLM
 
 `events` 는 raw I/O archive 입니다. redaction 후 저장하고, 짧은 backchannel turn 은 `noise=1` 로 soft flag 만 붙입니다.
 
-`memory_chunks` 는 기본 사용자 RAG 기억입니다. working mini-chunk, Stop hook 추출, external lazy-fetch, `/remember` 가 여기에 저장합니다. 다음 turn prefill, `/memory search/list/show/inject`, 명시 검색 fallback 이 이 테이블을 읽습니다.
+`search_entries` 는 기본 사용자 RAG 기억이자 명시 검색 단일 인덱스입니다. Stop hook flat 추출, delta/rollup rich 추출, external lazy-fetch, `/remember`, source document chunk 가 여기에 저장됩니다. 다음 turn prefill, `/memory search/list/show/inject`, `/search` 가 이 테이블을 읽습니다.
 
-`documents` / `chunks_v2` / `summaries` 는 retrieval v2 문서 RAG 계층입니다. 명시 ingestion 된 문서는 chunking, versioning, summary, contradiction, entity alias pipeline 을 탑니다. 2026-05-22부터 persistent `memory_chunks` 는 synthetic document/chunk 로도 bridge 되어 `chunks_v2` 검색 후보에 들어갑니다.
+`source_documents` / `search_entries` / `search_summaries` 는 retrieval 문서 RAG 계층입니다. 명시 ingestion 된 원본 문서는 `source_documents` 에 저장되고, chunking 된 검색 단위는 `search_entries(origin=source_document)` 로 들어가며, feature/document/project 요약은 `search_summaries` 로 관리합니다.
 
-남은 비대칭은 embedding 과 후속 pipeline 입니다. 자동 bridge 는 hook latency 를 피하기 위해 기본적으로 embedding 을 생성하지 않으며, working raw turn 과 `source_status` marker 는 bridge 대상에서 제외합니다. `bridge-memory --all --embed` 또는 `IMPRINT_MEMORY_BRIDGE_EMBEDDING=1` 로 embedding 을 채우면 `chunks_v2` vector path 에 들어갈 수 있습니다.
+working overlay 는 영구 entry 로 만들지 않습니다. 현재 세션 query surface 는 `events.metadata_json` 에 저장하고 `/search` 시점에 soft union 합니다. vector embedding 은 hook 동기 경로에서 만들지 않고, `imprint setup vector --backfill` 로 기존 `search_entries.embedding` 을 명시적으로 채웁니다.
 
 ### Retrieval 계층
 
-`/memory` 는 `memory_chunks` 를 직접 읽고 쓰는 수동 개입 도구입니다.
+`/memory` 는 `search_entries` 를 직접 읽고 쓰는 수동 개입 도구입니다.
 
-명시 검색 경로는 `chunks_v2`/`summaries` 를 우선 검색합니다.
+명시 검색 경로는 `search_entries`/`search_summaries` 를 검색합니다.
 
-- local: multi-rewrite → hybrid search → RRF → working overlay → BOOST/penalty → low-confidence MEMFB → optional rerank → CTX.
+- local: multi-rewrite → hybrid search → RRF → working overlay → BOOST/penalty → optional rerank → CTX.
 - feature/global: summary 검색 + chunk retrieval + grounding + contradiction check.
-- 문서 후보가 없거나 저신뢰이면 `memory_chunks` 를 read-only fallback 으로 조회합니다.
-- `source_status` marker 와 working chunk 는 fallback retrieved context 후보에서 제외합니다.
+- rollup 이 저장한 `reason/files/symbols/tests/event_range` metadata 는 `/search` 출력의 세부 근거로 함께 노출합니다.
+- 저신뢰이면 trace 에 이유를 남기지만 raw events 자동 fallback 은 열지 않습니다.
+- `source_status` marker 는 primary retrieved context 후보에서 제외합니다.
 - JSON mode 는 trace, context section, provenance, penalty, fallback/rerank 이유를 노출합니다.
 
 ### External Source 계층
@@ -99,11 +102,11 @@ retrieval v2 ingestion 은 `ingest_queue` 를 통해 후속 작업을 순차 처
 - `contradiction_scan`: priority 5.
 - `ner_extract`: priority 9.
 
-자동 hook 의 `memory_chunks` 직접 INSERT 경로는 bridge 까지만 수행하고, 현재 queue 를 거치지 않습니다. WAL + busy_timeout 으로 일반 동시성은 흡수하고, summary/entity/contradiction queue 통합은 필요해질 때만 검토합니다.
+`/remember` 와 assistant extract 의 직접 `search_entries` 저장 경로는 현재 queue 를 거치지 않습니다. WAL + busy_timeout 으로 일반 동시성은 흡수하고, summary/entity/contradiction queue 통합은 필요해질 때만 검토합니다.
 
 ## 현재 기준선
 
-2026-05-24 기준 RAG 기본 기능, 1차 운영 관측성, `memory_chunks → chunks_v2` bridge, `/search`, `/remember`, vector setup dispatcher 는 적용 완료입니다.
+2026-05-24 기준 RAG 기본 기능, 1차 운영 관측성, `search_entries` 통합 스키마, `/search`, `/remember`, delta/rollup extract, vector setup dispatcher 는 적용 완료입니다.
 
 - redaction coverage.
 - hook memory loop smoke test.
@@ -113,21 +116,22 @@ retrieval v2 ingestion 은 `ingest_queue` 를 통해 후속 작업을 순차 처
 - 한국어 2자 토큰 fallback.
 - external source 상태 가시화.
 - events noise soft flag.
-- 명시 검색 memory fallback + JSON trace.
-- persistent memory bridge/backfill.
+- 명시 검색 JSON trace.
+- delta/rollup 기반 구현 결정 arc 저장과 `/search` 세부 근거 출력.
+- `search_entries` migration/backfill.
 - text_hash 기반 dedup.
-- 테스트 기준선: `23 PASS / 0 FAIL`.
+- 테스트 기준선: `31 PASS / 0 FAIL`.
 
 완료된 결정과 이유는 `HISTORY.md` 에 남깁니다.
 
-## 알려진 핵심 갭 (2026-05-21 발견, 2026-05-22 1차 대응)
+## 알려진 핵심 갭 (2026-05-21 발견, 2026-05-24 구조 정리)
 
-persistent memory 와 의미(벡터) 검색이 연결돼 있지 않았습니다. 제품 핵심 목적의 직접 병목이었고, 2026-05-22 bridge 로 `chunks_v2` 후보 연결은 1차 대응했습니다.
+persistent memory 와 의미(벡터) 검색이 연결돼 있지 않았던 문제가 제품 핵심 목적의 직접 병목이었습니다. 2026-05-24 에 bridge 를 폐기하고 persistent memory, assistant extract, source document chunk 를 `search_entries` 단일 인덱스로 통합했습니다.
 
-- `memory_chunks` 자체에는 embedding 컬럼이 없지만, persistent row 는 `documents.source_ref = memory_chunks:<id>` 형태의 synthetic document 와 `chunks_v2.metadata_json` provenance 로 복제됩니다.
-- 기본 bridge 는 embedding 을 만들지 않습니다. 선택 ML cold-load 가 hook 을 느리게 만들 수 있기 때문입니다.
-- 벡터 검색 검증은 `sentence-transformers` 설치 후 `python3 -m retrieval.cli bridge-memory <project_id> --all --embed` 로 기존 bridge row embedding 을 채운 뒤 진행합니다.
-- 아직 summary/entity/contradiction pipeline 자동 연결은 하지 않습니다. bridge 의 검색 품질과 운영 비용을 먼저 측정합니다.
+- `search_entries` 에 embedding 컬럼이 있으므로 bridge 복제 없이 같은 row 가 FTS/vector 양쪽에 참여할 수 있습니다.
+- hook 동기 경로에서는 embedding 을 만들지 않습니다. 선택 ML cold-load 가 사용자 turn 을 느리게 만들 수 있기 때문입니다.
+- 기존 DB는 `imprint migrate search-entries` 로 명시 migration 하고, 벡터 검색 검증은 `imprint setup vector --backfill` 로 기존 entry embedding 을 채운 뒤 진행합니다.
+- 아직 summary/entity/contradiction pipeline 자동 연결은 직접 저장 entry 전체에 강제하지 않습니다. 검색 품질과 운영 비용을 먼저 측정합니다.
 
 ## 목표별 현재 일치도
 
@@ -135,27 +139,27 @@ persistent memory 와 의미(벡터) 검색이 연결돼 있지 않았습니다.
 
 | 목표 | 현재 일치도 | 장기 방향 |
 |---|---|---|
-| 세션 종료 후 문맥 저장 | 부분 일치. raw event archive 와 memory chunk 저장은 있으나, 재상기는 추출 chunk 품질과 명시 저장 품질에 크게 의존합니다. | `/remember` 선별 저장과 Stop extract 품질을 높이고, persistent memory bridge 를 안정화합니다. |
+| 세션 종료 후 문맥 저장 | 상당 부분 일치. raw event archive, flat extract, delta/rollup rich extract, `/remember` 가 모두 `search_entries` 로 모입니다. | 실제 프로젝트 eval 로 추출 품질과 stale rollup 운영성을 측정합니다. |
 | Codex / Claude Code 간 동일 문맥 | 방향 일치. 기본 저장소는 `~/.imprint` 로 통합됐습니다. | 설치/manifest/hook 검증을 양 host 회귀 테스트로 고정합니다. |
-| 큰 틀·개념 질문으로 맥락 상기 | 부분 개선. `/remember` 와 추출된 persistent memory 는 `chunks_v2` 후보가 됐지만, embedding/backfill 과 eval 이 아직 남았습니다. | `bridge-memory --all --embed` 기반 의미 검색 검증 후 feature/project summary 로 끌어올립니다. |
+| 큰 틀·개념 질문으로 맥락 상기 | 부분 개선. `/remember`, source document, rollup decision entry 는 `/search` 후보가 되고 세부 근거도 출력됩니다. embedding/backfill 과 eval 은 아직 남았습니다. | `imprint setup vector --backfill` 기반 의미 검색 검증 후 feature/project summary 로 끌어올립니다. |
 | 다른 개발자도 참고하는 공유 기록 | 장기 미구현. 로컬 SQLite 는 개인 기억에 적합하지만 팀 지식 공유에는 부적합합니다. | decision/summary chunk 를 ADR/Markdown 으로 export 해 git/PR review 에 얹습니다. |
 
 ## 로드맵
 
-### 1. persistent memory 의미 검색 기반 구축
+### 1. persistent memory 의미 검색 검증
 
-1차 bridge 는 완료됐습니다. 남은 작업은 embedding 채움과 검증입니다.
+`search_entries` 통합과 `/search` UX 1차 개선은 완료됐습니다. 남은 작업은 embedding 채움과 검색 품질 검증입니다.
 
-- Stop extract, external lazy-fetch, `/remember` 로 저장된 persistent memory 는 retrieval v2 후보로 복제됩니다.
-- 기존 `memory_chunks` 는 `bridge-memory <project_id> --all [--embed] [limit]` 로 backfill/reindex 합니다.
-- bridge row 의 provenance 는 원본 `memory_chunks.id`, `source_event_id`, `chunk_type`, `source_type`, `evidence_level`, `text_hash` 를 보존합니다.
-- 신규/기존 memory 가 명시 검색 경로에서 `chunks_v2` 후보로 보이는 것은 테스트로 고정했습니다. 다음은 embedding 가용 시 vector path 품질 검증입니다.
-- fallback 으로 남는 `memory_chunks` read-only search 는 migration 안정화 기간 동안 유지합니다.
+- Stop extract, external lazy-fetch, `/remember`, source document ingest 는 `search_entries` 에 직접 저장됩니다.
+- 기존 사용자 DB는 `imprint migrate search-entries` 로 명시 migration 합니다.
+- `imprint setup vector --backfill` 은 현재 프로젝트의 `search_entries.embedding` 을 채웁니다.
+- 신규/기존 memory 가 명시 검색 경로에서 `search_entries` 후보로 보이는 것은 테스트로 고정했습니다. 다음은 embedding 가용 시 vector path 품질 검증입니다.
+- rollup decision entry 의 `reason/files/symbols/tests/event_range` 가 `/search` 출력에 보이는 것은 테스트로 고정했습니다.
 - 확장 가능성: `/search` 유사도 품질과 latency 가 충분히 검증되면, 명시 검색 결과를 prefill 자동 주입으로 연결할 수 있습니다. 현재 로드맵에서는 가능성만 남기고 기본 동작으로 두지 않습니다.
 
 ### 2. RAG 사용성 검증과 confidence 표현
 
-memory bridge 가 들어간 상태에서 진행합니다.
+`search_entries` 통합 스키마 기준으로 진행합니다.
 
 - 실제 프로젝트에서 `/remember` 로 선별 저장한 기억이 `/search` 에서 충분히 유용한지 확인.
 - 명시 검색 trace 가 사용자의 “근거 확인” 기대를 만족하는지 확인.
@@ -236,7 +240,7 @@ prompt, terminal output, external source 에 secret 이 섞일 수 있습니다.
 - project_id 분리.
 - context section 분리.
 - working TTL/cap.
-- source_status/working 제외 fallback.
+- source_status/working surface 를 primary retrieved context 에서 분리.
 - 수동 `/memory inject` 로 명시 근거 주입.
 
 ### 외부 source 신뢰성
@@ -269,7 +273,7 @@ Slack/Notion fetch 실패, stale, URL cap 초과를 사용자가 모르면 RAG �
 - LLM judge fallback.
 - optional requirements 로 분리.
 - 단, 미설치 시 의미(벡터) 검색이 꺼져 "개념·자연어 질문으로 맥락 상기" 라는 핵심 목적이 키워드 수준으로 떨어집니다. graceful fallback 이 곧 "기능 동일" 은 아니라는 점을 사용자에게 명확히 알립니다(2026-05-21 실측에서 사용자 오해 확인).
-- persistent memory 는 bridge 후 `chunks_v2` 후보가 되지만, embedding BLOB 이 없으면 여전히 FTS 중심입니다. `bridge-memory --all --embed` 나 `IMPRINT_MEMORY_BRIDGE_EMBEDDING=1` 로 embedding 을 채운 뒤에야 vector path 에 참여합니다.
+- persistent memory 는 `search_entries` 후보가 되지만, embedding BLOB 이 없으면 여전히 FTS 중심입니다. `imprint setup vector --backfill` 로 embedding 을 채운 뒤에야 vector path 에 참여합니다.
 
 ## 영구 deferred
 

@@ -6,7 +6,7 @@ level: 3
 
 # Memory - Local Project Memory System
 
-This skill provides persistent project memory backed by SQLite. Memory chunks (decisions, errors, fixes, commands, summaries, todos) are stored locally and can be searched, injected into the current host context, or pinned for automatic prefill injection.
+This skill provides persistent project memory backed by SQLite. Search entries (decisions, errors, fixes, commands, summaries, todos) are stored locally and can be searched, injected into the current host context, or pinned for automatic prefill injection.
 
 ## When to Use
 
@@ -182,5 +182,5 @@ Project is identified by git root (`git rev-parse --show-toplevel`) or current w
 - Memory is local and never sent to any server.
 - Hook 저장 경로와 `/remember`(`/memory remember`의 public shortcut)는 secret-shaped text를 저장 전 redaction 룰셋으로 마스킹합니다. 그래도 민감정보를 일부러 memory에 넣는 사용은 피하세요.
 - The `UserPromptSubmit` hook automatically pulls recent + pinned chunks into prefill (see `hooks/hooks.json`).
-- External source chunks (Slack/Notion) are NOT written to the events table — they live only in `memory_chunks` with `source_event_id IS NULL` (D11, AC7).
-- 기본 사용자 RAG 경로는 lightweight prefill + `/memory search`/`inject` 입니다. `/search` 는 별도 `documents`/`chunks_v2`/`summaries` 기반 문서 검색 경로를 먼저 사용하고, 문서 후보가 없을 때 `memory_chunks`를 read-only fallback 으로 조회합니다.
+- External source entries (Slack/Notion) are NOT written to the events table — they live in `search_entries` with `source_event_id IS NULL` (D11, AC7).
+- 기본 사용자 RAG 경로는 lightweight prefill + `/memory search`/`inject` 입니다. `/search` 는 `search_entries`/`search_summaries` 기반 검색 경로를 사용하며 raw events 자동 fallback 은 열지 않습니다.

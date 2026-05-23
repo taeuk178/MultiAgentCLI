@@ -15,6 +15,38 @@
 
 기록 순서는 **최신이 위**. 항목당 한 단락 안에 변경/사유/대안 폐기 근거를 묶는다.
 
+## 2026-05-24 — `/search` rollup 세부 근거 출력 개선
+
+**무엇:** `/search` 와 `retrieval.cli retrieve_json` 이 `search_entries.metadata_json` 과 `source_event_id` 를 후보에 보존하도록 했다. 텍스트 출력은 rollup decision entry 에 `reason`, `files`, `symbols`, `tests`, `event_range`, `rollup session` 이 있으면 본문 아래에 짧은 detail line 으로 함께 보여준다.
+
+**왜:** delta/rollup extract 로 구현 결정 arc 를 `search_entries` 에 저장해도, 출력이 display text 만 보여주면 사용자는 "왜 그렇게 했는지", "어느 파일/심볼/테스트와 연결되는지"를 다시 확인하기 어렵다. raw events 자동 검색을 열지 않는 대신, 정제 entry 가 이미 가진 provenance 를 검색 결과 UX 에 노출해 구현 히스토리 회수성을 높인다.
+
+## 2026-05-24 — delta/rollup extract 로 구현 결정 arc 저장
+
+**무엇:** 여러 turn 에 걸친 구현 결정 흐름을 `search_entries` 로 정제하기 위해 delta/rollup extract 를 추가했다. `Stop` 은 assistant `llm_response` event 에도 `metadata_json.session_id` 를 저장하고, per-turn extract 는 `fix/todo/command/error/test_result` 같은 flat 타입만 즉시 저장한다. `decision/code_context/summary/note` 는 `extract_state(project_id, session_id)` cursor 기반 bounded rollup 이 담당하며, 명시 명령은 `scripts/imprint/rollup.sh --session-id <id>|--latest|--stale` 와 `python3 -m retrieval.cli rollup-*` 로 제공한다. `SessionStart` 는 현재 session_id 를 알 때만 현재 세션을 제외한 30분 이상 stale session 을 background 로 보완 rollup 한다.
+
+**왜:** 구현 이유는 보통 "A안 제안 → 사용자 반박 → B안 결정 → 테스트"처럼 여러 turn 에 걸쳐 드러난다. 마지막 assistant 응답만 보는 Stop extract 를 단순히 N-turn window 로 넓히면 같은 결정이 매 turn 다른 문장으로 재추출되어 text_hash dedup 을 빠져나가는 near-duplicate 가 쌓인다. 따라서 per-turn 과 rollup 의 타입 집합을 분리해 중복을 구조적으로 막고, rollup 재실행 중복은 search entry insert 와 cursor 전진을 한 SQLite transaction 으로 묶어 dedup 이 아니라 atomic cursor 로 막는다.
+
+**남은 점:** 신선도 요구가 생기면 per-turn decision 즉시 저장 + rollup supersede(B안) 로 승격할 수 있다. 긴 세션 자동 K-turn cadence, `feature_key`/`plan_key` 자동 채움, file/symbol 정규화, search 결과 grouping, `/search --events` 는 별도 retrieval/output 트랙으로 남긴다.
+
+## 2026-05-24 — `search_entries` 통합 스키마 구현
+
+**무엇:** 2026-05-24 결정 로그의 `search_entries` 통합 설계를 실제 코드에 반영했다. 새 스키마는 `source_documents`, `search_entries`, `search_summaries`, `entry_entities` 를 만들고, 신규 DB에서는 `memory_chunks`, `documents`, `chunks_v2`, `events_fts` 를 더 이상 만들지 않는다. `/remember`, assistant response extract, Slack/Notion lazy-fetch, source document ingest 는 모두 `search_entries` 에 직접 저장한다. working overlay 는 영구 entry 로 만들지 않고 `events.metadata_json.query_surfaces`/`need_retrieval`/`retrieval_reason` 을 검색 시점에 읽는다. `origin=source_document` 는 `source_document_id` 가 있는 명시 ingest row 에만 쓰고, lazy-fetch 는 `external_fetch`, 상태 marker 는 `source_status` 로 분리한다. 기존 사용자 DB는 자동 파괴하지 않고 `imprint migrate search-entries` 명시 명령으로 백업 후 one-shot migration 한다.
+
+**왜:** bridge 구조는 memory 한 건을 synthetic document 와 chunk 로 복제해 저장 의미와 검색 경로를 동시에 흐렸다. 구현을 단일 entry 인덱스로 수렴시키면 `/remember` 와 `/search` 의 사용자 모델이 단순해지고, optional vector backfill 도 `search_entries.embedding` 하나만 채우면 된다. raw events 전체 자동 fallback 은 정확도와 민감정보 노출 리스크가 있어 열지 않고, 사용자가 확인 가능한 `/search` trace 와 명시 저장을 중심으로 둔다.
+
+**남은 점:** `plan_key`/`feature_key` 는 컬럼만 있고 자동 채움 경로는 아직 없다. `confidence`/`evidence_strength` 표현은 실제 eval 결과를 본 뒤 정한다. 기존 실사용 DB는 사용자가 `imprint migrate search-entries` 를 실행해야 새 구조로 옮겨진다. source document 재수집 시 validity 캐리오버 정책과 직접 저장 entry 를 summary/entity/contradiction queue 에 어디까지 연결할지는 후속 측정 뒤 결정한다.
+
+## 2026-05-24 — `memory_chunks + chunks_v2` bridge 구조 폐기, `search_entries` 통합 결정
+
+**무엇:** 저장 스키마를 다음 4개 축으로 재정의하기로 결정했다 (배포 전이므로 스키마 직접 변경 허용). `events` = raw 대화 로그(검색 제외, working overlay 소스로만 사용), `source_documents` = 진짜 원본 문서만(Slack/Notion/PRD/Plan/ADR/file), `search_entries` = 영구·큐레이션된 검색 단위(`/remember`, assistant 추출 결정/요약/todo/fix, source_documents 에서 chunking 된 항목), `search_summaries` = feature/global 요약 검색. 기존 대응은 `documents → source_documents`, `chunks_v2 → search_entries`, `summaries → search_summaries`, `chunk_entities → entry_entities` 이고 `memory_chunks` 는 제거(search_entries 로 흡수), `events_fts` 는 제거한다. `search_entries` 에는 nullable provenance 컬럼 `source_document_id`, `source_event_id`, `plan_key`, `feature_key` 와 `origin`(`manual_remember | assistant_extract | source_document`) 을 둔다. type 은 `raw_type` / `normalized_type` 2층을 유지하고, `importance` 는 별도 컬럼으로 승격하지 않고 `pinned` 와 `metadata_json.importance` 로 보존한다. drop/recreate 가 아니라 현재 도그푸딩 DB 를 새 스키마로 옮기는 one-shot migration 으로 진행한다.
+
+**왜:** 2026-05-22 에 넣은 `memory_chunks → chunks_v2` bridge 가 실측에서 구조적 중복을 만들었다. memory 1건이 synthetic `documents` 1건 + `chunks_v2` 1건으로 승격되면서 같은 텍스트가 최대 5벌(`memory_chunks.text`, `documents.raw_text`, `chunks_v2.chunk_text`/`retrieval_text`, FTS 2벌)로 저장되고, `documents` 라는 "원본 문서" 테이블에 `memory_chunks:<id>` synthetic 문서가 잔뜩 섞여 의미가 깨졌다. `/search` 도 chunks_v2 primary + memory_chunks fallback 으로 같은 내용을 두 경로로 찾고 있었다. 통합하면 bridge·synthetic document·이중 FTS·fallback 이 한꺼번에 사라지고, `search_entries` 가 "검색 가능한 모든 단위의 단일 인덱스"라는 의도와 이름이 정확히 맞는다. `events_fts` 는 트리거로 유지만 되고 retrieval 어디서도 query 하지 않는 죽은 인덱스라 write 비용만 있어 제거한다.
+
+**폐기된 대안:** (1) rename 만 하기 — 이름은 선명해지지만 1:1 bridge 중복을 그대로 둔 채 "source_documents" 이름의 테이블에 비-source memory 가 들어가는 모순을 박제한다. (2) 2계층 유지 + bridge 정직화(synthetic document 중단 + embedding 상시) — 중복은 줄지만 working/curated 구분이 결국 컬럼+필터로 남고 memory_chunks/search_entries 이중 write 가 유지된다. (3) `entry_links` 그래프 테이블 즉시 도입 — `derived_from` 은 `source_document_id` 컬럼, `supersedes` 는 기존 `supersedes_chunk_id`/version, `contradicts` 는 기존 `contradictions` 테이블과 겹쳐 지금은 N:M `implements` 수요가 실제로 생길 때까지 보류. (4) `importance` 컬럼 승격 — ranking 에 실제 반영 계획이 없으면 `events_fts` 같은 죽은 컬럼이 되므로 보류. 이 결정으로 2026-05-22 bridge 1차 구현과 2026-05-16 memory_chunks read-only fallback 은 폐기 대상이 된다.
+
+**남은 점:** 아직 결정/스키마 작성 단계이고 구현은 착수 전이다. (1) `plan_key`/`feature_key` 는 자리만 두고, 무엇이 채울지(특히 `feature_key` 와 기존 `entities`/`ner.py` 의 통합 여부)는 별도 과제로 미정 — day-1 엔 대부분 NULL 임을 전제한다. (2) working overlay 를 `events` 에서 session_id 기준으로 뽑으면 기존 working mini-chunk 가 갖던 결정적 query rewrite surface 를 잃는다. raw prompt 만 쓸지, 검색 시점에 surface 를 재계산할지 미정. (3) `source_documents` 재수집(checksum 변경) 시 child `search_entries` 의 validity(`valid_from/valid_to/is_current/supersedes`) 캐리오버 정책 확정 필요. (4) one-shot migration 스크립트 작성. 구현 착수 전에 `flow.md` 에 새 스키마 초안을 먼저 적는다.
+
 ## 2026-05-24 — Soul 을 Guardrail 로 명칭 변경
 
 **무엇:** 세션 시작 컨텍스트 파일의 사용자-facing 명칭을 `soul.md` 에서 `Guardrail.md` 로 바꿨다. `SessionStart` 는 이제 `<project>/.imprint/Guardrail.md` 를 우선 prepend 하고, `startup|resume|clear|compact` matcher 로 compact 이후에도 같은 Guardrail 을 다시 주입한다. 기존 프로젝트의 `.imprint/soul.md` 는 첫 seed 시 `.imprint/Guardrail.md` 로 1회 복사하되 legacy 파일은 자동 삭제하지 않는다. Guardrail default 에 민감정보 저장 금지 원칙을 넣고, LoadMap 에도 API key, OAuth token, 비밀번호, 인증 쿠키, 개인식별정보, 사내 기밀 원문은 memory 로 남기지 않는다는 원칙을 명시했다.

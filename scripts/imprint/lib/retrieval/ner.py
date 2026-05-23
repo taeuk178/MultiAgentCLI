@@ -4,7 +4,7 @@
 의 결정적 부분을 채운다. LLM 호출이 BG side 전제이므로 동기 경로
 budget 과 무관.
 
-추출 결과는 `entity_aliases.status='pending'` + `chunk_entities` link 로 저장 —
+추출 결과는 `entity_aliases.status='pending'` + `entry_entities` link 로 저장 —
 `/memory entities` 류 review queue skill 이 confirm/reject 까지 가져가는 경로.
 auto-link 는 confidence ≥ AUTO_CONFIRM_THRESHOLD 인 경우에만 status='confirmed'
 로 자동 승격.
@@ -81,11 +81,11 @@ def _canonicalize(name: str) -> str:
     return s or "entity"
 
 
-def _llm_extract(chunk_text: str) -> list[ExtractedMention] | None:
+def _llm_extract(text: str) -> list[ExtractedMention] | None:
     """청크에서 entity mention 추출. None 이면 LLM 호출 실패 — 호출자가 재시도 결정."""
     if os.environ.get("IMPRINT_DISABLE_NER_LLM") == "1":
         return None
-    truncated = chunk_text[:NER_MAX_CHARS]
+    truncated = text[:NER_MAX_CHARS]
     prompt = _PROMPT.replace("{chunk}", truncated)
     out = run_background_model(prompt, timeout=NER_TIMEOUT_MS / 1000.0, task="ner")
     if out is None:
@@ -138,14 +138,14 @@ def _llm_extract(chunk_text: str) -> list[ExtractedMention] | None:
 
 def extract_for_chunk(
     project_id: str,
-    chunk_id: str,
+    entry_id: str,
     *,
     use_llm: bool = True,
     conn: sqlite3.Connection | None = None,
 ) -> NerStats:
-    """단일 chunk 의 mention 추출 → entities/entity_aliases/chunk_entities upsert.
+    """단일 chunk 의 mention 추출 → entities/entity_aliases/entry_entities upsert.
 
-    이미 같은 chunk_id 가 처리됐는지는 chunk_entities row 존재로 판단 — 있으면 skip.
+    이미 같은 entry_id 가 처리됐는지는 entry_entities row 존재로 판단 — 있으면 skip.
     """
     stats = NerStats()
     own = conn is None
@@ -153,16 +153,16 @@ def extract_for_chunk(
         conn = db_connect()
     try:
         cur = conn.execute(
-            "SELECT id, chunk_text FROM chunks_v2 WHERE id = ? AND project_id = ?",
-            (chunk_id, project_id),
+            "SELECT id, text FROM search_entries WHERE id = ? AND project_id = ?",
+            (entry_id, project_id),
         )
         row = cur.fetchone()
         if not row:
             return stats
 
         existing = conn.execute(
-            "SELECT 1 FROM chunk_entities WHERE chunk_id = ? LIMIT 1",
-            (chunk_id,),
+            "SELECT 1 FROM entry_entities WHERE entry_id = ? LIMIT 1",
+            (entry_id,),
         ).fetchone()
         if existing:
             return stats  # 이미 처리됨 (다이어그램상 idempotent 보장).
@@ -171,7 +171,7 @@ def extract_for_chunk(
         if not use_llm:
             return stats
 
-        mentions = _llm_extract(row["chunk_text"])
+        mentions = _llm_extract(row["text"])
         if mentions is None:
             stats.chunks_skipped += 1
             return stats
@@ -200,11 +200,11 @@ def extract_for_chunk(
                 if status == "confirmed":
                     stats.aliases_auto_confirmed += 1
 
-            # chunk_entities link (UNIQUE PK 라 중복 INSERT 무시).
+            # entry_entities link (UNIQUE PK 라 중복 INSERT 무시).
             try:
                 conn.execute(
-                    "INSERT INTO chunk_entities (chunk_id, entity_id, mention, confidence) VALUES (?, ?, ?, ?)",
-                    (chunk_id, eid, m.mention, m.confidence),
+                    "INSERT INTO entry_entities (entry_id, entity_id, mention, confidence) VALUES (?, ?, ?, ?)",
+                    (entry_id, eid, m.mention, m.confidence),
                 )
             except sqlite3.IntegrityError:
                 pass
@@ -217,7 +217,7 @@ def extract_for_chunk(
 
 def extract_for_document(
     project_id: str,
-    document_id: str,
+    source_document_id: str,
     *,
     use_llm: bool = True,
     max_chunks: int = 20,
@@ -228,15 +228,15 @@ def extract_for_document(
     try:
         cur = conn.execute(
             """
-            SELECT id FROM chunks_v2
-            WHERE project_id = ? AND document_id = ? AND is_current = 1
+            SELECT id FROM search_entries
+            WHERE project_id = ? AND source_document_id = ? AND is_current = 1
             ORDER BY chunk_index
             LIMIT ?
             """,
-            (project_id, document_id, max_chunks),
+            (project_id, source_document_id, max_chunks),
         )
-        chunk_ids = [r["id"] for r in cur.fetchall()]
-        for cid in chunk_ids:
+        entry_ids = [r["id"] for r in cur.fetchall()]
+        for cid in entry_ids:
             s = extract_for_chunk(project_id, cid, use_llm=use_llm, conn=conn)
             aggregate.chunks_examined += s.chunks_examined
             aggregate.chunks_skipped += s.chunks_skipped

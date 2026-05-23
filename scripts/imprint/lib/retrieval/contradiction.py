@@ -45,8 +45,8 @@ _load_failed = False
 
 @dataclass
 class CandidatePair:
-    chunk_a_id: str
-    chunk_b_id: str
+    entry_a_id: str
+    entry_b_id: str
     entity_id: str | None
     scope_key: str | None
     a_text: str
@@ -278,12 +278,12 @@ def candidate_pairs_for_project(
         # entity_id 가 있는 decision chunk 만 후보. 없으면 section_path 만으로 group.
         cur = conn.execute(
             """
-            SELECT c.id, c.chunk_text, c.section_path, c.source_updated_at,
+            SELECT c.id, c.text, c.section_path, c.source_updated_at,
                    ce.entity_id
-            FROM chunks_v2 c
-            LEFT JOIN chunk_entities ce ON ce.chunk_id = c.id
+            FROM search_entries c
+            LEFT JOIN entry_entities ce ON ce.entry_id = c.id
             WHERE c.project_id = ?
-              AND c.normalized_chunk_type = 'decision'
+              AND c.normalized_type = 'decision'
               AND c.is_current = 1
             """,
             (project_id,),
@@ -305,9 +305,9 @@ def candidate_pairs_for_project(
                     if not _within_time_gap(a["source_updated_at"], b["source_updated_at"], TIME_GAP_DAYS):
                         continue
                     pairs.append(CandidatePair(
-                        chunk_a_id=a["id"], chunk_b_id=b["id"],
+                        entry_a_id=a["id"], entry_b_id=b["id"],
                         entity_id=eid, scope_key=sec,
-                        a_text=a["chunk_text"], b_text=b["chunk_text"],
+                        a_text=a["text"], b_text=b["text"],
                     ))
         return pairs
     finally:
@@ -337,7 +337,7 @@ def scan_and_store(
         for c in candidates:
             stats.pairs_examined += 1
             # 정렬된 (a, b) 키 — UNIQUE constraint 와 일치.
-            a_id, b_id = sorted((c.chunk_a_id, c.chunk_b_id))
+            a_id, b_id = sorted((c.entry_a_id, c.entry_b_id))
 
             judged = _judge_pair(c.a_text, c.b_text, use_nli=use_nli, use_llm=use_llm)
             if judged.detector == "nli":
@@ -349,7 +349,7 @@ def scan_and_store(
             existing = conn.execute(
                 """
                 SELECT id, status FROM contradictions
-                WHERE chunk_a_id = ? AND chunk_b_id = ? AND detector = ?
+                WHERE entry_a_id = ? AND entry_b_id = ? AND detector = ?
                 """,
                 (a_id, b_id, judged.detector),
             ).fetchone()
@@ -375,7 +375,7 @@ def scan_and_store(
                     """
                     INSERT INTO contradictions
                       (id, project_id, entity_id, scope_key,
-                       chunk_a_id, chunk_b_id, contradiction_score, detector, status, reason,
+                       entry_a_id, entry_b_id, contradiction_score, detector, status, reason,
                        created_at, updated_at)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
@@ -400,7 +400,7 @@ def confirmed_for_entity(
     try:
         cur = conn.execute(
             """
-            SELECT id, chunk_a_id, chunk_b_id, contradiction_score, reason, scope_key
+            SELECT id, entry_a_id, entry_b_id, contradiction_score, reason, scope_key
             FROM contradictions
             WHERE project_id = ? AND entity_id = ? AND status = 'confirmed'
             ORDER BY contradiction_score DESC

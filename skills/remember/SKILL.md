@@ -47,8 +47,8 @@ Use `--redact` when the text may contain secrets. `--type <chunk_type>` remains 
 
 ## Notes
 
-- `/remember` stores into the existing `memory_chunks` table.
+- `/remember` stores into the unified `search_entries` table.
 - Importance is stored in metadata as `importance=require|high|middle|low`.
 - `--require` and `--high` also pin the row internally so important memories sort higher in existing memory paths.
-- Persistent memory is bridged to `chunks_v2` best-effort, so `/search` can retrieve it through the hybrid path.
-- Do not create a separate `remember` table; keeping one memory store avoids duplicate search, pin, forget, and bridge logic.
+- `/search` retrieves remembered entries directly through the unified hybrid path.
+- Do not create a separate `remember` table; keeping one search entry store avoids duplicate search, pin, and forget logic.

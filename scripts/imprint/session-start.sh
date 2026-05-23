@@ -22,6 +22,14 @@ source "$SCRIPT_DIR/lib/common.sh"
 INPUT=$(cat || true)
 IMPRINT_HOST="$(imprint_detect_host "$INPUT")"
 export IMPRINT_HOST
+SESSION_ID=$(printf '%s' "$INPUT" | python3 -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    print(data.get("session_id") or data.get("conversation_id") or data.get("thread_id") or "")
+except Exception:
+    pass
+' 2>>"$IMPRINT_LOG" || true)
 
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 DEFAULTS_DIR="$PLUGIN_ROOT/prompts/defaults"
@@ -43,12 +51,6 @@ if command -v sqlite3 >/dev/null 2>&1; then
     db_exec "ALTER TABLE events ADD COLUMN noise INTEGER NOT NULL DEFAULT 0;" \
       >/dev/null 2>>"$IMPRINT_LOG" || true
   fi
-  HAS_CHUNKS_V2_MD_COL=$(db_exec "SELECT COUNT(*) FROM pragma_table_info('chunks_v2') WHERE name = 'metadata_json';" \
-    2>>"$IMPRINT_LOG" || echo 0)
-  if [[ "$HAS_CHUNKS_V2_MD_COL" == "0" ]]; then
-    db_exec "ALTER TABLE chunks_v2 ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}';" \
-      >/dev/null 2>>"$IMPRINT_LOG" || true
-  fi
   db_exec "CREATE INDEX IF NOT EXISTS idx_events_project_noise ON events (project_id, noise, created_at DESC);" \
     >/dev/null 2>>"$IMPRINT_LOG" || true
 
@@ -63,6 +65,18 @@ if command -v sqlite3 >/dev/null 2>&1; then
     VALUES ('$PID', '$ESC_ROOT', '$ESC_NAME', '$NOW', '$NOW')
     ON CONFLICT(root_path) DO UPDATE SET updated_at = excluded.updated_at;
   " >/dev/null 2>>"$IMPRINT_LOG" || log_error "project upsert failed"
+
+  if [[ "${IMPRINT_DISABLE_ROLLUP:-0}" != "1" && -n "${SESSION_ID// }" && -x "$(command -v python3)" ]]; then
+    ROLLUP_ARGS=(--stale --json)
+    if [[ -n "${SESSION_ID// }" ]]; then
+      ROLLUP_ARGS+=(--exclude-session "$SESSION_ID")
+    fi
+    ROLLUP_ARGS+=(--max-sessions "${IMPRINT_ROLLUP_MAX_STALE_SESSIONS:-3}")
+    profile_emit "session.rollup.spawn" "project=$PID exclude_session=$SESSION_ID"
+    ( bash "$SCRIPT_DIR/rollup.sh" "${ROLLUP_ARGS[@]}" 2>>"$IMPRINT_LOG" || true
+    ) </dev/null >/dev/null 2>&1 &
+    disown 2>/dev/null || true
+  fi
 else
   log_error "sqlite3 not found in PATH; skipping DB setup"
   ROOT=$(project_root)

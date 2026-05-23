@@ -48,7 +48,7 @@ WORKING_OVERLAY_LIMIT = 4
 BOOST_CONTRADICTION_CONFIRMED = -1.0
 BOOST_CONTRADICTION_CANDIDATE = -0.20
 
-# top1 이 이 값보다 낮으면 "후보는 있지만 약하다"고 보고 memory_chunks fallback 을 연다.
+# top1 이 이 값보다 낮으면 low-confidence trace 로 남긴다. events 자동 fallback 은 열지 않는다.
 LOW_CONFIDENCE_TOP1 = 0.13
 
 # Rerank gate thresholds.
@@ -60,7 +60,7 @@ RG_TOP1_THRESHOLD = 0.85
 @dataclass
 class RetrievalCandidate:
     chunk_id: str
-    document_id: str
+    document_id: str | None
     retrieval_text: str
     chunk_text: str
     section_path: str | None
@@ -81,6 +81,28 @@ class RetrievalCandidate:
     source_uri: str | None = None
     text_hash: str | None = None
     penalties: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+    source_event_id: str | None = None
+
+    @property
+    def entry_id(self) -> str:
+        return self.chunk_id
+
+    @property
+    def source_document_id(self) -> str | None:
+        return self.document_id
+
+    @property
+    def text(self) -> str:
+        return self.chunk_text
+
+    @property
+    def raw_type(self) -> str | None:
+        return self.raw_chunk_type
+
+    @property
+    def normalized_type(self) -> str | None:
+        return self.normalized_chunk_type
 
 
 @dataclass
@@ -146,7 +168,7 @@ def _contradiction_penalty_ids(
     placeholders = ",".join("?" * len(entity_ids))
     cur = conn.execute(
         f"""
-        SELECT chunk_a_id, chunk_b_id, status
+        SELECT entry_a_id, entry_b_id, status
         FROM contradictions
         WHERE project_id = ?
           AND entity_id IN ({placeholders})
@@ -158,12 +180,12 @@ def _contradiction_penalty_ids(
     candidate: set[str] = set()
     for row in cur.fetchall():
         target = confirmed if row["status"] == "confirmed" else candidate
-        target.add(row["chunk_a_id"])
-        target.add(row["chunk_b_id"])
+        target.add(row["entry_a_id"])
+        target.add(row["entry_b_id"])
     return confirmed, candidate
 
 
-def _memory_fallback_reasons(
+def _low_confidence_reasons(
     ordered: list[RetrievalCandidate],
     resolved_terms: set[str],
 ) -> list[str]:
@@ -184,11 +206,11 @@ def _memory_fallback_reasons(
     return reasons
 
 
-def _needs_memory_fallback(
+def _has_low_confidence(
     ordered: list[RetrievalCandidate],
     resolved_terms: set[str],
 ) -> bool:
-    return bool(_memory_fallback_reasons(ordered, resolved_terms))
+    return bool(_low_confidence_reasons(ordered, resolved_terms))
 
 
 def _candidate_context_section(cand: RetrievalCandidate) -> str:
@@ -239,16 +261,20 @@ def _fts_search(conn: sqlite3.Connection, project_id: str, query: str, top_n: in
         return []
     cur = conn.execute(
         """
-        SELECT c.id, c.document_id, c.retrieval_text, c.chunk_text, c.section_path,
-               c.source_updated_at, c.is_current, c.raw_chunk_type, c.normalized_chunk_type,
-               c.metadata_json, d.source_type,
-               bm25(chunks_v2_fts) AS bm25_score
-        FROM chunks_v2_fts
-        JOIN chunks_v2 c ON c.rowid = chunks_v2_fts.rowid
-        JOIN documents d ON d.id = c.document_id
-        WHERE chunks_v2_fts MATCH ?
+        SELECT c.id, c.source_document_id AS document_id, c.source_event_id,
+               COALESCE(NULLIF(c.retrieval_text, ''), c.text) AS retrieval_text,
+               c.text AS chunk_text,
+               c.section_path, c.source_updated_at, c.is_current,
+               c.raw_type AS raw_chunk_type, c.normalized_type AS normalized_chunk_type,
+               c.metadata_json, coalesce(d.source_type, c.origin) AS source_type,
+               bm25(search_entries_fts) AS bm25_score
+        FROM search_entries_fts
+        JOIN search_entries c ON c.rowid = search_entries_fts.rowid
+        LEFT JOIN source_documents d ON d.id = c.source_document_id
+        WHERE search_entries_fts MATCH ?
           AND c.project_id = ?
           AND c.is_current = 1
+          AND coalesce(c.raw_type, '') != 'source_status'
         ORDER BY bm25_score
         LIMIT ?
         """,
@@ -286,18 +312,22 @@ def _like_fallback_search(
     params: list[str] = []
     for tok in tokens[:8]:
         pat = f"%{tok}%"
-        clauses.append("(lower(c.retrieval_text) LIKE ? OR lower(c.chunk_text) LIKE ?)")
+        clauses.append("(lower(c.retrieval_text) LIKE ? OR lower(c.text) LIKE ?)")
         params.extend([pat, pat])
 
     cur = conn.execute(
         f"""
-        SELECT c.id, c.document_id, c.retrieval_text, c.chunk_text, c.section_path,
-               c.source_updated_at, c.is_current, c.raw_chunk_type, c.normalized_chunk_type,
-               c.metadata_json, d.source_type
-        FROM chunks_v2 c
-        JOIN documents d ON d.id = c.document_id
+        SELECT c.id, c.source_document_id AS document_id, c.source_event_id,
+               COALESCE(NULLIF(c.retrieval_text, ''), c.text) AS retrieval_text,
+               c.text AS chunk_text,
+               c.section_path, c.source_updated_at, c.is_current,
+               c.raw_type AS raw_chunk_type, c.normalized_type AS normalized_chunk_type,
+               c.metadata_json, coalesce(d.source_type, c.origin) AS source_type
+        FROM search_entries c
+        LEFT JOIN source_documents d ON d.id = c.source_document_id
         WHERE c.project_id = ?
           AND c.is_current = 1
+          AND coalesce(c.raw_type, '') != 'source_status'
           AND ({' OR '.join(clauses)})
         LIMIT ?
         """,
@@ -313,129 +343,6 @@ def _like_fallback_search(
     return rows[:top_n]
 
 
-def _memory_chunks_fallback_search(
-    conn: sqlite3.Connection,
-    project_id: str,
-    raw_query: str,
-    normalized_query: str,
-    top_n: int,
-) -> list[RetrievalCandidate]:
-    """문서 retrieval 결과가 없을 때 legacy memory_chunks 를 read-only 후보로 사용.
-
-    자동 hook 과 `/remember` 는 아직 `memory_chunks` 에 직접 저장한다.
-    bridge 로 데이터를 복제하기 전까지는 `/search` 가 빈 결과일 때만 이 fallback 을
-    타게 해, 기본 RAG 기억을 명시 조회에서도 확인할 수 있게 한다.
-    """
-    fts_query = _build_fts_query(f"{raw_query} {normalized_query}")
-    rows: list[sqlite3.Row] = []
-    if fts_query:
-        cur = conn.execute(
-            """
-            SELECT m.id, m.chunk_type, m.text, m.metadata_json, m.created_at, m.pinned,
-                   bm25(memory_chunks_fts) AS bm25_score
-            FROM memory_chunks_fts
-            JOIN memory_chunks m ON m.rowid = memory_chunks_fts.rowid
-            WHERE memory_chunks_fts MATCH ?
-              AND m.project_id = ?
-              AND m.chunk_type != 'source_status'
-              AND coalesce(json_extract(m.metadata_json, '$.memory_tier'), '') != 'working'
-            ORDER BY m.pinned DESC, bm25_score, m.created_at DESC
-            LIMIT ?
-            """,
-            (fts_query, project_id, top_n),
-        )
-        rows = list(cur.fetchall())
-
-    tokens: list[str] = []
-    seen: set[str] = set()
-    for source in (raw_query, normalized_query):
-        for tok in _TOKEN_RE.findall(source):
-            t = tok.strip().lower()
-            if len(t) < 2 or t in _LIKE_STOPWORDS or t in seen:
-                continue
-            seen.add(t)
-            tokens.append(t)
-
-    if not rows and tokens:
-        clauses = []
-        params: list[str] = []
-        for tok in tokens[:8]:
-            clauses.append("lower(m.text) LIKE ?")
-            params.append(f"%{tok}%")
-        cur = conn.execute(
-            f"""
-            SELECT m.id, m.chunk_type, m.text, m.metadata_json, m.created_at, m.pinned
-            FROM memory_chunks m
-            WHERE m.project_id = ?
-              AND m.chunk_type != 'source_status'
-              AND coalesce(json_extract(m.metadata_json, '$.memory_tier'), '') != 'working'
-              AND ({' OR '.join(clauses)})
-            ORDER BY m.created_at DESC
-            LIMIT ?
-            """,
-            (project_id, *params, max(top_n * 2, top_n)),
-        )
-        rows = list(cur.fetchall())
-
-        def hit_count(row: sqlite3.Row) -> int:
-            haystack = (row["text"] or "").lower()
-            return sum(1 for tok in tokens if tok in haystack)
-
-        rows.sort(key=lambda r: (-hit_count(r), -(r["pinned"] or 0)))
-        rows = rows[:top_n]
-
-    candidates: list[RetrievalCandidate] = []
-    for rank, row in enumerate(rows):
-        metadata: dict[str, Any]
-        try:
-            metadata = json.loads(row["metadata_json"] or "{}")
-            if not isinstance(metadata, dict):
-                metadata = {}
-        except (json.JSONDecodeError, TypeError):
-            metadata = {}
-        source_type = metadata.get("source") or "memory"
-        section_path = metadata.get("section_title") or metadata.get("section_path")
-        evidence_level = metadata.get("evidence_level")
-        source_uri = metadata.get("source_uri") or metadata.get("url")
-        text_hash = metadata.get("text_hash")
-        grounded = metadata.get("grounded")
-        hits = 0
-        if tokens:
-            haystack = (row["text"] or "").lower()
-            hits = sum(1 for tok in tokens if tok in haystack)
-        rrf_score = RRF_BM25_WEIGHT * (1.0 / (RRF_K + rank))
-        boost = BOOST_CURRENT
-        if row["pinned"]:
-            boost += BOOST_RECENT
-        if hits:
-            boost += min(0.08, hits * 0.02)
-        candidates.append(
-            RetrievalCandidate(
-                chunk_id=row["id"],
-                document_id="memory_chunks",
-                retrieval_text=row["text"],
-                chunk_text=row["text"],
-                section_path=section_path,
-                source_type=str(source_type),
-                source_updated_at=row["created_at"],
-                is_current=1,
-                raw_chunk_type=row["chunk_type"],
-                normalized_chunk_type=normalize_chunk_type(row["chunk_type"]),
-                bm25_rank=rank,
-                vector_rank=None,
-                rrf_score=rrf_score,
-                boost_score=boost,
-                final_score=rrf_score + boost,
-                evidence_level=str(evidence_level) if evidence_level else None,
-                grounded=bool(grounded) if grounded is not None else None,
-                source_uri=str(source_uri) if source_uri else None,
-                text_hash=str(text_hash) if text_hash else None,
-            )
-        )
-        candidates[-1].lane = _candidate_context_section(candidates[-1])
-    return sorted(candidates, key=lambda c: -c.final_score)
-
-
 def _working_memory_overlay(
     conn: sqlite3.Connection,
     project_id: str,
@@ -443,28 +350,24 @@ def _working_memory_overlay(
     normalized_query: str,
     top_n: int = WORKING_OVERLAY_LIMIT,
 ) -> list[RetrievalCandidate]:
-    """현재 세션 working mini-chunk 를 retrieval 후보에 query context 로 soft union.
-
-    session_id 를 알 수 있으면 해당 세션만, shell `/search` 처럼 알 수 없으면
-    프로젝트의 최신 working chunk 중 query token 이 닿는 row 를 우선 사용한다.
-    """
+    """현재 세션 user_message event metadata 를 query context 로 soft union."""
     session_id = os.environ.get("IMPRINT_SESSION_ID", "").strip()
     params: list[Any] = [project_id]
     session_clause = ""
     if session_id:
-        session_clause = "AND json_extract(m.metadata_json, '$.session_id') = ?"
+        session_clause = "AND json_extract(e.metadata_json, '$.session_id') = ?"
         params.append(session_id)
     params.append(max(top_n * 3, top_n))
     cur = conn.execute(
         f"""
-        SELECT m.id, m.chunk_type, m.text, m.metadata_json, m.created_at, m.pinned
-        FROM memory_chunks m
-        WHERE m.project_id = ?
-          AND m.chunk_type != 'source_status'
-          AND json_extract(m.metadata_json, '$.memory_tier') = 'working'
-          AND json_extract(m.metadata_json, '$.session_visible') = 1
+        SELECT e.id, e.kind AS chunk_type, e.text_clean AS text, e.metadata_json, e.created_at, 0 AS pinned
+        FROM events e
+        WHERE e.project_id = ?
+          AND e.kind = 'user_message'
+          AND json_extract(e.metadata_json, '$.memory_tier') = 'working'
+          AND json_extract(e.metadata_json, '$.session_visible') = 1
           {session_clause}
-        ORDER BY m.created_at DESC
+        ORDER BY e.created_at DESC
         LIMIT ?;
         """,
         params,
@@ -505,15 +408,15 @@ def _working_memory_overlay(
         out.append(
             RetrievalCandidate(
                 chunk_id=row["id"],
-                document_id="memory_chunks",
+                document_id=None,
                 retrieval_text=row["text"],
                 chunk_text=display_text,
                 section_path=md.get("memory_kind") or "working",
                 source_type="working",
                 source_updated_at=row["created_at"],
                 is_current=0,
-                raw_chunk_type=row["chunk_type"],
-                normalized_chunk_type=normalize_chunk_type(row["chunk_type"]),
+                raw_chunk_type="raw_turn",
+                normalized_chunk_type=normalize_chunk_type("raw_turn"),
                 rrf_score=WORKING_OVERLAY_SCORE,
                 boost_score=0.0,
                 final_score=WORKING_OVERLAY_SCORE,
@@ -522,6 +425,7 @@ def _working_memory_overlay(
                 grounded=bool(md.get("grounded")) if md.get("grounded") is not None else False,
                 source_uri=md.get("source_uri") or md.get("url"),
                 text_hash=md.get("text_hash"),
+                metadata=md,
             )
         )
     return out
@@ -532,17 +436,23 @@ def _vector_search(
 ) -> list[tuple[sqlite3.Row, float]]:
     """sqlite-vec 미가용 가정 — Python 측에서 cosine 직접 계산.
 
-    chunks_v2 의 모든 current row 를 가져와 cosine 정렬. 데이터 규모가 커지면
+    search_entries 의 모든 current row 를 가져와 cosine 정렬. 데이터 규모가 커지면
     sqlite-vec extension 로드 path 로 교체.
     """
     cur = conn.execute(
         """
-        SELECT c.id, c.document_id, c.retrieval_text, c.chunk_text, c.section_path,
-               c.source_updated_at, c.is_current, c.raw_chunk_type, c.normalized_chunk_type,
-               c.embedding, c.metadata_json, d.source_type
-        FROM chunks_v2 c
-        JOIN documents d ON d.id = c.document_id
-        WHERE c.project_id = ? AND c.is_current = 1 AND c.embedding IS NOT NULL
+        SELECT c.id, c.source_document_id AS document_id, c.source_event_id,
+               COALESCE(NULLIF(c.retrieval_text, ''), c.text) AS retrieval_text,
+               c.text AS chunk_text,
+               c.section_path, c.source_updated_at, c.is_current,
+               c.raw_type AS raw_chunk_type, c.normalized_type AS normalized_chunk_type,
+               c.embedding, c.metadata_json, coalesce(d.source_type, c.origin) AS source_type
+        FROM search_entries c
+        LEFT JOIN source_documents d ON d.id = c.source_document_id
+        WHERE c.project_id = ?
+          AND c.is_current = 1
+          AND c.embedding IS NOT NULL
+          AND coalesce(c.raw_type, '') != 'source_status'
         """,
         (project_id,),
     )
@@ -573,6 +483,11 @@ def _row_to_candidate(row: sqlite3.Row) -> RetrievalCandidate:
         raw_chunk_type=row["raw_chunk_type"],
         normalized_chunk_type=row["normalized_chunk_type"],
     )
+    cand.metadata = metadata
+    try:
+        cand.source_event_id = row["source_event_id"]
+    except (IndexError, KeyError):
+        cand.source_event_id = None
     cand.evidence_level = metadata.get("evidence_level")
     if cand.evidence_level is None and cand.source_type in {"slack", "notion"}:
         cand.evidence_level = "raw_source"
@@ -693,7 +608,7 @@ def retrieve(
                         boost += BOOST_CURRENT
                     if cand.normalized_chunk_type and resolved_terms:
                         normalized_text = normalize_alias(cand.retrieval_text)
-                        # Phase 7a v1 은 chunk_entities 자동 채움 전 단계라 alias/canonical
+                        # Phase 7a v1 은 entry_entities 자동 채움 전 단계라 alias/canonical
                         # 본문 매칭을 간이 entity coverage 신호로 사용한다.
                         for hit in resolved:
                             cn = hit["canonical_name"]
@@ -717,18 +632,10 @@ def retrieve(
                     cand.final_score = cand.rrf_score + boost
                     cand.lane = cand.lane or _candidate_context_section(cand)
                 ordered = _dedupe_candidates(list(merged.values()))[:FUSION_CANDIDATES]
-                low_confidence_reasons = _memory_fallback_reasons(ordered, resolved_terms)
+                low_confidence_reasons = _low_confidence_reasons(ordered, resolved_terms)
                 if low_confidence_reasons:
-                    fallback_triggered = True
+                    fallback_triggered = False
                     fallback_reasons = low_confidence_reasons[:]
-                    with Span("MEMFB"):
-                        fallback = _memory_chunks_fallback_search(
-                            conn, project_id, query, expanded, FUSION_CANDIDATES,
-                        )
-                        by_id = {c.chunk_id: c for c in ordered}
-                        for cand in fallback:
-                            by_id.setdefault(cand.chunk_id, cand)
-                        ordered = _dedupe_candidates(list(by_id.values()))[:FUSION_CANDIDATES]
 
             # RG
             rerank_used = False

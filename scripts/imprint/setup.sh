@@ -3,7 +3,6 @@
 # Usage:
 #   setup.sh vector --status
 #   setup.sh vector --install --warmup --backfill [--project-id <id>]
-#   setup.sh vector --print-env
 
 set -euo pipefail
 
@@ -21,15 +20,12 @@ Vector options:
   --status      Show Python dependency readiness without loading BGE-M3.
   --install     Install requirements-optional.txt with user pip.
   --warmup      Load BGE-M3 once and verify embedding output.
-  --backfill    Bridge existing memory for this project with embeddings.
+  --backfill    Embed current search entries.
   --project-id <id>
                 Backfill a specific project id. Default: current git root id.
-  --print-env   Print shell env line for automatic embedding on new memory.
-
 Examples:
   setup.sh vector --status
   setup.sh vector --install --warmup --backfill
-  setup.sh vector --print-env
 USAGE
 }
 
@@ -65,7 +61,7 @@ setup_hint() {
       ;;
     backfill)
       echo "[imprint setup] 힌트: project id를 확인하고 'imprint setup vector --status' 를 먼저 실행해 보세요." >&2
-      echo "[imprint setup] 힌트: bridge/backfill 상세 내용은 $IMPRINT_LOG 에서 확인하세요." >&2
+      echo "[imprint setup] 힌트: embedding backfill 상세 내용은 $IMPRINT_LOG 에서 확인하세요. legacy DB 전환은 'imprint migrate search-entries' 를 별도로 실행하세요." >&2
       ;;
     status)
       echo "[imprint setup] 힌트: status는 import 가능 여부만 확인합니다. python3 사용 가능 여부와 $IMPRINT_LOG 를 확인하세요." >&2
@@ -108,7 +104,7 @@ for name in deps:
 
 print(f"vector_ready: {'no' if missing else 'yes'}")
 print("embedding_model: not_loaded_by_status")
-print(f"auto_bridge_embedding: {os.environ.get('IMPRINT_MEMORY_BRIDGE_EMBEDDING', '0')}")
+print(f"embedding_disabled: {os.environ.get('IMPRINT_DISABLE_EMBEDDING', '0')}")
 print(f"python: {sys.executable}")
 PY
 }
@@ -141,7 +137,7 @@ vector_backfill() {
   require_python
   (
     cd "$SCRIPT_DIR/lib"
-    python3 -m retrieval.cli bridge-memory "$pid" --all --embed
+    python3 -m retrieval.cli embed-entries "$pid" --all
   )
 }
 
@@ -150,7 +146,6 @@ cmd_vector() {
   local do_install=0
   local do_warmup=0
   local do_backfill=0
-  local do_print_env=0
   local pid=""
 
   while [[ $# -gt 0 ]]; do
@@ -160,19 +155,13 @@ cmd_vector() {
       --warmup) do_warmup=1; shift ;;
       --backfill) do_backfill=1; shift ;;
       --project-id) pid="${2:-}"; shift 2 ;;
-      --print-env) do_print_env=1; shift ;;
       -h|--help) usage; exit 0 ;;
       *) setup_error "알 수 없는 vector 옵션: $1"; usage >&2; exit 2 ;;
     esac
   done
 
   setup_log "vector setup 로그: $IMPRINT_LOG"
-  setup_log "vector 실행 계획: status=$do_status install=$do_install warmup=$do_warmup backfill=$do_backfill print_env=$do_print_env project_id=${pid:-auto}"
-
-  if (( do_print_env )); then
-    setup_log "새 memory 자동 embedding 설정을 출력합니다"
-    echo "export IMPRINT_MEMORY_BRIDGE_EMBEDDING=1"
-  fi
+  setup_log "vector 실행 계획: status=$do_status install=$do_install warmup=$do_warmup backfill=$do_backfill project_id=${pid:-auto}"
 
   if (( do_install )); then
     run_step install vector_install
