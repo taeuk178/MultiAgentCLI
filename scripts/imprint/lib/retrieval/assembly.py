@@ -14,8 +14,44 @@ from .retrieve import RetrievalResult
 from .routing import RoutedResult
 
 
+def _short_list(value: Any, *, limit: int = 4) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    out = [str(v).strip() for v in value if str(v).strip()]
+    return out[:limit]
+
+
+def _metadata_detail_lines(metadata: dict[str, Any] | None, *, source_event_id: str | None = None) -> list[str]:
+    if not isinstance(metadata, dict):
+        metadata = {}
+    lines: list[str] = []
+    reason = str(metadata.get("reason") or "").strip()
+    if reason:
+        lines.append(f"   reason: {reason[:240]}")
+    files = _short_list(metadata.get("files"))
+    if files:
+        lines.append(f"   files: {', '.join(files)}")
+    symbols = _short_list(metadata.get("symbols"))
+    if symbols:
+        lines.append(f"   symbols: {', '.join(symbols)}")
+    tests = _short_list(metadata.get("tests"))
+    if tests:
+        lines.append(f"   tests: {', '.join(tests)}")
+    event_range = metadata.get("event_range")
+    if isinstance(event_range, list) and len(event_range) >= 2:
+        lines.append(f"   event_range: {event_range[0]}..{event_range[-1]}")
+    elif source_event_id:
+        lines.append(f"   source_event: {source_event_id}")
+    if metadata.get("rolled") or metadata.get("rollup"):
+        session_id = str(metadata.get("session_id") or "").strip()
+        lines.append(f"   rollup: true{f' session={session_id}' if session_id else ''}")
+    return lines
+
+
 def _format_chunk_block(idx: int, *, source_type: str | None, section_path: str | None,
-                       is_current: Any, source_updated_at: str | None, chunk_text: str) -> list[str]:
+                       is_current: Any, source_updated_at: str | None, chunk_text: str,
+                       metadata: dict[str, Any] | None = None,
+                       source_event_id: str | None = None) -> list[str]:
     meta_bits: list[str] = []
     if source_type:
         meta_bits.append(f"source={source_type}")
@@ -27,6 +63,7 @@ def _format_chunk_block(idx: int, *, source_type: str | None, section_path: str 
     out = [f"{idx}. {' | '.join(meta_bits)}"]
     for body_line in chunk_text.splitlines():
         out.append(f"   {body_line}")
+    out.extend(_metadata_detail_lines(metadata, source_event_id=source_event_id))
     return out
 
 
@@ -63,7 +100,8 @@ def format_for_claude(
             lines.extend(_format_chunk_block(
                 i, source_type=cand.source_type, section_path=cand.section_path,
                 is_current=cand.is_current, source_updated_at=cand.source_updated_at,
-                chunk_text=cand.chunk_text,
+                chunk_text=cand.chunk_text, metadata=cand.metadata,
+                source_event_id=cand.source_event_id,
             ))
             lines.append("")
 
@@ -74,7 +112,8 @@ def format_for_claude(
         lines.extend(_format_chunk_block(
             i, source_type=cand.source_type, section_path=cand.section_path,
             is_current=cand.is_current, source_updated_at=cand.source_updated_at,
-            chunk_text=cand.chunk_text,
+            chunk_text=cand.chunk_text, metadata=cand.metadata,
+            source_event_id=cand.source_event_id,
         ))
         lines.append("")
 
@@ -144,7 +183,8 @@ def format_routed_for_claude(
             lines.extend(_format_chunk_block(
                 i, source_type=cand.source_type, section_path=cand.section_path,
                 is_current=cand.is_current, source_updated_at=cand.source_updated_at,
-                chunk_text=cand.chunk_text,
+                chunk_text=cand.chunk_text, metadata=cand.metadata,
+                source_event_id=cand.source_event_id,
             ))
         lines.append("")
 
@@ -155,7 +195,8 @@ def format_routed_for_claude(
             lines.extend(_format_chunk_block(
                 i, source_type=cand.source_type, section_path=cand.section_path,
                 is_current=cand.is_current, source_updated_at=cand.source_updated_at,
-                chunk_text=cand.chunk_text,
+                chunk_text=cand.chunk_text, metadata=cand.metadata,
+                source_event_id=cand.source_event_id,
             ))
             i += 1
         for g in result.ground_chunks:

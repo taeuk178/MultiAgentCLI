@@ -15,6 +15,12 @@
 
 기록 순서는 **최신이 위**. 항목당 한 단락 안에 변경/사유/대안 폐기 근거를 묶는다.
 
+## 2026-05-24 — `/search` rollup 세부 근거 출력 개선
+
+**무엇:** `/search` 와 `retrieval.cli retrieve_json` 이 `search_entries.metadata_json` 과 `source_event_id` 를 후보에 보존하도록 했다. 텍스트 출력은 rollup decision entry 에 `reason`, `files`, `symbols`, `tests`, `event_range`, `rollup session` 이 있으면 본문 아래에 짧은 detail line 으로 함께 보여준다.
+
+**왜:** delta/rollup extract 로 구현 결정 arc 를 `search_entries` 에 저장해도, 출력이 display text 만 보여주면 사용자는 "왜 그렇게 했는지", "어느 파일/심볼/테스트와 연결되는지"를 다시 확인하기 어렵다. raw events 자동 검색을 열지 않는 대신, 정제 entry 가 이미 가진 provenance 를 검색 결과 UX 에 노출해 구현 히스토리 회수성을 높인다.
+
 ## 2026-05-24 — delta/rollup extract 로 구현 결정 arc 저장
 
 **무엇:** 여러 turn 에 걸친 구현 결정 흐름을 `search_entries` 로 정제하기 위해 delta/rollup extract 를 추가했다. `Stop` 은 assistant `llm_response` event 에도 `metadata_json.session_id` 를 저장하고, per-turn extract 는 `fix/todo/command/error/test_result` 같은 flat 타입만 즉시 저장한다. `decision/code_context/summary/note` 는 `extract_state(project_id, session_id)` cursor 기반 bounded rollup 이 담당하며, 명시 명령은 `scripts/imprint/rollup.sh --session-id <id>|--latest|--stale` 와 `python3 -m retrieval.cli rollup-*` 로 제공한다. `SessionStart` 는 현재 session_id 를 알 때만 현재 세션을 제외한 30분 이상 stale session 을 background 로 보완 rollup 한다.

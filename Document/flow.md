@@ -279,6 +279,8 @@ flowchart LR
 
 `chunk_retrieve` 는 `search_entries` 후보와 현재 세션 `events.metadata_json` 의 working surface 를 query context 로 soft union 합니다. 후보가 없거나 top1 score 가 낮으면 trace 에 저신뢰 이유를 남기지만, raw events 자동 fallback 은 열지 않습니다. `source_status` marker 는 primary retrieved context 후보에서 제외합니다.
 
+검색 결과 후보는 `search_entries.metadata_json` 의 세부 근거를 함께 운반합니다. rollup 이 만든 decision/code_context 후보에 `reason`, `files`, `symbols`, `tests`, `event_range`, `session_id` 가 있으면 `/search` 텍스트 context 에 짧은 detail line 으로 표시하고, JSON 출력에는 `metadata` 와 `source_event_id` 로 그대로 노출합니다.
+
 현재 vector 검색 범위는 `search_entries` 와 `search_summaries` 입니다. 선택 ML 의존성 설치 전에는 FTS5 중심으로 동작하고, `imprint setup vector --backfill` 을 실행하면 기존 `search_entries.embedding` 을 채워 vector path 에 참여시킵니다.
 
 confirmed contradiction 에 연결된 entry 는 BOOST 단계에서 강하게 감점합니다. candidate contradiction 은 약하게 감점하고, routed output 의 conflict 섹션은 기존처럼 유지합니다.

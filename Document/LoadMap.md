@@ -78,6 +78,7 @@ working overlay 는 영구 entry 로 만들지 않습니다. 현재 세션 query
 
 - local: multi-rewrite → hybrid search → RRF → working overlay → BOOST/penalty → optional rerank → CTX.
 - feature/global: summary 검색 + chunk retrieval + grounding + contradiction check.
+- rollup 이 저장한 `reason/files/symbols/tests/event_range` metadata 는 `/search` 출력의 세부 근거로 함께 노출합니다.
 - 저신뢰이면 trace 에 이유를 남기지만 raw events 자동 fallback 은 열지 않습니다.
 - `source_status` marker 는 primary retrieved context 후보에서 제외합니다.
 - JSON mode 는 trace, context section, provenance, penalty, fallback/rerank 이유를 노출합니다.

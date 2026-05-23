@@ -1657,6 +1657,92 @@ print(json.dumps({
     )
 
 
+def tc_31_search_rollup_detail_output(env: dict, home: str, case: CaseResult) -> None:
+    """Search output exposes rollup reason/files/symbols/tests/event provenance."""
+    code = """
+import json, sys
+sys.path.insert(0, %r)
+from retrieval._common import db_connect
+from retrieval.entries import build_retrieval_surface, insert_search_entry
+
+metadata = {
+    "evidence_level": "assistant_extracted",
+    "reason": "A안은 LoginViewModel 책임이 커져서 폐기했다.",
+    "files": ["Sources/Auth/TC31ShareLinkBuilder.swift"],
+    "symbols": ["TC31ShareLinkBuilder"],
+    "tests": ["pytest tests/test_share_link.py"],
+    "event_range": ["tc31-01", "tc31-04"],
+    "session_id": "tc31-session",
+    "rolled": True,
+}
+surface = build_retrieval_surface(
+    text="공유 링크 구현은 B안인 TC31ShareLinkBuilder로 분리한다.",
+    reason=metadata["reason"],
+    files=metadata["files"],
+    symbols=metadata["symbols"],
+)
+conn = db_connect()
+try:
+    conn.execute(
+        "INSERT INTO events (id, project_id, source, kind, text_clean, metadata_json, noise, created_at) "
+        "VALUES ('tc31-04', ?, 'eval', 'llm_response', ?, ?, 0, '2026-05-24T04:03:00Z')",
+        (%r, "결정: TC31ShareLinkBuilder로 B안 분리", json.dumps({"session_id": "tc31-session"}, ensure_ascii=False)),
+    )
+    entry_id = insert_search_entry(
+        conn,
+        project_id=%r,
+        source_event_id="tc31-04",
+        origin="assistant_extract",
+        raw_type="decision",
+        text="공유 링크 구현은 B안인 TC31ShareLinkBuilder로 분리한다.",
+        retrieval_text=surface,
+        metadata=metadata,
+    )
+    conn.commit()
+finally:
+    conn.close()
+print(json.dumps({"entry_id": entry_id}, ensure_ascii=False))
+""" % (str(LIB_DIR), PROJECT_ID, PROJECT_ID)
+    rc_seed, out_seed, err_seed = run_python(env, code)
+    seeded = json.loads(out_seed) if out_seed else {}
+    plain = _retrieve_plain_json(env, "TC31ShareLinkBuilder 왜 B안")
+    candidates = plain.get("candidates") or []
+    hit = next((c for c in candidates if c.get("entry_id") == seeded.get("entry_id")), {})
+    rc_text, out_text, err_text = run_cmd(
+        env,
+        [sys.executable, "-m", "retrieval.cli", "retrieve", PROJECT_ID, "TC31ShareLinkBuilder 왜 B안"],
+    )
+    metadata = hit.get("metadata") or {}
+    checks = {
+        "seed_ok": rc_seed == 0 and bool(seeded.get("entry_id")),
+        "json_hit": bool(hit),
+        "json_metadata": (
+            metadata.get("reason", "").startswith("A안은 LoginViewModel")
+            and metadata.get("files") == ["Sources/Auth/TC31ShareLinkBuilder.swift"]
+            and metadata.get("symbols") == ["TC31ShareLinkBuilder"]
+            and hit.get("source_event_id") == "tc31-04"
+        ),
+        "text_reason": "reason: A안은 LoginViewModel 책임" in out_text,
+        "text_files": "files: Sources/Auth/TC31ShareLinkBuilder.swift" in out_text,
+        "text_symbols": "symbols: TC31ShareLinkBuilder" in out_text,
+        "text_tests": "tests: pytest tests/test_share_link.py" in out_text,
+        "text_event_range": "event_range: tc31-01..tc31-04" in out_text,
+        "text_rollup": "rollup: true session=tc31-session" in out_text,
+    }
+    case.metrics = checks | {
+        "entry_id": seeded.get("entry_id"),
+        "json_candidates": len(candidates),
+        "err": (err_seed or err_text)[:160],
+    }
+    case.passed = all(checks.values()) and rc_text == 0
+    case.detail = (
+        f"json_hit={checks['json_hit']} reason={checks['text_reason']} "
+        f"files={checks['text_files']} event_range={checks['text_event_range']}"
+    )
+    if not case.passed:
+        case.detail += f" err={(err_seed or err_text)[:120]}"
+
+
 def tc_15_first_turn_working_overlay(env: dict, home: str, case: CaseResult) -> None:
     """UserPromptSubmit sync mini-chunk + prefill/search working overlay."""
     env_h = hook_env(env)
@@ -2351,6 +2437,7 @@ CASES: list[tuple[str, str, callable]] = [
     ("TC-28", "Rollup session cursor", tc_28_rollup_session_cursor),
     ("TC-29", "Rollup stale/bounded", tc_29_rollup_stale_and_bounded),
     ("TC-30", "Rollup extract without write lock", tc_30_rollup_extract_without_write_lock),
+    ("TC-31", "Search rollup detail output", tc_31_search_rollup_detail_output),
 ]
 
 

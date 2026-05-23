@@ -81,6 +81,8 @@ class RetrievalCandidate:
     source_uri: str | None = None
     text_hash: str | None = None
     penalties: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+    source_event_id: str | None = None
 
     @property
     def entry_id(self) -> str:
@@ -259,7 +261,7 @@ def _fts_search(conn: sqlite3.Connection, project_id: str, query: str, top_n: in
         return []
     cur = conn.execute(
         """
-        SELECT c.id, c.source_document_id AS document_id,
+        SELECT c.id, c.source_document_id AS document_id, c.source_event_id,
                COALESCE(NULLIF(c.retrieval_text, ''), c.text) AS retrieval_text,
                c.text AS chunk_text,
                c.section_path, c.source_updated_at, c.is_current,
@@ -315,7 +317,7 @@ def _like_fallback_search(
 
     cur = conn.execute(
         f"""
-        SELECT c.id, c.source_document_id AS document_id,
+        SELECT c.id, c.source_document_id AS document_id, c.source_event_id,
                COALESCE(NULLIF(c.retrieval_text, ''), c.text) AS retrieval_text,
                c.text AS chunk_text,
                c.section_path, c.source_updated_at, c.is_current,
@@ -423,6 +425,7 @@ def _working_memory_overlay(
                 grounded=bool(md.get("grounded")) if md.get("grounded") is not None else False,
                 source_uri=md.get("source_uri") or md.get("url"),
                 text_hash=md.get("text_hash"),
+                metadata=md,
             )
         )
     return out
@@ -438,7 +441,7 @@ def _vector_search(
     """
     cur = conn.execute(
         """
-        SELECT c.id, c.source_document_id AS document_id,
+        SELECT c.id, c.source_document_id AS document_id, c.source_event_id,
                COALESCE(NULLIF(c.retrieval_text, ''), c.text) AS retrieval_text,
                c.text AS chunk_text,
                c.section_path, c.source_updated_at, c.is_current,
@@ -480,6 +483,11 @@ def _row_to_candidate(row: sqlite3.Row) -> RetrievalCandidate:
         raw_chunk_type=row["raw_chunk_type"],
         normalized_chunk_type=row["normalized_chunk_type"],
     )
+    cand.metadata = metadata
+    try:
+        cand.source_event_id = row["source_event_id"]
+    except (IndexError, KeyError):
+        cand.source_event_id = None
     cand.evidence_level = metadata.get("evidence_level")
     if cand.evidence_level is None and cand.source_type in {"slack", "notion"}:
         cand.evidence_level = "raw_source"
