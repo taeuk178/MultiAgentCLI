@@ -160,22 +160,32 @@ def rollup_session_once(
     stats = RollupStats(project_id=project_id, session_id=session_id)
     conn = db_connect()
     try:
-        conn.execute("BEGIN IMMEDIATE")
         rows = _event_rows(conn, project_id, session_id, batch_events=batch_events)
         stats.events_examined = len(rows)
         rows = _bounded_rows(rows, max_chars)
-        if not rows:
-            conn.commit()
-            return stats
+    finally:
+        conn.close()
 
-        transcript = _transcript(rows)
-        chunks = extract_chunks_from_response(transcript, mode="rich")
-        stats.chunks_extracted = len(chunks)
-        source_event_id = _last_assistant_id(rows)
-        first_id = rows[0]["id"]
-        last = rows[-1]
-        last_id = last["id"]
-        last_created_at = last["created_at"]
+    if not rows:
+        return stats
+
+    transcript = _transcript(rows)
+    chunks = extract_chunks_from_response(transcript, mode="rich")
+    stats.chunks_extracted = len(chunks)
+    source_event_id = _last_assistant_id(rows)
+    first_id = rows[0]["id"]
+    last = rows[-1]
+    last_id = last["id"]
+    last_created_at = last["created_at"]
+
+    conn = db_connect()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        expected_rows = _event_rows(conn, project_id, session_id, batch_events=batch_events)
+        expected_rows = _bounded_rows(expected_rows, max_chars)
+        if [r["id"] for r in expected_rows] != [r["id"] for r in rows]:
+            conn.rollback()
+            return stats
         for chunk in chunks:
             inserted = insert_extracted_chunk(
                 conn,

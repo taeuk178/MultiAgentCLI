@@ -1559,6 +1559,104 @@ print(json.dumps({"stale": stale, "first": first, "second": second}, ensure_asci
         case.detail += f" err={err[:120]}"
 
 
+def tc_30_rollup_extract_without_write_lock(env: dict, home: str, case: CaseResult) -> None:
+    """Slow rollup extraction must not hold a DB write lock."""
+    code = """
+import json, os, sqlite3, sys, threading, time
+from pathlib import Path
+sys.path.insert(0, %r)
+import ingestion
+from retrieval import rollup
+
+entered = threading.Event()
+release = threading.Event()
+
+def slow_extract(_text, *, mode="rich"):
+    entered.set()
+    release.wait(timeout=3)
+    return [
+        {"chunk_type": "summary", "text": "느린 rollup 요약", "keywords": ["slow", "rollup"]}
+    ]
+
+ingestion.extract_chunks_from_response = slow_extract
+with ingestion.db() as conn:
+    rows = [
+        ("tc30-01", "user_message", "느린 rollup 시작", "2026-05-24T03:00:00Z"),
+        ("tc30-02", "llm_response", "느린 rollup 응답", "2026-05-24T03:01:00Z"),
+    ]
+    for event_id, kind, text, created_at in rows:
+        conn.execute(
+            "INSERT INTO events (id, project_id, source, kind, text_clean, metadata_json, noise, created_at) "
+            "VALUES (?, ?, 'eval', ?, ?, ?, 0, ?)",
+            (event_id, %r, kind, text, json.dumps({"session_id": "tc30-rollup"}, ensure_ascii=False), created_at),
+        )
+    conn.commit()
+
+result = {}
+
+def worker():
+    try:
+        result["stats"] = rollup.rollup_session_once(%r, "tc30-rollup").to_dict()
+    except Exception as exc:
+        result["error"] = repr(exc)
+
+t = threading.Thread(target=worker)
+t.start()
+entered_ok = entered.wait(timeout=2)
+writer_ok = False
+writer_err = ""
+try:
+    db_path = Path(os.environ["IMPRINT_HOME"]) / "app.sqlite"
+    conn = sqlite3.connect(str(db_path), timeout=0.1)
+    conn.execute("PRAGMA busy_timeout = 100")
+    conn.execute(
+        "INSERT INTO events (id, project_id, source, kind, text_clean, metadata_json, noise, created_at) "
+        "VALUES ('tc30-writer', ?, 'eval', 'user_message', 'concurrent writer', '{}', 0, '2026-05-24T03:01:30Z')",
+        (%r,),
+    )
+    conn.commit()
+    writer_ok = True
+except Exception as exc:
+    writer_err = repr(exc)
+finally:
+    try:
+        conn.close()
+    except Exception:
+        pass
+    release.set()
+    t.join(timeout=4)
+
+with ingestion.db() as conn:
+    writer_count = conn.execute(
+        "SELECT COUNT(*) FROM events WHERE id = 'tc30-writer'"
+    ).fetchone()[0]
+print(json.dumps({
+    "entered_ok": entered_ok,
+    "writer_ok": writer_ok,
+    "writer_err": writer_err,
+    "writer_count": writer_count,
+    "worker": result,
+}, ensure_ascii=False))
+""" % (str(LIB_DIR), PROJECT_ID, PROJECT_ID, PROJECT_ID)
+    rc, out, err = run_python(env, code)
+    parsed = json.loads(out) if out else {}
+    worker = parsed.get("worker") or {}
+    stats = worker.get("stats") or {}
+    checks = {
+        "ok": rc == 0,
+        "entered": parsed.get("entered_ok") is True,
+        "writer_ok": parsed.get("writer_ok") is True,
+        "writer_persisted": parsed.get("writer_count") == 1,
+        "worker_ok": not worker.get("error") and stats.get("entries_inserted") == 1,
+    }
+    case.metrics = checks | {"parsed": parsed, "err": err[:160]}
+    case.passed = all(checks.values())
+    case.detail = (
+        f"writer={parsed.get('writer_ok')} entries={stats.get('entries_inserted')} "
+        f"err={parsed.get('writer_err') or worker.get('error') or ''}"
+    )
+
+
 def tc_15_first_turn_working_overlay(env: dict, home: str, case: CaseResult) -> None:
     """UserPromptSubmit sync mini-chunk + prefill/search working overlay."""
     env_h = hook_env(env)
@@ -2252,6 +2350,7 @@ CASES: list[tuple[str, str, callable]] = [
     ("TC-27", "Stop session + flat extract", tc_27_stop_session_and_flat_extract),
     ("TC-28", "Rollup session cursor", tc_28_rollup_session_cursor),
     ("TC-29", "Rollup stale/bounded", tc_29_rollup_stale_and_bounded),
+    ("TC-30", "Rollup extract without write lock", tc_30_rollup_extract_without_write_lock),
 ]
 
 
