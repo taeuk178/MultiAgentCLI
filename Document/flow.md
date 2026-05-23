@@ -281,6 +281,49 @@ flowchart LR
 
 confirmed contradiction 에 연결된 chunk 는 BOOST 단계에서 강하게 감점합니다. candidate contradiction 은 약하게 감점하고, routed output 의 conflict 섹션은 기존처럼 유지합니다.
 
+## SQLite 테이블 역할
+
+스키마는 `scripts/imprint/lib/schema.sql` 이 기준입니다. `SessionStart` 때 idempotent 하게 적용되며, 기본 DB 는 `~/.imprint/app.sqlite` 입니다.
+
+### Core archive / memory
+
+| 테이블 | 담당 역할 | 주요 writer | 주요 reader |
+|---|---|---|---|
+| `projects` | project root 를 안정적인 `project_id` 로 묶는 최상위 scope | `session-start.sh`, `common.sh` | 모든 hook/검색 경로 |
+| `conversations` | host 대화 단위 메타데이터. 현재 핵심 경로에서는 보조적입니다. | 향후 conversation 연동 | `events.conversation_id` 참조 |
+| `events` | user prompt 와 assistant response 의 redacted raw archive. `noise` flag 로 짧은 backchannel 을 구분합니다. | `user-prompt-submit.sh`, `stop.sh` | observability, provenance, 향후 raw audit |
+| `memory_chunks` | 기본 사용자 기억 저장소. working raw turn, `/remember`, Stop extract, Slack/Notion lazy-fetch chunk, `source_status` marker 가 들어갑니다. | `ingestion.py`, `memory.sh`, `remember.sh` | prefill, `/memory`, `/search` fallback, bridge |
+
+`events` 는 원문 archive 이고, `memory_chunks` 는 재사용 가능한 기억입니다. `/search` 의 의미 검색 대상은 raw events 전체가 아니라 `memory_chunks` 에서 선별·추출된 persistent memory 를 bridge 한 `chunks_v2` 입니다.
+
+### FTS mirror
+
+| 테이블 | 담당 역할 | 동기화 방식 |
+|---|---|---|
+| `events_fts` | `events.text_clean` 의 FTS5 trigram 인덱스. 현재 사용자-facing 검색 경로에는 직접 노출하지 않습니다. | `events_ai`, `events_ad` trigger |
+| `memory_chunks_fts` | `memory_chunks.text` 의 FTS5 trigram 인덱스. `/memory search`, prefill, `/search` fallback 에 사용합니다. | `chunks_ai`, `chunks_ad`, `chunks_au` trigger |
+| `chunks_v2_fts` | `chunks_v2.retrieval_text` 의 FTS5 trigram 인덱스. `/search` 의 chunk BM25 lane 입니다. | `chunks_v2_ai`, `chunks_v2_ad`, `chunks_v2_au` trigger |
+| `summaries_fts` | `summaries.retrieval_text` 의 FTS5 trigram 인덱스. feature/global routed search 에 사용합니다. | `summaries_ai`, `summaries_ad`, `summaries_au` trigger |
+
+### Retrieval v2
+
+| 테이블 | 담당 역할 | 비고 |
+|---|---|---|
+| `documents` | 외부/명시 문서 원문과 synthetic memory document 를 저장합니다. `source_ref='memory_chunks:<id>'` 이면 bridge row 입니다. | Notion/Slack/PRD/file, memory bridge 의 원천 문서 |
+| `chunks_v2` | `/search` 의 주 검색 단위. `retrieval_text`, optional `embedding`, type, validity, provenance metadata 를 가집니다. | vector + FTS hybrid 대상 |
+| `summaries` | feature/document/project 단위 요약 검색 대상입니다. routed search 가 질문 범위에 맞춰 먼저 훑습니다. | optional embedding 포함 |
+| `summary_links` | summary 가 대표하는 하위 summary/chunk 연결입니다. global/feature 결과에서 근거 chunk 로 drill-down 할 때 씁니다. | parent summary → child summary/chunk |
+
+### Entity / conflict / queue
+
+| 테이블 | 담당 역할 | 비고 |
+|---|---|---|
+| `entities` | feature, screen, UI element 같은 canonical entity 를 저장합니다. | entity resolve 의 기준점 |
+| `entity_aliases` | 같은 entity 를 부르는 alias 와 confidence/status 를 저장합니다. | query resolve 와 review queue 성격 |
+| `chunk_entities` | `chunks_v2` 와 entity mention 의 다대다 연결입니다. | entity boost, contradiction scope 에 사용 |
+| `contradictions` | 같은 entity/scope 에서 충돌 가능성이 있는 chunk pair 판정 캐시입니다. | candidate 는 약한 감점, confirmed 는 강한 감점 |
+| `ingest_queue` | summary/NER/contradiction 같은 후속 작업 queue 입니다. 현재 `memory_chunks` 직접 저장 경로는 queue 를 거치지 않고 bridge 까지만 수행합니다. | priority 낮을수록 먼저 처리 |
+
 ## 운영 정책 수치
 
 UserPromptSubmit gate 는 결정적 rule 기반입니다. `noise=1`, 짧은 backchannel, 단순 확인/감사/커밋 요청은 retrieved-memory search 를 생략하고, `어떻게/왜/어디/동작/정리/찾아줘` 계열 표현이나 UI/code/source 키워드가 있으면 retrieved/external context 검색을 엽니다. gate 결과는 working chunk metadata 의 `need_retrieval`, `retrieval_reason` 과 `IMPRINT_PROFILE=1` 의 `cmd_prefill` record 에 남습니다.
