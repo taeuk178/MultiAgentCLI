@@ -290,6 +290,14 @@ def _retrieve_plain_json(env: dict, query: str) -> dict:
     return json.loads(proc.stdout)
 
 
+def _search_script_output(env: dict, query: str, cwd: str) -> tuple[int, str, str]:
+    proc = subprocess.run(
+        ["bash", str(ROOT / "scripts" / "imprint" / "search.sh"), query],
+        env=env, capture_output=True, text=True, cwd=cwd,
+    )
+    return proc.returncode, proc.stdout, proc.stderr
+
+
 def tc_03_retrieve_short(env: dict, home: str, case: CaseResult) -> None:
     out = _retrieve_json(env, "A 버튼 클릭 동작 알려줘")
     scope = (out.get("scope") or {}).get("scope")
@@ -758,7 +766,7 @@ def tc_13_source_noise_profile(env: dict, home: str, case: CaseResult) -> None:
 
 
 def tc_14_retrieve_memory_fallback(env: dict, home: str, case: CaseResult) -> None:
-    """chunks_v2 결과가 없으면 /retrieve 가 memory_chunks 를 read-only fallback."""
+    """chunks_v2 결과가 없으면 /search 가 memory_chunks 를 read-only fallback."""
     now = "2026-05-16T00:00:00Z"
     conn = sqlite3.connect(str(Path(home) / "app.sqlite"))
     try:
@@ -920,6 +928,54 @@ def tc_20_memory_bridge_backfill(env: dict, home: str, case: CaseResult) -> None
     case.detail = (
         f"bridged={stats.get('bridged')} rows={len(rows)} "
         f"retrieve_chunks_v2={checks['retrieve_chunks_v2']}"
+    )
+
+
+def tc_21_search_skill_dispatcher(env: dict, home: str, case: CaseResult) -> None:
+    """User-facing /search dispatcher reaches the hybrid retrieval path."""
+    project_root = tempfile.mkdtemp(prefix="imprint-search-project-")
+    pid_proc = subprocess.run(
+        ["bash", "-lc", f"source {ROOT / 'scripts' / 'imprint' / 'lib' / 'common.sh'}; project_id"],
+        env=env, capture_output=True, text=True, cwd=project_root,
+    )
+    pid = pid_proc.stdout.strip()
+    now = "2026-05-23T00:00:00Z"
+
+    conn = sqlite3.connect(str(Path(home) / "app.sqlite"))
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO projects VALUES (?, ?, ?, ?, ?)",
+            (pid, project_root, "search-fixture", now, now),
+        )
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO memory_chunks
+              (id, project_id, source_event_id, chunk_type, text, metadata_json, created_at, pinned)
+            VALUES (?, ?, NULL, ?, ?, ?, ?, 0)
+            """,
+            (
+                "tc21-search-memory",
+                pid,
+                "decision",
+                "아틀라스 검색 스킬은 /search 이름으로 hybrid retrieval 엔진을 호출한다.",
+                "{}",
+                now,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    rc, out, err = _search_script_output(env, "아틀라스 검색 스킬", project_root)
+    checks = {
+        "script_ok": pid_proc.returncode == 0 and bool(pid) and rc == 0,
+        "memory_fallback": "hybrid retrieval 엔진" in out,
+    }
+    case.metrics = checks | {"stdout_len": len(out), "error": err[:120]}
+    case.passed = all(checks.values())
+    case.detail = (
+        f"script={checks['script_ok']} fallback={checks['memory_fallback']} "
+        f"stdout={len(out)}"
     )
 
 
@@ -1537,9 +1593,9 @@ def tc_19_legacy_db_migration(env: dict, home: str, case: CaseResult) -> None:
 CASES: list[tuple[str, str, callable]] = [
     ("TC-01", "Save 짧은 텍스트", tc_01_save_short),
     ("TC-02", "Save 긴 문서 (다중 chunk)", tc_02_save_long),
-    ("TC-03", "Retrieve 짧은 쿼리 (local)", tc_03_retrieve_short),
-    ("TC-04", "Retrieve 긴 쿼리 (feature)", tc_04_retrieve_feature),
-    ("TC-05", "Retrieve global 쿼리", tc_05_retrieve_global),
+    ("TC-03", "Search 짧은 쿼리 (local)", tc_03_retrieve_short),
+    ("TC-04", "Search 긴 쿼리 (feature)", tc_04_retrieve_feature),
+    ("TC-05", "Search global 쿼리", tc_05_retrieve_global),
     ("TC-06", "Entity alias 매칭", tc_06_entity_alias),
     ("TC-07", "Document 갱신 + supersede", tc_07_supersede),
     ("TC-08", "Contradiction 감지 (model judge)", tc_08_contradiction_llm),
@@ -1548,13 +1604,14 @@ CASES: list[tuple[str, str, callable]] = [
     ("TC-11", "Hook memory loop + redaction", tc_11_hook_memory_loop),
     ("TC-12", "Memory search/list/inject fixture", tc_12_memory_search_fixture),
     ("TC-13", "Source status + noise + profile", tc_13_source_noise_profile),
-    ("TC-14", "Retrieve memory_chunks fallback", tc_14_retrieve_memory_fallback),
+    ("TC-14", "Search memory_chunks fallback", tc_14_retrieve_memory_fallback),
     ("TC-15", "First-turn working overlay", tc_15_first_turn_working_overlay),
     ("TC-16", "RAG context section policy", tc_16_context_section_policy),
     ("TC-17", "Observability dedup status", tc_17_observability_dedup_status),
     ("TC-18", "Codex hook JSON I/O", tc_18_codex_hook_io),
     ("TC-19", "Legacy DB 자동 migration", tc_19_legacy_db_migration),
     ("TC-20", "memory_chunks bridge/backfill", tc_20_memory_bridge_backfill),
+    ("TC-21", "Search skill dispatcher", tc_21_search_skill_dispatcher),
 ]
 
 

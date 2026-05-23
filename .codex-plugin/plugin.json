@@ -14,6 +14,7 @@
     "context",
     "slack",
     "notion",
+    "search",
     "setup",
     "vector",
     "rag"
@@ -32,6 +33,7 @@
     "defaultPrompt": [
       "Show recent project memory",
       "Search memory for this feature",
+      "Search project context with evidence",
       "Explain retrieved context",
       "Set up vector search"
     ],

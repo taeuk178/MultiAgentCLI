@@ -119,12 +119,16 @@ case "\${1:-}" in
     shift
     exec "\$IMPRINT_PLUGIN_ROOT/scripts/imprint/retrieve.sh" "\$@"
     ;;
+  search)
+    shift
+    exec "\$IMPRINT_PLUGIN_ROOT/scripts/imprint/search.sh" "\$@"
+    ;;
   setup)
     shift
     exec "\$IMPRINT_PLUGIN_ROOT/scripts/imprint/setup.sh" "\$@"
     ;;
   *)
-    echo "usage: imprint <memory|retrieve|setup> [args]" >&2
+    echo "usage: imprint <memory|search|retrieve|setup> [args]" >&2
     exit 2
     ;;
 esac
@@ -132,4 +136,4 @@ SH
 chmod +x "$LOCAL_BIN/imprint"
 
 echo "Imprint Codex install complete."
-echo "Restart Codex App or open a new thread, then search for 'Imprint: Memory' or 'Imprint: Setup'."
+echo "Restart Codex App or open a new thread, then search for 'Imprint: Memory', 'Imprint: Search', or 'Imprint: Setup'."

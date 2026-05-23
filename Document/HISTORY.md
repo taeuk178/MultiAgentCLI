@@ -14,6 +14,14 @@
 
 기록 순서는 **최신이 위**. 항목당 한 단락 안에 변경/사유/대안 폐기 근거를 묶는다.
 
+## 2026-05-23 — `/search` skill 로 벡터 검색 사용자 진입점 추가
+
+**무엇:** `skills/search/SKILL.md` 와 `scripts/imprint/search.sh` 를 추가해 기존 hybrid retrieval 엔진을 사용자-facing `/search` 스킬로 노출했다. Codex 설치 wrapper 에도 `imprint search` subcommand 를 추가했고, plugin manifest keyword/default prompt 와 README/INSTALL/HANDOFF/LoadMap 문서를 `/search` 명칭 기준으로 정리했다. 내부 `retrieve.sh`/`retrieval.cli` 는 호환성을 위해 유지하고, `search.sh` 가 그 엔진을 얇게 호출한다.
+
+**왜:** imprint 의 핵심 목적은 세션 종료 뒤 구현 의도와 히스토리를 자연어로 다시 떠올리는 것이다. `memory_chunks → chunks_v2` bridge 와 optional embedding 이 준비돼도, 사용자가 실제로 벡터/hybrid 검색을 호출할 슬래시 스킬이 없으면 목적까지 닿지 못한다. 단순히 기존 `/retrieve` 문서명을 스킬로 만드는 대안도 있었지만, 사용자 입장에서는 “검색한다”는 행위가 더 직접적이고 `/memory search` 와 대비하기 쉽다. 따라서 내부 구현명은 보존하고 공개 진입점만 `/search` 로 잡았다.
+
+**추가 조정:** `/search` 는 기본적으로 routed 검색을 수행하도록 바꿨다. 사용자가 매번 `--routed` 를 붙이는 것은 제품 의도와 맞지 않고, “검색”이라고 말하면 local/feature/global 범위를 시스템이 판단하는 것이 자연스럽다. 초기 사용자-facing dispatcher 는 옵션 없이 query 만 받게 단순화했다. 추후 필요하면 `local` 같은 키워드나 detail/debug 모드를 별도 UX 로 붙인다.
+
 ## 2026-05-22 — 0.1.1 release metadata 동기화
 
 **무엇:** bridge/search-v2 연동과 vector setup dispatcher 가 `main`에 병합된 뒤 plugin release metadata 를 `0.1.1` 로 올렸다. `VERSION`, root/Codex/Claude plugin manifest, Claude marketplace, Codex marketplace ref 를 같은 버전으로 맞추고 설치 문서의 release 예시도 `0.1.1` 기준으로 갱신했다.

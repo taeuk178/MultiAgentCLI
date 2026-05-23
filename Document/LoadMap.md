@@ -22,7 +22,7 @@ imprint 는 Claude Code/Codex hook·skill 시스템 위에서 동작하는 로�
   -> Stop hook
        response archive, persistent memory extract
   -> 다음 turn
-       저장된 기억이 다시 prefill/search/retrieve 후보가 됨
+       저장된 기억이 다시 prefill/search 후보가 됨
 ```
 
 API key 없이 host 의 OAuth 구독을 그대로 사용합니다. 무거운 LLM 작업(prompt 분석, Slack/Notion fetch, response extract)은 background 에서 host CLI(`claude` 또는 `codex`)로 분리합니다.
@@ -36,7 +36,7 @@ API key 없이 host 의 OAuth 구독을 그대로 사용합니다. 무거운 LLM
    폴더 구조, 검증 명령, 기술 스택, 최근 결정 사항을 매번 다시 설명하지 않게 합니다.
 
 3. **근거 있는 답변**
-   모델이 기억을 느낌상 말하는 것이 아니라, 사용자가 `/memory show`, `/memory inject`, `/retrieve --json` 으로 근거 chunk 와 trace 를 확인할 수 있어야 합니다.
+   모델이 기억을 느낌상 말하는 것이 아니라, 사용자가 `/memory show`, `/memory inject`, 명시 검색 trace 로 근거 chunk 를 확인할 수 있어야 합니다.
 
 4. **외부 문서 RAG**
    Slack/Notion 같은 외부 source 를 read-only 로 가져오되, 실패·stale·cap 초과 상태를 사용자가 볼 수 있어야 합니다.
@@ -64,7 +64,7 @@ API key 없이 host 의 OAuth 구독을 그대로 사용합니다. 무거운 LLM
 
 `events` 는 raw I/O archive 입니다. redaction 후 저장하고, 짧은 backchannel turn 은 `noise=1` 로 soft flag 만 붙입니다.
 
-`memory_chunks` 는 기본 사용자 RAG 기억입니다. working mini-chunk, Stop hook 추출, external lazy-fetch, `/memory remember` 가 여기에 저장합니다. 다음 turn prefill, `/memory search/list/show/inject`, `/retrieve` fallback 이 이 테이블을 읽습니다.
+`memory_chunks` 는 기본 사용자 RAG 기억입니다. working mini-chunk, Stop hook 추출, external lazy-fetch, `/memory remember` 가 여기에 저장합니다. 다음 turn prefill, `/memory search/list/show/inject`, 명시 검색 fallback 이 이 테이블을 읽습니다.
 
 `documents` / `chunks_v2` / `summaries` 는 retrieval v2 문서 RAG 계층입니다. 명시 ingestion 된 문서는 chunking, versioning, summary, contradiction, entity alias pipeline 을 탑니다. 2026-05-22부터 persistent `memory_chunks` 는 synthetic document/chunk 로도 bridge 되어 `chunks_v2` 검색 후보에 들어갑니다.
 
@@ -74,7 +74,7 @@ API key 없이 host 의 OAuth 구독을 그대로 사용합니다. 무거운 LLM
 
 `/memory` 는 `memory_chunks` 를 직접 읽고 쓰는 수동 개입 도구입니다.
 
-`/retrieve` 는 `chunks_v2`/`summaries` 를 우선 검색합니다.
+명시 검색 경로는 `chunks_v2`/`summaries` 를 우선 검색합니다.
 
 - local: multi-rewrite → hybrid search → RRF → working overlay → BOOST/penalty → low-confidence MEMFB → optional rerank → CTX.
 - feature/global: summary 검색 + chunk retrieval + grounding + contradiction check.
@@ -113,10 +113,10 @@ retrieval v2 ingestion 은 `ingest_queue` 를 통해 후속 작업을 순차 처
 - 한국어 2자 토큰 fallback.
 - external source 상태 가시화.
 - events noise soft flag.
-- `/retrieve` memory fallback + JSON trace.
+- 명시 검색 memory fallback + JSON trace.
 - persistent memory bridge/backfill.
 - text_hash 기반 dedup.
-- 테스트 기준선: `20 PASS / 0 FAIL`.
+- 테스트 기준선: `21 PASS / 0 FAIL`.
 
 완료된 결정과 이유는 `HISTORY.md` 에 남깁니다.
 
@@ -128,7 +128,6 @@ retrieval v2 ingestion 은 `ingest_queue` 를 통해 후속 작업을 순차 처
 - 기본 bridge 는 embedding 을 만들지 않습니다. 선택 ML cold-load 가 hook 을 느리게 만들 수 있기 때문입니다.
 - 벡터 검색 검증은 `sentence-transformers` 설치 후 `python3 -m retrieval.cli bridge-memory <project_id> --all --embed` 로 기존 bridge row embedding 을 채운 뒤 진행합니다.
 - 아직 summary/entity/contradiction pipeline 자동 연결은 하지 않습니다. bridge 의 검색 품질과 운영 비용을 먼저 측정합니다.
-- **[2026-05-22 추가] 벡터가 채워져도 사용자 진입점이 없습니다.** `/retrieve` 는 슬래시 커맨드로 등록돼 있지 않고(셸/CLI 전용), 자동 prefill 은 키워드 FTS 한정입니다. 즉 임베딩이 생겨도 일상 사용에서 벡터를 트리거할 슬래시 커맨드가 없습니다. 진입점(`skills/retrieve/SKILL.md`)과 prefill 벡터화가 핵심 후속입니다(HANDOFF 우선순위 2·3번).
 - **[2026-05-22 추가] verbatim 세부 회수 경로가 없습니다.** 응답 원문 전체는 `events.llm_response`(+`events_fts` 인덱스, 트리거로 자동 유지)에 보관되나 이를 쿼리하는 검색기가 없어, distilled `memory_chunks` 요점만 회수됩니다. `events_fts` 키워드 기반 detailsearch 가 후보입니다(HANDOFF 우선순위 5번).
 
 ## 목표별 현재 일치도
@@ -151,7 +150,7 @@ retrieval v2 ingestion 은 `ingest_queue` 를 통해 후속 작업을 순차 처
 - 자동 hook, external lazy-fetch, `/memory remember` 로 저장된 persistent memory 는 retrieval v2 후보로 복제됩니다.
 - 기존 `memory_chunks` 는 `bridge-memory <project_id> --all [--embed] [limit]` 로 backfill/reindex 합니다.
 - bridge row 의 provenance 는 원본 `memory_chunks.id`, `source_event_id`, `chunk_type`, `source_type`, `evidence_level`, `text_hash` 를 보존합니다.
-- 신규/기존 memory 가 `/retrieve --json` 에서 `chunks_v2` 후보로 보이는 것은 테스트로 고정했습니다. 다음은 embedding 가용 시 vector path 품질 검증입니다.
+- 신규/기존 memory 가 명시 검색 경로에서 `chunks_v2` 후보로 보이는 것은 테스트로 고정했습니다. 다음은 embedding 가용 시 vector path 품질 검증입니다.
 - fallback 으로 남는 `memory_chunks` read-only search 는 migration 안정화 기간 동안 유지합니다.
 
 ### 2. RAG 사용성 검증과 운영 캘리브레이션
@@ -159,7 +158,7 @@ retrieval v2 ingestion 은 `ingest_queue` 를 통해 후속 작업을 순차 처
 자동 메모리 bridge 가 들어간 상태에서 진행합니다.
 
 - 실제 프로젝트에서 자동 prefill 과 수동 `/memory` 경로가 충분히 유용한지 확인.
-- `/retrieve --json` trace 가 사용자의 “근거 확인” 기대를 만족하는지 확인.
+- 명시 검색 trace 가 사용자의 “근거 확인” 기대를 만족하는지 확인.
 - 작은 eval 세트로 gate, fallback, rerank, contradiction penalty 를 관찰.
 - `IMPRINT_PROFILE=1` 로 latency, payload, background worker 상태를 측정.
 - `events.noise`, `source_status`, stale chunk 누적량을 보고 운영 정책 결정.
@@ -315,7 +314,7 @@ Claude Code / Codex 세션
   + Stop hook
   + shared local SQLite memory (~/.imprint)
   + /memory skill
-  + /retrieve grounding
+  + explicit grounding
   + optional external source fetch
   + optional workflow skills
   -> 구독 OAuth만으로 동작하는 로컬 개발 작업 기억 시스템

@@ -50,7 +50,7 @@ export IMPRINT_CODEX_MODEL=gpt-5.4-mini
 export IMPRINT_CLAUDE_MODEL=haiku
 ```
 
-이 설정은 prompt 분석, response extract, 요약, NER, contradiction judge 같은 background 모델 작업에만 적용됩니다. SQLite 저장소, `/memory`, `/retrieve` 검색 로직은 그대로 동작합니다.
+이 설정은 prompt 분석, response extract, 요약, NER, contradiction judge 같은 background 모델 작업에만 적용됩니다. SQLite 저장소, `/memory`, `/search` 검색 로직은 그대로 동작합니다.
 
 기본 DB는 Claude/Codex 공유를 위해 `~/.imprint/app.sqlite` 입니다. 첫 실행 시 새 DB에 사용자 데이터가 없고 기존 `~/.claude/imprint/app.sqlite` 에 데이터가 있으면 자동으로 새 경로에 마이그레이션한 뒤 기존 `app.sqlite` 파일을 제거합니다. 기존 Claude 경로를 계속 쓰려면 `IMPRINT_HOME=$HOME/.claude/imprint`, Codex용으로 분리하려면 `IMPRINT_HOME=$HOME/.codex/imprint` 를 지정하세요.
 
@@ -61,7 +61,7 @@ export IMPRINT_CLAUDE_MODEL=haiku
 | Memory | prompt, assistant response, `/memory remember`, Slack/Notion fetch 결과를 redaction 후 `memory_chunks` 에 저장하고, persistent memory 는 `chunks_v2` 후보로 bridge 합니다. |
 | Prefill | 매 prompt 전에 query context, session memory, retrieved memory, external source context 를 `[Project memory context]` 로 자동 prepend 합니다. |
 | `/memory` | 저장된 memory 를 검색, 확인, 주입, pin, 삭제, refresh 합니다. |
-| `/retrieve` | 문서 RAG(`chunks_v2`/`summaries`)를 우선 검색하고, 결과가 약하면 `memory_chunks` 를 read-only fallback 으로 조회합니다. |
+| `/search` | 문서 RAG(`chunks_v2`/`summaries`)를 우선 검색하고, 결과가 약하면 `memory_chunks` 를 read-only fallback 으로 조회합니다. |
 | Setup | 선택 벡터 검색 의존성 설치, 모델 warmup, memory embedding backfill 을 한 명령으로 처리합니다. |
 | Routing | `<project>/.imprint/UserPromptSubmit.md` 의 키워드 룰을 보고 routing advisory 를 prepend 합니다. |
 | Soul | `<project>/.imprint/soul.md` 를 세션 시작·압축 후 자동 prepend 합니다. |
@@ -83,10 +83,10 @@ export IMPRINT_CLAUDE_MODEL=haiku
        events.llm_response 저장
        response extract background spawn
   -> 다음 turn
-       새 persistent memory 가 prefill/search/retrieve 후보가 됨
+       새 persistent memory 가 prefill/search 후보가 됨
 ```
 
-`/retrieve` 는 hook 이 자동 호출하지 않습니다. 사용자가 명시적으로 `/retrieve` 또는 `/retrieve --routed` 를 호출했을 때만 풀 retrieval 경로를 탑니다.
+`/search` 는 hook 이 자동 호출하지 않습니다. 사용자가 명시적으로 `/search` 를 호출했을 때만 풀 검색 경로를 탑니다. 기본적으로 질문을 보고 local/feature/global 범위를 자동 선택합니다.
 
 전체 Mermaid 다이어그램과 hook 의존성은 [`flow.md`](flow.md)를 봅니다.
 
@@ -104,7 +104,7 @@ export IMPRINT_CLAUDE_MODEL=haiku
 | 외부 source 갱신 | `/memory refresh <url>` |
 | hook/DB 상태 진단 | `/memory status --json` |
 | 느린 지점 요약 | `/memory profile --json` |
-| 문서 RAG 명시 조회 | `/retrieve --routed "<question>"` |
+| 문서 RAG 명시 조회 | `/search "<question>"` |
 | 벡터 검색 셋업 | `imprint setup vector --install --warmup --backfill` |
 
 벡터 검색 상태만 확인하려면:
@@ -127,9 +127,7 @@ imprint setup vector --status
 fetch 실패, URL cap 초과, stale 상태는 `source_status` marker 로 남고 `/memory list/show` 에서 확인할 수 있습니다. 자동 refresh 는 하지 않으며, 필요할 때 `/memory refresh` 로 명시 갱신합니다.
 
 운영 상태는 `/memory status` 로 확인합니다. DB 접근, 최근 log/profile stage, WARN/ERROR 수,
-working TTL/max 설정을 요약합니다. retrieval 근거를 디버깅할 때는 `/retrieve --json`
-출력에서 context section, provenance, fallback/rerank trace 를 확인합니다. latency/payload 추이는
-`IMPRINT_PROFILE=1` 로 수집한 뒤 `/memory profile` 로 요약합니다.
+working TTL/max 설정을 요약합니다. latency/payload 추이는 `IMPRINT_PROFILE=1` 로 수집한 뒤 `/memory profile` 로 요약합니다.
 
 ## RAG context sections
 
