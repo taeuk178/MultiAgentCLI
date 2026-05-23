@@ -39,15 +39,15 @@ terms like `버튼` can still find relevant chunks.
 imprint memory search "Notion 페이지 섹션 분해 규칙"
 ```
 
-### `/memory remember <text> [--type <t>] [--pin] [--redact]`
+### `/memory remember <text> [--require|--high|--middle|--low] [--type <t>] [--redact]`
 Store an explicit memory chunk. Optionally specify chunk_type or pin it.
 Secret-shaped text is redacted before storage; `--redact` keeps the same
 behavior explicit and records `redacted: true` metadata even when no pattern
 matched.
 
 ```bash
-imprint memory remember "Quick 모드는 one-shot 실행, lazy fetch 즉시 트리거" --type decision
-imprint memory remember "key sk-ant-XXX 작동 확인" --redact     # secrets masked before INSERT
+imprint remember "Quick 모드는 one-shot 실행, lazy fetch 즉시 트리거" --high
+imprint remember "key sk-ant-XXX 작동 확인" --redact     # secrets masked before INSERT
 ```
 
 정규식 룰셋은 저장 전 chunk text를 마스킹하고, 마스킹이 발생했거나 `--redact`를 지정하면 metadata에 `redacted: true`를 기록합니다. 룰셋 우선순위: `$IMPRINT_REDACT_RULES` > `~/.imprint/redact-rules.json` > plugin default(`scripts/imprint/lib/redact-rules.default.json`). 사용자 룰셋 형식은 plugin default를 그대로 복사해 추가 패턴을 더하면 됩니다.
@@ -180,7 +180,7 @@ Project is identified by git root (`git rev-parse --show-toplevel`) or current w
 ## Notes
 
 - Memory is local and never sent to any server.
-- Hook 저장 경로와 `/memory remember`는 secret-shaped text를 저장 전 redaction 룰셋으로 마스킹합니다. 그래도 민감정보를 일부러 memory에 넣는 사용은 피하세요.
+- Hook 저장 경로와 `/remember`(`/memory remember`의 public shortcut)는 secret-shaped text를 저장 전 redaction 룰셋으로 마스킹합니다. 그래도 민감정보를 일부러 memory에 넣는 사용은 피하세요.
 - The `UserPromptSubmit` hook automatically pulls recent + pinned chunks into prefill (see `hooks/hooks.json`).
 - External source chunks (Slack/Notion) are NOT written to the events table — they live only in `memory_chunks` with `source_event_id IS NULL` (D11, AC7).
-- 기본 사용자 RAG 경로는 자동 prefill + `/memory search`/`inject` 입니다. `/retrieve`는 별도 `documents`/`chunks_v2`/`summaries` 기반 문서 retrieval 경로를 먼저 사용하고, 문서 후보가 없을 때 `memory_chunks`를 read-only fallback 으로 조회합니다.
+- 기본 사용자 RAG 경로는 lightweight prefill + `/memory search`/`inject` 입니다. `/search` 는 별도 `documents`/`chunks_v2`/`summaries` 기반 문서 검색 경로를 먼저 사용하고, 문서 후보가 없을 때 `memory_chunks`를 read-only fallback 으로 조회합니다.

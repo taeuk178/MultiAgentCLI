@@ -322,8 +322,8 @@ def _memory_chunks_fallback_search(
 ) -> list[RetrievalCandidate]:
     """문서 retrieval 결과가 없을 때 legacy memory_chunks 를 read-only 후보로 사용.
 
-    자동 hook 과 `/memory remember` 는 아직 `memory_chunks` 에 직접 저장한다.
-    bridge 로 데이터를 복제하기 전까지는 `/retrieve` 가 빈 결과일 때만 이 fallback 을
+    자동 hook 과 `/remember` 는 아직 `memory_chunks` 에 직접 저장한다.
+    bridge 로 데이터를 복제하기 전까지는 `/search` 가 빈 결과일 때만 이 fallback 을
     타게 해, 기본 RAG 기억을 명시 조회에서도 확인할 수 있게 한다.
     """
     fts_query = _build_fts_query(f"{raw_query} {normalized_query}")
@@ -445,7 +445,7 @@ def _working_memory_overlay(
 ) -> list[RetrievalCandidate]:
     """현재 세션 working mini-chunk 를 retrieval 후보에 query context 로 soft union.
 
-    session_id 를 알 수 있으면 해당 세션만, shell `/retrieve` 처럼 알 수 없으면
+    session_id 를 알 수 있으면 해당 세션만, shell `/search` 처럼 알 수 없으면
     프로젝트의 최신 working chunk 중 query token 이 닿는 row 를 우선 사용한다.
     """
     session_id = os.environ.get("IMPRINT_SESSION_ID", "").strip()

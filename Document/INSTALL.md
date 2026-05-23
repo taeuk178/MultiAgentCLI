@@ -1,6 +1,6 @@
 # Imprint — Claude/Codex Plugin 설치
 
-이 저장소는 Claude Code/Codex 플러그인입니다. 설치 후 Coding agent 세션에서 자동 hook 과 `/memory` 가 동작합니다. (`/retrieve` 는 현재 슬래시 커맨드로 등록돼 있지 않고 셸/CLI 로만 호출합니다 — 아래 "문서 RAG 명시 조회" 참조.)
+이 저장소는 Claude Code/Codex 플러그인입니다. 설치 후 Coding agent 세션에서 자동 hook, `/memory`, `/search` 가 동작합니다.
 
 ## 사전 조건
 
@@ -151,7 +151,7 @@ Codex 개발 설치는 `.codex-plugin/plugin.json` manifest를 사용합니다. 
 Coding agent 세션 안에서:
 
 ```text
-/memory remember <text> [--type decision|fix|todo|...] [--pin] [--redact]
+/remember <text> [--require|--high|--middle|--low] [--redact]
 /memory search <query>
 /memory list [--recent|--pinned|--type <t>|--source <slack|notion|internal>|--working]
 /memory show <chunk-id> [--json]
@@ -165,18 +165,19 @@ Coding agent 세션 안에서:
 /memory status [--json]
 ```
 
-문서 RAG 명시 조회 (셸/CLI — `/retrieve` 는 슬래시 커맨드로 미등록):
+문서 RAG 명시 조회:
 
 ```text
-# 슬래시 커맨드가 아니라 셸에서 직접 실행합니다
-bash scripts/imprint/retrieve.sh "디버그 토글 누르면 어떻게 돼?"
-bash scripts/imprint/retrieve.sh --json "디버그 토글 누르면 어떻게 돼?"
-bash scripts/imprint/retrieve.sh --routed "테스트 모드 진입 UX 시나리오"
-bash scripts/imprint/retrieve.sh --routed --json "테스트 모드 진입 UX 시나리오"
+search "디버그 토글 누르면 어떻게 돼?"
+search "테스트 모드 진입 UX 시나리오"
+
+# 셸에서 직접 실행할 때
+imprint remember "테스트 모드 진입은 확인 모달을 먼저 거친다." --high
+imprint search "테스트 모드 진입 UX 시나리오"
 # 또는: (cd scripts/imprint/lib && python3 -m retrieval.cli retrieve_json <project_id> "<질문>" 5)
 ```
 
-`--json` 과 `--routed --json` 은 trace, context section, provenance, fallback/rerank 이유를 함께 반환합니다. (`/retrieve` 를 실제 슬래시 커맨드로 쓰려면 `skills/retrieve/SKILL.md` 추가가 필요합니다 — HANDOFF 우선순위 2번.)
+`/search` 는 기본적으로 질문에 따라 local/feature/global 범위를 고릅니다. 현재 사용자-facing dispatcher 는 옵션 없이 자연어 질문만 받습니다.
 
 ## 데이터 위치
 
@@ -198,6 +199,7 @@ IMPRINT_HOME=/tmp/imprint-test python3 scripts/imprint/tests/run_tests.py
 기본 설치만으로도 FTS5(키워드) 검색으로 동작합니다. **의미(유사도) 기반 검색이 필요할 때만** 아래 의존성을 추가하세요. plugin 에 포함되지 않으므로 **사용자별로 각자 설치**해야 하며, 미설치 시 키워드 검색으로 자동 폴백합니다.
 
 권장 경로는 setup dispatcher 입니다. 의존성 설치, BGE-M3 warmup, 현재 프로젝트 memory embedding backfill 을 한 번에 처리합니다.
+실행 중에는 `[imprint setup] status 시작/완료`, `install 실패 ...` 형식의 진행 로그가 출력되고, 같은 내용은 `~/.imprint/plugin.log` 에도 남습니다. 실패하면 단계별 복구 힌트를 먼저 확인하세요.
 
 ```bash
 imprint setup vector --install --warmup --backfill
@@ -213,28 +215,13 @@ imprint setup vector --status
 
 현재 적용 범위에 주의하세요.
 
-- `sentence-transformers`: `BAAI/bge-m3` embedding 생성과 `BAAI/bge-reranker-v2-m3` cross-encoder rerank 에 사용합니다. 없으면 `/retrieve` 는 vector/rerank 없이 FTS5 중심으로 동작합니다.
+- `sentence-transformers`: `BAAI/bge-m3` embedding 생성과 `BAAI/bge-reranker-v2-m3` cross-encoder rerank 에 사용합니다. 없으면 `/search` 는 vector/rerank 없이 FTS5 중심으로 동작합니다.
 - `transformers`: contradiction NLI 판정에 사용합니다. 없으면 Claude/LLM judge 또는 rule fallback 으로 내려갑니다.
-- `sqlite-vec`: SQLite vector extension 로드 후보입니다. 없으면 현재 `/retrieve` 는 embedding BLOB 을 Python cosine 으로 순회하는 fallback 구현을 사용합니다.
+- `sqlite-vec`: SQLite vector extension 로드 후보입니다. 없으면 현재 `/search` 는 embedding BLOB 을 Python cosine 으로 순회하는 fallback 구현을 사용합니다.
 
-`memory_chunks` 자체에는 embedding 컬럼이 없지만, persistent memory 는 `memory_chunks → chunks_v2` bridge 로 검색 후보에 복제됩니다. 기본 bridge 는 hook latency 를 피하기 위해 embedding 을 만들지 않으므로, 기존 memory 의 벡터 검색까지 켜려면 선택 ML 설치 후 아래처럼 backfill 하세요.
-
-```bash
-cd scripts/imprint/lib
-python3 -m retrieval.cli bridge-memory <project_id> --all --embed
-```
+`memory_chunks` 자체에는 embedding 컬럼이 없지만, persistent memory 는 `memory_chunks → chunks_v2` bridge 로 검색 후보에 복제됩니다. 기존 memory 의 벡터 검색까지 켜려면 선택 ML 설치 후 setup dispatcher 의 `--backfill` 을 사용하세요.
 
 새 memory 저장 시점부터 embedding 도 함께 만들고 싶다면 `IMPRINT_MEMORY_BRIDGE_EMBEDDING=1` 을 설정할 수 있습니다. 이 옵션은 모델 cold-load 로 느려질 수 있어, 기본값은 꺼져 있습니다.
-
-```bash
-pip install -r requirements-optional.txt
-```
-
-일부만 설치할 수도 있습니다.
-
-```bash
-pip install sqlite-vec sentence-transformers transformers
-```
 
 설치하면 import 가능 여부를 보고 해당 경로에서 자동 활성화됩니다.
 
@@ -272,15 +259,15 @@ export IMPRINT_DISABLE_SQLITE_VEC=1
 
 ### 자동 hook 경로
 
-- `SessionStart`: SQLite 스키마 적용, 프로젝트 등록, `.imprint/soul.md` prepend.
+- `SessionStart`: SQLite 스키마 적용, 프로젝트 등록, `.imprint/Guardrail.md` prepend.
 - `UserPromptSubmit`: user prompt redaction, `events.user_message` 저장, working mini-chunk 저장, routing rule 평가, need-retrieval gate, context section prefill, lazy-fetch worker spawn.
 - `Stop`: 마지막 assistant 응답 redaction, `events.llm_response` 저장, persistent response extract worker spawn.
 
-자동 hook 경로는 full `/retrieve` 를 호출하지 않습니다. 사용자 turn 을 막지 않기 위해 동기 경로는 lightweight prefill 만 수행합니다. 이 경로가 직접 읽는 `memory_chunks` 는 현재 FTS5/LIKE 기반입니다.
+자동 hook 경로는 full `/search` 를 호출하지 않습니다. 사용자 turn 을 막지 않기 위해 동기 경로는 lightweight prefill 만 수행합니다. 이 경로가 직접 읽는 `memory_chunks` 는 현재 FTS5/LIKE 기반입니다.
 
-### 명시 retrieval 경로
+### 명시 search 경로
 
-`/retrieve` 는 사용자가 명시 호출할 때만 실행됩니다.
+`/search` 는 사용자가 명시 호출할 때만 실행됩니다.
 
 - `chunks_v2` / `summaries` 문서 RAG 우선.
 - 현재 세션 working memory 를 query context 로 soft union.
@@ -307,7 +294,7 @@ python3 scripts/imprint/tests/run_tests.py
 현재 기준선:
 
 ```text
-20 PASS / 0 FAIL
+23 PASS / 0 FAIL
 ```
 
 문법만 빠르게 확인:

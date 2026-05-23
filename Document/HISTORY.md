@@ -11,8 +11,35 @@
 - 단기 픽업(즉시 검토·deferred TODO·미완 Phase): `HANDOFF.md`
 - hook 단계별 시스템 의존·운영 환경 변수: `flow.md`
 - 사용·설치: `README.md`
+- 보관용 초안·폐기/후순위 handoff: `archive/`
 
 기록 순서는 **최신이 위**. 항목당 한 단락 안에 변경/사유/대안 폐기 근거를 묶는다.
+
+## 2026-05-24 — Soul 을 Guardrail 로 명칭 변경
+
+**무엇:** 세션 시작 컨텍스트 파일의 사용자-facing 명칭을 `soul.md` 에서 `Guardrail.md` 로 바꿨다. `SessionStart` 는 이제 `<project>/.imprint/Guardrail.md` 를 우선 prepend 하고, `startup|resume|clear|compact` matcher 로 compact 이후에도 같은 Guardrail 을 다시 주입한다. 기존 프로젝트의 `.imprint/soul.md` 는 첫 seed 시 `.imprint/Guardrail.md` 로 1회 복사하되 legacy 파일은 자동 삭제하지 않는다. Guardrail default 에 민감정보 저장 금지 원칙을 넣고, LoadMap 에도 API key, OAuth token, 비밀번호, 인증 쿠키, 개인식별정보, 사내 기밀 원문은 memory 로 남기지 않는다는 원칙을 명시했다.
+
+**왜:** `Soul` 은 persona 느낌이 강해 실제 역할인 안전 기준·운영 규칙·저장 금지 정책을 설명하기에 모호했다. `Guardrail` 은 모델이 세션 시작과 compact 이후 다시 참고해야 하는 기준선이라는 뜻이 명확하다. 기존 파일을 바로 삭제하거나 rename 만 강제하는 대안은 사용자 편집 파일을 잃을 수 있으므로, 복사 migration 과 legacy fallback 을 둔다.
+
+## 2026-05-24 — setup vector 진행 로그와 실패 힌트 보강
+
+**무엇:** `imprint setup vector` 가 `--status`, `--install`, `--warmup`, `--backfill` 단계마다 `[imprint setup] status 시작/완료`, `install 실패 ...` 같은 한국어 진행 로그를 stdout/stderr 와 `plugin.log` 에 남기도록 보강했다. 실패 시 단계별 힌트(`pip`/네트워크/PEP 668, HF Hub 인증·모델 cache, project id/backfill 확인)를 출력하고, 알 수 없는 옵션은 사용자가 입력한 오타를 그대로 저장하거나 무시하지 않고 에러와 로그로 남긴다. `TC-23` 으로 status 진행 로그와 오타 옵션 거부를 회귀 테스트에 추가했다.
+
+**왜:** optional vector setup 은 Python site-packages 설치, HuggingFace 모델 다운로드, 기존 memory backfill 처럼 실패 지점이 많고 시간이 걸릴 수 있다. 사용자가 “멈춘 것인지, 설치 중인지, 어떤 단계에서 실패했는지”를 바로 알 수 있어야 setup 을 신뢰할 수 있다. 전체 설치를 자동 복구하는 대안은 사용자 Python 환경과 네트워크 정책을 과하게 건드리므로 보류하고, 현재는 진행 상태와 복구 단서가 명확히 보이는 UX 를 먼저 적용한다.
+
+## 2026-05-23 — `/remember` 명시 저장 스킬 추가
+
+**무엇:** `skills/remember/SKILL.md` 와 `scripts/imprint/remember.sh` 를 추가해 기존 `/memory remember` 저장 경로를 사용자-facing `/remember` 로 노출했다. Codex 설치 wrapper 에도 `imprint remember` subcommand 를 추가했고, plugin keyword/default prompt 와 사용 문서를 `/remember` 기준으로 보강했다. `/remember` 는 새 저장소를 만들지 않고 `memory_chunks` 에 저장한 뒤 기존 bridge 를 통해 `chunks_v2` 검색 후보로 승격한다. public 중요도 플래그는 `--require` / `--high` / `--middle` / `--low` 로 두고 기본값은 `middle` 이며, metadata 의 `importance` 로 보존한다. 알 수 없는 `--옵션` 은 텍스트로 저장하지 않고 에러와 plugin log 를 남긴다.
+
+**왜:** imprint 의 사용 핵심은 "이 결정/맥락을 다음 세션에서도 찾아줘"라는 명시 저장 행위다. `/memory remember` 는 기능적으로 맞지만 사용자가 매번 namespace 를 기억해야 하므로, `/search` 와 같은 수준의 짧은 진입점이 더 자연스럽다. 별도 `remember` SQLite 테이블을 만드는 대안은 이름은 선명하지만 pin/forget/search/bridge/redaction 로직을 이중화하므로 보류했다. 현재는 `remember` 를 public verb 로 두고, 저장 canonical table 은 `memory_chunks` 로 유지한다.
+
+## 2026-05-23 — `/search` skill 로 벡터 검색 사용자 진입점 추가
+
+**무엇:** `skills/search/SKILL.md` 와 `scripts/imprint/search.sh` 를 추가해 기존 hybrid retrieval 엔진을 사용자-facing `/search` 스킬로 노출했다. Codex 설치 wrapper 에도 `imprint search` subcommand 를 추가했고, plugin manifest keyword/default prompt 와 README/INSTALL/HANDOFF/LoadMap 문서를 `/search` 명칭 기준으로 정리했다. 내부 `retrieve.sh`/`retrieval.cli` 는 호환성을 위해 유지하고, `search.sh` 가 그 엔진을 얇게 호출한다.
+
+**왜:** imprint 의 핵심 목적은 세션 종료 뒤 구현 의도와 히스토리를 자연어로 다시 떠올리는 것이다. `memory_chunks → chunks_v2` bridge 와 optional embedding 이 준비돼도, 사용자가 실제로 벡터/hybrid 검색을 호출할 슬래시 스킬이 없으면 목적까지 닿지 못한다. 단순히 기존 `/retrieve` 문서명을 스킬로 만드는 대안도 있었지만, 사용자 입장에서는 “검색한다”는 행위가 더 직접적이고 `/memory search` 와 대비하기 쉽다. 따라서 내부 구현명은 보존하고 공개 진입점만 `/search` 로 잡았다.
+
+**추가 조정:** `/search` 는 기본적으로 routed 검색을 수행하도록 바꿨다. 사용자가 매번 `--routed` 를 붙이는 것은 제품 의도와 맞지 않고, “검색”이라고 말하면 local/feature/global 범위를 시스템이 판단하는 것이 자연스럽다. 초기 사용자-facing dispatcher 는 옵션 없이 query 만 받게 단순화했다. 추후 필요하면 `local` 같은 키워드나 detail/debug 모드를 별도 UX 로 붙인다.
 
 ## 2026-05-22 — 0.1.1 release metadata 동기화
 
@@ -56,7 +83,7 @@
 
 **무엇:** RAG 기본 동작 안정화 우선순위 1~4를 1차 적용. `user-prompt-submit.sh` 는 user prompt를 `events`에 저장하기 전 redaction 하고, lazy-fetch/prefill 입력도 redacted text를 사용한다. `stop.sh` 는 마지막 assistant 응답을 `events.llm_response`에 저장하기 전 redaction 하고, response extract worker에도 redacted text를 넘긴다. `ingestion.py` 는 external source chunk/text/metadata 와 extracted response chunk를 `memory_chunks`에 INSERT 하기 직전 Python 쪽 redaction을 한 번 더 적용한다. `/memory remember` 도 secret-shaped text를 기본 redaction 하며, default 룰셋에 fine-grained GitHub PAT, bearer/authorization, password assignment, 주민등록번호, card-like 패턴을 추가했다. 테스트에는 `TC-11 Hook memory loop + redaction`, `TC-12 Memory search/list/inject fixture` 를 추가해 자동 hook 루프와 기본 `/memory` 검색 경로를 고정했다.
 
-**왜:** 실제 프로젝트에서 RAG를 쓰려면 기능 수보다 “안전하게 저장되고, 다음 turn에 다시 보이며, 사용자가 근거로 꺼내볼 수 있음”이 먼저다. Redaction 누락은 DB/FTS raw 누출로 바로 이어져 사용 불가 리스크가 가장 크다. Hook loop smoke test는 `SessionStart → UserPromptSubmit → Stop → 다음 UserPromptSubmit` 생명선을 직접 검증한다. 읽기 경로는 단기적으로 기본 사용자 RAG를 자동 prefill + `/memory search/inject` 로 명확히 하고, `/retrieve` 는 별도 `chunks_v2`/`summaries` 문서 retrieval 경로로 유지한다. 검색 품질 fixture는 decision/fix/todo/note/spec/message/thread, pinned 우선순위, type/source 필터, inject 출력을 고정해 “저장됐는데 못 찾는” 회귀를 먼저 잡기 위함이다.
+**왜:** 실제 프로젝트에서 RAG를 쓰려면 기능 수보다 “안전하게 저장되고, 다음 turn에 다시 보이며, 사용자가 근거로 꺼내볼 수 있음”이 먼저다. Redaction 누락은 DB/FTS raw 누출로 바로 이어져 사용 불가 리스크가 가장 크다. Hook loop smoke test는 `SessionStart → UserPromptSubmit → Stop → 다음 UserPromptSubmit` 생명선을 직접 검증한다. 읽기 경로는 단기적으로 기본 사용자 RAG와 `/memory search/inject` 로 명확히 하고, 별도 `chunks_v2`/`summaries` 문서 retrieval 경로는 분리해 유지한다. 검색 품질 fixture는 decision/fix/todo/note/spec/message/thread, pinned 우선순위, type/source 필터, inject 출력을 고정해 “저장됐는데 못 찾는” 회귀를 먼저 잡기 위함이다.
 
 **남은 점:** `memory_chunks → chunks_v2` bridge 또는 `/retrieve` legacy fallback 은 아직 중기 과제다. 과거에 이미 raw 로 저장된 row 청소는 사용자 승인 액션으로 분리한다. Credit-card-like 정규식은 단순 패턴이라 false positive 가능성이 있어, 필요하면 Luhn callback 기반 redaction helper 로 고도화한다.
 

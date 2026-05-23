@@ -3,8 +3,8 @@
 Claude Code가 직접 읽지 않습니다 — 사람이 보는 참고 문서입니다.
 
 언제 발화: 세션 시작·재개·`/clear`·컨텍스트 압축 직후
-무엇을 함: `.imprint/` 폴더 시드 + soul.md를 stdout으로 출력 → 컨텍스트에 prepend
-사용자 손길이 닿는 곳: `<project>/.imprint/soul.md`
+무엇을 함: `.imprint/` 폴더 시드 + Guardrail.md를 stdout으로 출력 → 컨텍스트에 prepend
+사용자 손길이 닿는 곳: `<project>/.imprint/Guardrail.md`
 주의: 모델이 거부할 수 있고, 압축 시 휘발 가능 (compact matcher로 자동 재주입)
 -->
 
@@ -12,23 +12,23 @@ Claude Code가 직접 읽지 않습니다 — 사람이 보는 참고 문서입�
 
 ## 무엇
 
-세션이 시작·재개·`/clear`·컨텍스트 압축 직후마다 한 번씩 발화하는 진입점입니다. plugin은 이 슬롯을 사용해 컨텍스트 첫머리에 **persona·동작 규칙**을 깔아둡니다.
+세션이 시작·재개·`/clear`·컨텍스트 압축 직후마다 한 번씩 발화하는 진입점입니다. plugin은 이 슬롯을 사용해 컨텍스트 첫머리에 **Guardrail**을 깔아둡니다.
 
 ## 어떻게 활용
 
-`<project>/.imprint/soul.md`를 편집하세요. 그 파일 내용이 매 세션 시작 시 컨텍스트에 prepend됩니다.
+`<project>/.imprint/Guardrail.md`를 편집하세요. 그 파일 내용이 매 세션 시작과 compact 직후 컨텍스트에 prepend됩니다.
 
 ## 간단한 예시
 
 ```markdown
-# .imprint/soul.md (사용자 편집)
+# .imprint/Guardrail.md (사용자 편집)
 
 당신은 한국어로 답하는 전문 코드 리뷰 어시스턴트입니다.
 - PR 본문은 항상 "Summary / Changes / Risk / Test plan" 4섹션 구조로
 - 외부 의존성 추가는 모두 위험으로 분류
 ```
 
-다음 세션 시작에서 이 내용이 컨텍스트에 prepend되어 동작 규칙이 됩니다.
+다음 세션 시작과 compact 이후에 이 내용이 컨텍스트에 prepend되어 동작 기준이 됩니다.
 
 ## 주의
 

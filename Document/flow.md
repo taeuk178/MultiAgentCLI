@@ -6,10 +6,10 @@
 
 - hook 은 사용자 세션을 끊지 않습니다. 실패는 silent skip + `plugin.log` 로 처리합니다.
 - 동기 경로는 가볍게 유지합니다. LLM 호출, Slack/Notion fetch, response extract 는 background 로 분리합니다.
-- 자동 hook 경로는 현재 turn 을 working mini-chunk 로 먼저 저장하고 gate 결과에 따라 `memory_chunks` 를 context section 별로 prefill 합니다.
-- `/retrieve` 는 사용자가 명시 호출했을 때만 `chunks_v2`/`summaries` retrieval 을 수행합니다.
-- `/retrieve` 는 현재 세션 working chunk 를 query context 로 soft union 하고, 문서 후보가 없거나 저신뢰이면 `memory_chunks` 를 read-only fallback 으로 조회합니다.
-- persistent 자동 저장 memory 는 `memory_chunks → chunks_v2` bridge 로 검색 후보에 복제됩니다. 기본 bridge 는 embedding 을 만들지 않으므로 vector 검색은 `--embed` backfill 또는 `IMPRINT_MEMORY_BRIDGE_EMBEDDING=1` 이후에 참여합니다.
+- hook foreground 경로는 현재 turn 을 working mini-chunk 로 저장하고, 동기 경로의 context 보강은 가볍게 유지합니다.
+- `/search` 는 사용자가 명시 호출했을 때 `chunks_v2`/`summaries` retrieval 을 수행하는 공개 진입점입니다.
+- `/search` 는 현재 세션 working chunk 를 query context 로 soft union 하고, 문서 후보가 없거나 저신뢰이면 `memory_chunks` 를 read-only fallback 으로 조회합니다.
+- `/remember`, Stop extract, external lazy-fetch 로 남은 persistent memory 는 `memory_chunks → chunks_v2` bridge 로 검색 후보에 복제됩니다. 기본 bridge 는 embedding 을 만들지 않으므로 vector 검색은 `--embed` backfill 또는 `IMPRINT_MEMORY_BRIDGE_EMBEDDING=1` 이후에 참여합니다.
 
 ## 전체 플로우
 
@@ -53,10 +53,10 @@
 다음 turn:
   새로 저장된 memory_chunks 가 다시 prefill 후보가 됩니다.
 
-사용자: /retrieve --routed "A 버튼 클릭 동작 알려줘"
+사용자: /search "A 버튼 클릭 동작 알려줘"
 
-[/retrieve 명시 호출 경로]
-  1. routed: entity resolve 선행 → scope classifier(local/feature/global)
+[/search 명시 호출 경로]
+  1. entity resolve 선행 → scope classifier(local/feature/global)
   2. local: chunk retrieval 경로 호출
      - QN → RES → multi-rewrite → QEMB → HYB(chunks_v2 FTS5 + vector, 미가용 시 FTS/짧은 토큰 fallback) → RRF(+working overlay) → BOOST(+contradiction penalty) → low-confidence MEMFB → RG/RR → CTX
      - working overlay: 현재 세션 memory_tier=working, session_visible=true 후보를 query context 로 soft union
@@ -77,14 +77,14 @@ flowchart LR
       U["User prompt<br/>예: A 버튼 클릭 동작 알려줘"]
       A["Assistant response<br/>마지막 turn transcript"]
       E["External sources<br/>Slack / Notion URL<br/>sources.json keywords"]
-      M["Manual memory<br/>/memory remember"]
-      D["Document ingest<br/>raw docs for /retrieve"]
+      M["Manual memory<br/>/remember"]
+      D["Document ingest<br/>raw docs for search"]
     end
 
     %% ===== Center: foreground hook path =====
     subgraph FG["Foreground hook path"]
       direction TB
-      SS["SessionStart<br/>schema + project upsert<br/>soul.md prepend"]
+      SS["SessionStart<br/>schema + project upsert<br/>Guardrail.md prepend"]
       UPS["UserPromptSubmit<br/>redact + event archive"]
       MINI["Working mini-chunk<br/>raw_turn + deterministic surfaces"]
       GATE{"Need retrieval?"}
@@ -112,7 +112,7 @@ flowchart LR
       PROF[("plugin.log<br/>profile.jsonl<br/>status / trace")]
     end
 
-    subgraph RET["Explicit /retrieve path"]
+    subgraph RET["Explicit /search path"]
       direction TB
       QN["Normalize + multi-rewrite<br/>original / action / code"]
       RES["Entity resolve<br/>scope classifier"]
@@ -215,7 +215,7 @@ flowchart LR
 | Foreground hook path | 사용자 turn 을 막지 않는 동기 경량 경로 | `SS` · `UPS` · `MINI` · `GATE` · `PREFILL` · `PREPEND` · `STOP` |
 | Background model workers | background model CLI 를 쓰는 비동기 정리/추출/fetch 보조 경로 | `LF` · `FETCH` · `EXTCHUNK` · `EXTRACT` · `DURABLE` |
 | SQLite memory store | 실제 저장소와 운영 관측 파일 | `EVENTS` · `MEM` · `DOCS` · `PROF` |
-| Explicit /retrieve path | 사용자가 명시 호출할 때만 도는 검색 파이프라인 | `QN` · `RES` · `HYB` · `RRF` · `BOOST` · `MEMFB` · `RR` · `JSON` |
+| Explicit /search path | 사용자가 명시 호출할 때만 도는 검색 파이프라인 | `QN` · `RES` · `HYB` · `RRF` · `BOOST` · `MEMFB` · `RR` · `JSON` |
 | Generation | prepend 된 context 를 참고해 응답을 만드는 host 모델 경로 | `HOSTMODEL` · `OUT` |
 | Memory / retrieval format | 후보의 의미와 디버깅 trace 를 설명하는 context/provenance metadata | `F1` · `F2` · `F3` · `F4` · `F5` |
 
@@ -228,7 +228,7 @@ flowchart LR
 | schema 적용 | `sqlite3` | DB 초기화 누락, hook 은 silent exit |
 | project upsert | `sqlite3`, project root | memory project 분리 누락 |
 | `.imprint/` seed | `bash`, filesystem | 기본 파일만 누락, 기존 파일은 덮어쓰지 않음 |
-| `soul.md` emit | `cat` | persona prepend 누락 |
+| `Guardrail.md` emit | `cat` | Guardrail prepend 누락 |
 
 ### UserPromptSubmit
 
@@ -248,7 +248,7 @@ flowchart LR
 |---|---|---|
 | transcript parse | `python3`, `transcript_path` | 마지막 assistant 응답 archive 누락 |
 | `events.llm_response` 저장 | `sqlite3`, `uuidgen` | response archive 누락 |
-| response extract spawn | `python3`, host CLI | 자동 memory 추출 없음, `/memory remember` 로 수동 보강 가능 |
+| response extract spawn | `python3`, host CLI | 자동 memory 추출 없음, `/remember` 로 수동 보강 가능 |
 
 ## 외부 소스 lazy-fetch
 
@@ -265,9 +265,9 @@ flowchart LR
 | 실패 표시 | `fetch_failed`, `fetch_empty`, `skipped_by_cap` marker |
 | stale 표시 | `/memory list/show` 에서 `IMPRINT_STALE_DAYS` 기준 계산 |
 
-## /retrieve 경로
+## /search 경로
 
-> 표기 주의: 본 문서의 `/retrieve` 는 검색 파이프라인을 가리키는 약칭이며, **현재 슬래시 커맨드로 등록돼 있지 않습니다**(등록 스킬은 `hud`/`memory`/`setup` 뿐). 실제 호출은 셸 `bash scripts/imprint/retrieve.sh [--routed] [--json] "<질문>"` 또는 `python3 -m retrieval.cli` 입니다. 슬래시 커맨드화는 `skills/retrieve/SKILL.md` 추가가 필요합니다(HANDOFF 우선순위 2번). 자동 hook prefill 은 이 경로를 호출하지 않습니다(키워드 FTS 한정).
+공개 진입점은 `/search "<질문>"` 과 셸 wrapper `imprint search "<질문>"` 입니다. 내부 디버깅이나 JSON trace 확인이 필요할 때만 `bash scripts/imprint/retrieve.sh --routed --json "<질문>"` 또는 `python3 -m retrieval.cli` 를 직접 호출합니다.
 
 | scope | 동작 |
 |---|---|
@@ -277,19 +277,62 @@ flowchart LR
 
 `chunk_retrieve` 는 `chunks_v2` 후보가 있어도 현재 세션 working mini-chunk 를 query context 로 soft union 합니다. `chunks_v2` 후보가 없거나 top1 score 가 낮거나 working-only/entity-mismatch 로 저신뢰이면 `memory_chunks` fallback 을 탑니다. fallback 은 `source_status` marker 와 working chunk 를 제외합니다.
 
-현재 vector 검색 범위는 `chunks_v2` 와 `summaries` 입니다. persistent `memory_chunks` 는 bridge 로 `chunks_v2` 에 복제되지만, embedding BLOB 이 없는 bridge row 는 FTS5 후보로만 동작합니다. `sentence-transformers` 설치 후 `bridge-memory <project_id> --all --embed` 로 기존 bridge row 를 채우거나, 새 저장 시 `IMPRINT_MEMORY_BRIDGE_EMBEDDING=1` 을 켜야 자동 저장 memory 도 vector path 에 참여합니다.
+현재 vector 검색 범위는 `chunks_v2` 와 `summaries` 입니다. persistent `memory_chunks` 는 bridge 로 `chunks_v2` 에 복제되지만, embedding BLOB 이 없는 bridge row 는 FTS5 후보로만 동작합니다. `sentence-transformers` 설치 후 `bridge-memory <project_id> --all --embed` 로 기존 bridge row 를 채우거나, 새 저장 시 `IMPRINT_MEMORY_BRIDGE_EMBEDDING=1` 을 켜야 persistent memory 도 vector path 에 참여합니다.
 
 confirmed contradiction 에 연결된 chunk 는 BOOST 단계에서 강하게 감점합니다. candidate contradiction 은 약하게 감점하고, routed output 의 conflict 섹션은 기존처럼 유지합니다.
 
+## SQLite 테이블 역할
+
+스키마는 `scripts/imprint/lib/schema.sql` 이 기준입니다. `SessionStart` 때 idempotent 하게 적용되며, 기본 DB 는 `~/.imprint/app.sqlite` 입니다.
+
+### Core archive / memory
+
+| 테이블 | 담당 역할 | 주요 writer | 주요 reader |
+|---|---|---|---|
+| `projects` | project root 를 안정적인 `project_id` 로 묶는 최상위 scope | `session-start.sh`, `common.sh` | 모든 hook/검색 경로 |
+| `conversations` | host 대화 단위 메타데이터. 현재 핵심 경로에서는 보조적입니다. | 향후 conversation 연동 | `events.conversation_id` 참조 |
+| `events` | user prompt 와 assistant response 의 redacted raw archive. `noise` flag 로 짧은 backchannel 을 구분합니다. | `user-prompt-submit.sh`, `stop.sh` | observability, provenance, 향후 raw audit |
+| `memory_chunks` | 기본 사용자 기억 저장소. working raw turn, `/remember`, Stop extract, Slack/Notion lazy-fetch chunk, `source_status` marker 가 들어갑니다. | `ingestion.py`, `memory.sh`, `remember.sh` | prefill, `/memory`, `/search` fallback, bridge |
+
+`events` 는 원문 archive 이고, `memory_chunks` 는 재사용 가능한 기억입니다. `/search` 의 의미 검색 대상은 raw events 전체가 아니라 `memory_chunks` 에서 선별·추출된 persistent memory 를 bridge 한 `chunks_v2` 입니다.
+
+### FTS mirror
+
+| 테이블 | 담당 역할 | 동기화 방식 |
+|---|---|---|
+| `events_fts` | `events.text_clean` 의 FTS5 trigram 인덱스. 현재 사용자-facing 검색 경로에는 직접 노출하지 않습니다. | `events_ai`, `events_ad` trigger |
+| `memory_chunks_fts` | `memory_chunks.text` 의 FTS5 trigram 인덱스. `/memory search`, prefill, `/search` fallback 에 사용합니다. | `chunks_ai`, `chunks_ad`, `chunks_au` trigger |
+| `chunks_v2_fts` | `chunks_v2.retrieval_text` 의 FTS5 trigram 인덱스. `/search` 의 chunk BM25 lane 입니다. | `chunks_v2_ai`, `chunks_v2_ad`, `chunks_v2_au` trigger |
+| `summaries_fts` | `summaries.retrieval_text` 의 FTS5 trigram 인덱스. feature/global routed search 에 사용합니다. | `summaries_ai`, `summaries_ad`, `summaries_au` trigger |
+
+### Retrieval v2
+
+| 테이블 | 담당 역할 | 비고 |
+|---|---|---|
+| `documents` | 외부/명시 문서 원문과 synthetic memory document 를 저장합니다. `source_ref='memory_chunks:<id>'` 이면 bridge row 입니다. | Notion/Slack/PRD/file, memory bridge 의 원천 문서 |
+| `chunks_v2` | `/search` 의 주 검색 단위. `retrieval_text`, optional `embedding`, type, validity, provenance metadata 를 가집니다. | vector + FTS hybrid 대상 |
+| `summaries` | feature/document/project 단위 요약 검색 대상입니다. routed search 가 질문 범위에 맞춰 먼저 훑습니다. | optional embedding 포함 |
+| `summary_links` | summary 가 대표하는 하위 summary/chunk 연결입니다. global/feature 결과에서 근거 chunk 로 drill-down 할 때 씁니다. | parent summary → child summary/chunk |
+
+### Entity / conflict / queue
+
+| 테이블 | 담당 역할 | 비고 |
+|---|---|---|
+| `entities` | feature, screen, UI element 같은 canonical entity 를 저장합니다. | entity resolve 의 기준점 |
+| `entity_aliases` | 같은 entity 를 부르는 alias 와 confidence/status 를 저장합니다. | query resolve 와 review queue 성격 |
+| `chunk_entities` | `chunks_v2` 와 entity mention 의 다대다 연결입니다. | entity boost, contradiction scope 에 사용 |
+| `contradictions` | 같은 entity/scope 에서 충돌 가능성이 있는 chunk pair 판정 캐시입니다. | candidate 는 약한 감점, confirmed 는 강한 감점 |
+| `ingest_queue` | summary/NER/contradiction 같은 후속 작업 queue 입니다. 현재 `memory_chunks` 직접 저장 경로는 queue 를 거치지 않고 bridge 까지만 수행합니다. | priority 낮을수록 먼저 처리 |
+
 ## 운영 정책 수치
 
-자동 prefill gate 는 결정적 rule 기반입니다. `noise=1`, 짧은 backchannel, 단순 확인/감사/커밋 요청은 retrieved-memory search 를 생략하고, `어떻게/왜/어디/동작/정리/찾아줘` 계열 표현이나 UI/code/source 키워드가 있으면 retrieved/external context 검색을 엽니다. gate 결과는 working chunk metadata 의 `need_retrieval`, `retrieval_reason` 과 `IMPRINT_PROFILE=1` 의 `cmd_prefill` record 에 남습니다.
+UserPromptSubmit gate 는 결정적 rule 기반입니다. `noise=1`, 짧은 backchannel, 단순 확인/감사/커밋 요청은 retrieved-memory search 를 생략하고, `어떻게/왜/어디/동작/정리/찾아줘` 계열 표현이나 UI/code/source 키워드가 있으면 retrieved/external context 검색을 엽니다. gate 결과는 working chunk metadata 의 `need_retrieval`, `retrieval_reason` 과 `IMPRINT_PROFILE=1` 의 `cmd_prefill` record 에 남습니다.
 
 ### Foreground prefill / working memory
 
 | 변수 | 기본값 | 수정 위치 | 바꾸면 달라지는 것 |
 |---|---:|---|---|
-| `IMPRINT_WORKING_CONTEXT_LIMIT` | `4` | env | 자동 prefill 의 query/session context 최대 개수 |
+| `IMPRINT_WORKING_CONTEXT_LIMIT` | `4` | env | query/session context 최대 개수 |
 | `IMPRINT_PREFILL_LIMIT` | `8` | env | 자동 `[Project memory context]` 전체 chunk 상한 |
 | `IMPRINT_WORKING_TTL_HOURS` | `24` | env | working raw_turn 보관 시간 |
 | `IMPRINT_WORKING_MAX_PER_SESSION` | `20` | env | session 별 working raw_turn 최신 row 제한 |
@@ -325,7 +368,7 @@ confirmed contradiction 에 연결된 chunk 는 BOOST 단계에서 강하게 감
 | `BOOST_CURRENT` | `0.15` | `retrieve.py` | current chunk 가산점 |
 | `BOOST_ENTITY` | `0.10` | `retrieve.py` | resolved entity match 가산점 |
 | `BOOST_RECENT` | `0.05` | `retrieve.py` | 최근 source_updated_at 가산점 |
-| `WORKING_OVERLAY_LIMIT` | `4` | `retrieve.py` | `/retrieve` 에 soft union 할 query context 수 |
+| `WORKING_OVERLAY_LIMIT` | `4` | `retrieve.py` | `/search` 에 soft union 할 query context 수 |
 | `WORKING_OVERLAY_SCORE` | `0.12` | `retrieve.py` | query context 의 고정 점수 |
 | `LOW_CONFIDENCE_TOP1` | `0.13` | `retrieve.py` | top1 이 낮을 때 `memory_chunks` fallback open |
 
@@ -386,11 +429,11 @@ confirmed contradiction 에 연결된 chunk 는 BOOST 단계에서 강하게 감
 
 `retrieve_json` / `routed_json` 은 `trace.query_surfaces`, `fallback_reasons`, `rerank_gate_reason` 과 candidate 별 `context_section`, `lane`, `evidence_level`, `grounded`, `source_uri`, `text_hash`, `penalties` 를 노출합니다. `context_section`/`lane` 은 `query_context`, `retrieved_memory`, `external_source_context` 를 사용하며, `lane` 은 이전 JSON 소비자를 위한 호환 필드입니다. `evidence_level` 은 기존 DB 호환을 위한 provenance field 입니다. 이 값은 context 품질 회고와 gate/MEMFB/rerank threshold 튜닝에 사용합니다.
 
-튜닝할 때는 env 로 조정 가능한 값부터 바꾸고, `retrieve.py`/`routing.py` 의 코드 상수는 테스트와 함께 PR 로 변경합니다. 변경 후에는 `/retrieve --json` 의 `trace` 와 `IMPRINT_PROFILE=1` 의 `retrieve_done`, `cmd_prefill` record 를 같이 확인합니다.
+튜닝할 때는 env 로 조정 가능한 값부터 바꾸고, `retrieve.py`/`routing.py` 의 코드 상수는 테스트와 함께 PR 로 변경합니다. 변경 후에는 내부 JSON trace 와 `IMPRINT_PROFILE=1` 의 `retrieve_done`, `cmd_prefill` record 를 같이 확인합니다.
 
 ## latency budget
 
-UPS hook 자동 경로는 `LOG → ROUTE → PREFILL → CTX0` 만 실행해 < 50 ms 를 목표로 합니다. 아래 budget 은 사용자가 `/retrieve` 를 명시 호출했을 때 기준입니다.
+UPS hook 자동 경로는 `LOG → ROUTE → PREFILL → CTX0` 만 실행해 < 50 ms 를 목표로 합니다. 아래 budget 은 사용자가 `/search` 를 명시 호출했을 때 기준입니다.
 
 | 케이스 | budget | 구성 |
 |---|---|---|
@@ -438,7 +481,7 @@ UPS hook 자동 경로는 `LOG → ROUTE → PREFILL → CTX0` 만 실행해 < 5
 
 | 경로 | 내용 |
 |---|---|
-| `<project>/.imprint/soul.md` | 세션 시작·압축 후 prepend 되는 project persona |
+| `<project>/.imprint/Guardrail.md` | 세션 시작·압축 후 prepend 되는 project Guardrail |
 | `<project>/.imprint/UserPromptSubmit.md` | keyword 기반 routing advisory rule |
 | `<project>/.imprint/sources.json` | Slack/Notion lazy-fetch 대상 |
 | `~/.imprint/app.sqlite` | events, memory_chunks, retrieval v2 tables |
@@ -498,12 +541,12 @@ flowchart TB
     PM -. next turn candidate .-> PF
 ```
 
-### Explicit Retrieve Sequence
+### Explicit Search Sequence
 
 ```mermaid
 %%{init: {'flowchart': {'useMaxWidth': true, 'rankSpacing': 44, 'nodeSpacing': 34}, 'theme': 'default'}}%%
 flowchart TB
-    Q["/retrieve --routed<br/>A 버튼 클릭 동작 알려줘"]
+    Q["/search<br/>A 버튼 클릭 동작 알려줘"]
     RES["1. Entity / scope resolve<br/>local / feature / global"]
     SURF["2. Normalize + multi-rewrite<br/>original / action / code"]
 

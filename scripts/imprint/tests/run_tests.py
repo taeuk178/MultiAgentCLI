@@ -290,6 +290,22 @@ def _retrieve_plain_json(env: dict, query: str) -> dict:
     return json.loads(proc.stdout)
 
 
+def _search_script_output(env: dict, query: str, cwd: str) -> tuple[int, str, str]:
+    proc = subprocess.run(
+        ["bash", str(ROOT / "scripts" / "imprint" / "search.sh"), query],
+        env=env, capture_output=True, text=True, cwd=cwd,
+    )
+    return proc.returncode, proc.stdout, proc.stderr
+
+
+def _remember_script_output(env: dict, args: list[str], cwd: str) -> tuple[int, str, str]:
+    proc = subprocess.run(
+        ["bash", str(ROOT / "scripts" / "imprint" / "remember.sh"), *args],
+        env=env, capture_output=True, text=True, cwd=cwd,
+    )
+    return proc.returncode, proc.stdout, proc.stderr
+
+
 def tc_03_retrieve_short(env: dict, home: str, case: CaseResult) -> None:
     out = _retrieve_json(env, "A 버튼 클릭 동작 알려줘")
     scope = (out.get("scope") or {}).get("scope")
@@ -758,7 +774,7 @@ def tc_13_source_noise_profile(env: dict, home: str, case: CaseResult) -> None:
 
 
 def tc_14_retrieve_memory_fallback(env: dict, home: str, case: CaseResult) -> None:
-    """chunks_v2 결과가 없으면 /retrieve 가 memory_chunks 를 read-only fallback."""
+    """chunks_v2 결과가 없으면 /search 가 memory_chunks 를 read-only fallback."""
     now = "2026-05-16T00:00:00Z"
     conn = sqlite3.connect(str(Path(home) / "app.sqlite"))
     try:
@@ -923,8 +939,171 @@ def tc_20_memory_bridge_backfill(env: dict, home: str, case: CaseResult) -> None
     )
 
 
+def tc_21_search_skill_dispatcher(env: dict, home: str, case: CaseResult) -> None:
+    """User-facing /search dispatcher reaches the hybrid retrieval path."""
+    project_root = tempfile.mkdtemp(prefix="imprint-search-project-")
+    pid_proc = subprocess.run(
+        ["bash", "-lc", f"source {ROOT / 'scripts' / 'imprint' / 'lib' / 'common.sh'}; project_id"],
+        env=env, capture_output=True, text=True, cwd=project_root,
+    )
+    pid = pid_proc.stdout.strip()
+    now = "2026-05-23T00:00:00Z"
+
+    conn = sqlite3.connect(str(Path(home) / "app.sqlite"))
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO projects VALUES (?, ?, ?, ?, ?)",
+            (pid, project_root, "search-fixture", now, now),
+        )
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO memory_chunks
+              (id, project_id, source_event_id, chunk_type, text, metadata_json, created_at, pinned)
+            VALUES (?, ?, NULL, ?, ?, ?, ?, 0)
+            """,
+            (
+                "tc21-search-memory",
+                pid,
+                "decision",
+                "아틀라스 검색 스킬은 /search 이름으로 hybrid retrieval 엔진을 호출한다.",
+                "{}",
+                now,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    rc, out, err = _search_script_output(env, "아틀라스 검색 스킬", project_root)
+    checks = {
+        "script_ok": pid_proc.returncode == 0 and bool(pid) and rc == 0,
+        "memory_fallback": "hybrid retrieval 엔진" in out,
+    }
+    case.metrics = checks | {"stdout_len": len(out), "error": err[:120]}
+    case.passed = all(checks.values())
+    case.detail = (
+        f"script={checks['script_ok']} fallback={checks['memory_fallback']} "
+        f"stdout={len(out)}"
+    )
+
+
+def tc_22_remember_skill_dispatcher(env: dict, home: str, case: CaseResult) -> None:
+    """User-facing /remember dispatcher stores through memory_chunks + bridge."""
+    project_root = tempfile.mkdtemp(prefix="imprint-remember-project-")
+    pid_proc = subprocess.run(
+        ["bash", "-lc", f"source {ROOT / 'scripts' / 'imprint' / 'lib' / 'common.sh'}; project_id"],
+        env=env, capture_output=True, text=True, cwd=project_root,
+    )
+    pid = pid_proc.stdout.strip()
+    now = "2026-05-23T00:00:00Z"
+    conn = sqlite3.connect(str(Path(home) / "app.sqlite"))
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO projects VALUES (?, ?, ?, ?, ?)",
+            (pid, project_root, "remember-fixture", now, now),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    rc, out, err = _remember_script_output(
+        env,
+        ["아틀라스 저장 스킬은 /remember 이름으로 memory_chunks에 저장한다.", "--require"],
+        project_root,
+    )
+    rc_bad, _, err_bad = _remember_script_output(
+        env,
+        ["오타 옵션은 저장되면 안 된다.", "--row"],
+        project_root,
+    )
+    conn = sqlite3.connect(str(Path(home) / "app.sqlite"))
+    try:
+        rows = conn.execute(
+            """
+            SELECT id, chunk_type, text, pinned, metadata_json
+            FROM memory_chunks
+            WHERE project_id = ? AND text LIKE '%/remember 이름%'
+            """,
+            (pid,),
+        ).fetchall()
+        bridge_rows = conn.execute(
+            """
+            SELECT d.source_ref, c.raw_chunk_type, c.normalized_chunk_type
+            FROM documents d
+            JOIN chunks_v2 c ON c.document_id = d.id
+            WHERE d.project_id = ? AND d.source_ref LIKE 'memory_chunks:%'
+            """,
+            (pid,),
+        ).fetchall()
+        bad_rows = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM memory_chunks
+            WHERE project_id = ? AND text LIKE '%오타 옵션%'
+            """,
+            (pid,),
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    log_text = (Path(home) / "plugin.log").read_text() if (Path(home) / "plugin.log").exists() else ""
+
+    checks = {
+        "script_ok": pid_proc.returncode == 0 and bool(pid) and rc == 0 and "remembered" in out,
+        "stored": len(rows) == 1
+        and rows[0][1] == "note"
+        and rows[0][3] == 1
+        and json.loads(rows[0][4]).get("importance") == "require",
+        "bridged": len(bridge_rows) == 1 and bridge_rows[0][1] == "note",
+        "typo_rejected": rc_bad == 2
+        and "unknown option --row" in err_bad
+        and bad_rows == 0
+        and "remember unknown option: --row" in log_text,
+    }
+    case.metrics = checks | {
+        "rows": len(rows),
+        "bridge_rows": len(bridge_rows),
+        "bad_rows": bad_rows,
+        "error": (err or err_bad)[:120],
+    }
+    case.passed = all(checks.values())
+    case.detail = (
+        f"script={checks['script_ok']} stored={checks['stored']} "
+        f"bridged={checks['bridged']} typo_rejected={checks['typo_rejected']}"
+    )
+
+
+def tc_23_setup_vector_logging(env: dict, home: str, case: CaseResult) -> None:
+    """Vector setup reports Korean progress and rejects typo options with logs."""
+    rc, out, err = run_cmd(env, ["bash", "scripts/imprint/setup.sh", "vector", "--status"])
+    rc_bad, _, err_bad = run_cmd(env, ["bash", "scripts/imprint/setup.sh", "vector", "--bogus"])
+    log_text = (Path(home) / "plugin.log").read_text() if (Path(home) / "plugin.log").exists() else ""
+
+    checks = {
+        "status_ok": rc == 0,
+        "stdout_progress": "[imprint setup] status 시작" in out
+        and "[imprint setup] status 완료" in out
+        and "vector_ready:" in out,
+        "log_progress": "setup: status 시작" in log_text
+        and "setup: status 완료" in log_text,
+        "typo_rejected": rc_bad == 2
+        and "알 수 없는 vector 옵션: --bogus" in err_bad
+        and "ERROR: setup: 알 수 없는 vector 옵션: --bogus" in log_text,
+    }
+    case.metrics = checks | {
+        "status_rc": rc,
+        "bad_rc": rc_bad,
+        "stdout": out[:160],
+        "stderr": (err or err_bad)[:160],
+    }
+    case.passed = all(checks.values())
+    case.detail = (
+        f"status={checks['status_ok']} progress={checks['stdout_progress']} "
+        f"log={checks['log_progress']} typo={checks['typo_rejected']}"
+    )
+
+
 def tc_15_first_turn_working_overlay(env: dict, home: str, case: CaseResult) -> None:
-    """UserPromptSubmit sync mini-chunk + prefill/retrieve working overlay."""
+    """UserPromptSubmit sync mini-chunk + prefill/search working overlay."""
     env_h = hook_env(env)
     env_h["IMPRINT_CLAUDE_BIN"] = make_fake_claude(home)
     rc, _, err = run_cmd(env_h, ["bash", "scripts/imprint/session-start.sh"])
@@ -1358,7 +1537,7 @@ with db() as conn:
 
 
 def tc_18_codex_hook_io(env: dict, home: str, case: CaseResult) -> None:
-    """Codex hook JSON output + last_assistant_message Stop 경로."""
+    """Codex hook JSON output + compact Guardrail + last_assistant_message Stop 경로."""
     env_h = codex_hook_env(env)
     env_h["IMPRINT_CODEX_BIN"] = make_fake_codex(home)
 
@@ -1371,6 +1550,40 @@ def tc_18_codex_hook_io(env: dict, home: str, case: CaseResult) -> None:
         case.passed = False
         case.detail = f"session-start rc={rc} err={err[:120]}"
         return
+
+    rc, compact_out, err = run_cmd(
+        env_h,
+        ["bash", "scripts/imprint/session-start.sh"],
+        input_text=json.dumps(
+            {"hook_event_name": "SessionStart", "matcher": "compact"},
+            ensure_ascii=False,
+        ),
+    )
+    if rc != 0:
+        case.passed = False
+        case.detail = f"compact session-start rc={rc} err={err[:120]}"
+        return
+
+    with tempfile.TemporaryDirectory(prefix="imprint-guardrail-project-") as project_tmp:
+        legacy_dir = Path(project_tmp) / ".imprint"
+        legacy_dir.mkdir(parents=True, exist_ok=True)
+        (legacy_dir / "soul.md").write_text("legacy guardrail 문구", encoding="utf-8")
+        env_legacy = dict(env_h)
+        env_legacy.pop("IMPRINT_NO_SEED", None)
+        legacy_proc = subprocess.run(
+            ["bash", str(ROOT / "scripts" / "imprint" / "session-start.sh")],
+            input=json.dumps({"hook_event_name": "SessionStart"}, ensure_ascii=False),
+            env=env_legacy,
+            capture_output=True,
+            text=True,
+            cwd=project_tmp,
+        )
+        legacy_guardrail = legacy_dir / "Guardrail.md"
+        legacy_migrated = (
+            legacy_proc.returncode == 0
+            and legacy_guardrail.exists()
+            and legacy_guardrail.read_text(encoding="utf-8") == "legacy guardrail 문구"
+        )
 
     ups_input = json.dumps(
         {
@@ -1403,12 +1616,16 @@ def tc_18_codex_hook_io(env: dict, home: str, case: CaseResult) -> None:
         session_json = json.loads(session_out)
         ups_json = json.loads(ups_out)
         stop_json = json.loads(stop_out)
+        legacy_json = json.loads(legacy_proc.stdout)
     except json.JSONDecodeError as exc:
         case.passed = False
         case.detail = f"json parse failed: {exc}"
         return
 
     session_ctx = session_json.get("hookSpecificOutput", {}).get("additionalContext", "")
+    compact_json = json.loads(compact_out)
+    compact_ctx = compact_json.get("hookSpecificOutput", {}).get("additionalContext", "")
+    legacy_ctx = legacy_json.get("hookSpecificOutput", {}).get("additionalContext", "")
     ups_ctx = ups_json.get("hookSpecificOutput", {}).get("additionalContext", "")
     rows = db_query(
         home,
@@ -1418,19 +1635,24 @@ def tc_18_codex_hook_io(env: dict, home: str, case: CaseResult) -> None:
     )
     case.metrics = {
         "session_json": bool(session_ctx),
+        "compact_guardrail": bool(compact_ctx),
+        "legacy_guardrail": legacy_migrated and "legacy guardrail 문구" in legacy_ctx,
         "ups_json": bool(ups_ctx),
         "stop_continue": stop_json.get("continue"),
         "llm_response": len(rows),
     }
     case.passed = (
-        "[imprint soul" in session_ctx
+        "[imprint Guardrail" in session_ctx
+        and "[imprint Guardrail" in compact_ctx
+        and case.metrics["legacy_guardrail"]
         and "[Project memory context]" in ups_ctx
         and stop_json.get("continue") is True
         and len(rows) == 1
         and "테스트 모드" in rows[0][1]
     )
     case.detail = (
-        f"session_json={bool(session_ctx)} ups_json={bool(ups_ctx)} "
+        f"session_json={bool(session_ctx)} compact={bool(compact_ctx)} "
+        f"legacy={case.metrics['legacy_guardrail']} ups_json={bool(ups_ctx)} "
         f"stop_continue={stop_json.get('continue')} llm_response={len(rows)}"
     )
 
@@ -1537,9 +1759,9 @@ def tc_19_legacy_db_migration(env: dict, home: str, case: CaseResult) -> None:
 CASES: list[tuple[str, str, callable]] = [
     ("TC-01", "Save 짧은 텍스트", tc_01_save_short),
     ("TC-02", "Save 긴 문서 (다중 chunk)", tc_02_save_long),
-    ("TC-03", "Retrieve 짧은 쿼리 (local)", tc_03_retrieve_short),
-    ("TC-04", "Retrieve 긴 쿼리 (feature)", tc_04_retrieve_feature),
-    ("TC-05", "Retrieve global 쿼리", tc_05_retrieve_global),
+    ("TC-03", "Search 짧은 쿼리 (local)", tc_03_retrieve_short),
+    ("TC-04", "Search 긴 쿼리 (feature)", tc_04_retrieve_feature),
+    ("TC-05", "Search global 쿼리", tc_05_retrieve_global),
     ("TC-06", "Entity alias 매칭", tc_06_entity_alias),
     ("TC-07", "Document 갱신 + supersede", tc_07_supersede),
     ("TC-08", "Contradiction 감지 (model judge)", tc_08_contradiction_llm),
@@ -1548,13 +1770,16 @@ CASES: list[tuple[str, str, callable]] = [
     ("TC-11", "Hook memory loop + redaction", tc_11_hook_memory_loop),
     ("TC-12", "Memory search/list/inject fixture", tc_12_memory_search_fixture),
     ("TC-13", "Source status + noise + profile", tc_13_source_noise_profile),
-    ("TC-14", "Retrieve memory_chunks fallback", tc_14_retrieve_memory_fallback),
+    ("TC-14", "Search memory_chunks fallback", tc_14_retrieve_memory_fallback),
     ("TC-15", "First-turn working overlay", tc_15_first_turn_working_overlay),
     ("TC-16", "RAG context section policy", tc_16_context_section_policy),
     ("TC-17", "Observability dedup status", tc_17_observability_dedup_status),
     ("TC-18", "Codex hook JSON I/O", tc_18_codex_hook_io),
     ("TC-19", "Legacy DB 자동 migration", tc_19_legacy_db_migration),
     ("TC-20", "memory_chunks bridge/backfill", tc_20_memory_bridge_backfill),
+    ("TC-21", "Search skill dispatcher", tc_21_search_skill_dispatcher),
+    ("TC-22", "Remember skill dispatcher", tc_22_remember_skill_dispatcher),
+    ("TC-23", "Setup vector progress logging", tc_23_setup_vector_logging),
 ]
 
 

@@ -2,7 +2,7 @@
 # Memory CLI dispatcher.
 # Usage:
 #   memory.sh search <query>
-#   memory.sh remember <text> [--type <chunk_type>] [--pin]
+#   memory.sh remember <text> [--type <chunk_type>] [--require|--high|--middle|--low] [--pin]
 #   memory.sh inject <chunk-id>
 #   memory.sh pin <chunk-id>
 #   memory.sh unpin <chunk-id>
@@ -18,7 +18,8 @@ usage() {
 imprint memory <subcommand> [args]
 
   search <query>             FTS search across this project's memory
-  remember <text>            Store an explicit chunk (--type <t>, --pin, --redact)
+  remember <text>            Store an explicit chunk
+                             (--require|--high|--middle|--low, --type <t>, --pin, --redact)
   inject <id>                Print a chunk's text for context injection
   show <id> [--json]         Pretty-print a chunk's text + metadata (debug)
   stats [--all] [--json]     Memory 분포·통계 요약(현 프로젝트 또는 전 프로젝트)
@@ -127,13 +128,19 @@ PY
 cmd_remember() {
   local text=""
   local chunk_type="note"
+  local importance="middle"
   local pinned=0
   local redact=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --type)   chunk_type="${2:-note}"; shift 2 ;;
+      --require) importance="require"; pinned=1; shift ;;
+      --high)   importance="high"; pinned=1; shift ;;
+      --middle) importance="middle"; shift ;;
+      --low)    importance="low"; shift ;;
       --pin)    pinned=1; shift ;;
       --redact) redact=1; shift ;;
+      --*)      log_error "remember unknown option: $1"; echo "remember: unknown option $1" >&2; exit 2 ;;
       *)        text+="${text:+ }$1"; shift ;;
     esac
   done
@@ -141,12 +148,12 @@ cmd_remember() {
     echo "remember requires <text>" >&2
     exit 1
   fi
-  local metadata="{}"
+  local metadata="{\"importance\":\"$importance\"}"
   local redacted_text
   redacted_text=$(redact_text "$text")
   if (( redact )) || [[ "$redacted_text" != "$text" ]]; then
     text="$redacted_text"
-    metadata='{"redacted":true}'
+    metadata="{\"importance\":\"$importance\",\"redacted\":true}"
   else
     text="$redacted_text"
   fi
@@ -164,7 +171,7 @@ cmd_remember() {
     (cd "$SCRIPT_DIR/lib" && python3 -m retrieval.cli bridge-memory "$pid" "$id" >/dev/null) \
       2>>"$IMPRINT_LOG" || log_error "memory bridge failed id=$id"
   fi
-  echo "remembered $id ($chunk_type, pinned=$pinned, redacted=$redact)"
+  echo "remembered $id ($chunk_type, importance=$importance, pinned=$pinned, redacted=$redact)"
 }
 
 cmd_inject() {

@@ -1,9 +1,9 @@
 #!/bin/bash
 # SessionStart hook:
 #   1) ensure DB exists and schema is current
-#   2) seed <project>/.imprint/ with editable defaults (soul.md, UserPromptSubmit.md)
+#   2) seed <project>/.imprint/ with editable defaults (Guardrail.md, UserPromptSubmit.md)
 #      from plugin defaults — never overwriting user edits
-#   3) emit soul.md content to stdout so it gets prepended to the session context
+#   3) emit Guardrail.md content to stdout so it gets prepended to the session context
 #
 # Output: stdout is appended to the session context. Codex receives JSON
 # hookSpecificOutput.additionalContext. stderr is silent.
@@ -11,7 +11,7 @@
 set -euo pipefail
 
 # 재귀 가드: ingestion.py가 spawn한 background model 서브프로세스에서 SessionStart가
-# 다시 발동해 schema 재적용·soul.md emit이 일어나는 걸 막는다.
+# 다시 발동해 schema 재적용·Guardrail.md emit이 일어나는 걸 막는다.
 if [[ "${IMPRINT_BYPASS_HOOKS:-0}" == "1" ]]; then
   exit 0
 fi
@@ -75,8 +75,17 @@ if [[ "${IMPRINT_NO_SEED:-0}" != "1" && -d "$DEFAULTS_DIR" ]]; then
   MA_DIR="$ROOT/.imprint"
   mkdir -p "$MA_DIR" 2>/dev/null || true
 
-  # Top-level configs: soul.md, UserPromptSubmit.md, sources.json
-  for fname in soul.md UserPromptSubmit.md sources.json; do
+  # Backward-compatible rename: preserve a user-edited soul.md by copying it
+  # once into Guardrail.md before default seeding can create Guardrail.md.
+  # Do not remove the legacy file automatically.
+  if [[ ! -e "$MA_DIR/Guardrail.md" && -f "$MA_DIR/soul.md" ]]; then
+    cp "$MA_DIR/soul.md" "$MA_DIR/Guardrail.md" 2>>"$IMPRINT_LOG" \
+      && log_info "migrated $MA_DIR/soul.md to $MA_DIR/Guardrail.md" \
+      || log_error "failed to migrate $MA_DIR/soul.md"
+  fi
+
+  # Top-level configs: Guardrail.md, UserPromptSubmit.md, sources.json
+  for fname in Guardrail.md UserPromptSubmit.md sources.json; do
     src="$DEFAULTS_DIR/$fname"
     dst="$MA_DIR/$fname"
     if [[ -f "$src" && ! -e "$dst" ]]; then
@@ -102,26 +111,29 @@ if [[ "${IMPRINT_NO_SEED:-0}" != "1" && -d "$DEFAULTS_DIR" ]]; then
   fi
 fi
 
-# --- 3. Emit soul.md as session-context prepend -----------------------------
+# --- 3. Emit Guardrail.md as session-context prepend -------------------------
 # Order of preference:
-#   <project>/.imprint/soul.md   (user-editable, project-local)
-#   $DEFAULTS_DIR/soul.md           (plugin default fallback)
+#   <project>/.imprint/Guardrail.md   (user-editable, project-local)
+#   <project>/.imprint/soul.md        (legacy fallback)
+#   $DEFAULTS_DIR/Guardrail.md        (plugin default fallback)
 
-SOUL=""
-if [[ -f "$ROOT/.imprint/soul.md" ]]; then
-  SOUL="$ROOT/.imprint/soul.md"
-elif [[ -f "$DEFAULTS_DIR/soul.md" ]]; then
-  SOUL="$DEFAULTS_DIR/soul.md"
+GUARDRAIL=""
+if [[ -f "$ROOT/.imprint/Guardrail.md" ]]; then
+  GUARDRAIL="$ROOT/.imprint/Guardrail.md"
+elif [[ -f "$ROOT/.imprint/soul.md" ]]; then
+  GUARDRAIL="$ROOT/.imprint/soul.md"
+elif [[ -f "$DEFAULTS_DIR/Guardrail.md" ]]; then
+  GUARDRAIL="$DEFAULTS_DIR/Guardrail.md"
 fi
 
-if [[ -n "$SOUL" ]]; then
-  SOUL_CONTEXT=$(
-    printf '\n[imprint soul — %s]\n' "$(basename "$SOUL")"
-    cat "$SOUL"
+if [[ -n "$GUARDRAIL" ]]; then
+  GUARDRAIL_CONTEXT=$(
+    printf '\n[imprint Guardrail — %s]\n' "$(basename "$GUARDRAIL")"
+    cat "$GUARDRAIL"
     printf '\n'
   )
-  imprint_emit_context "SessionStart" "$SOUL_CONTEXT"
+  imprint_emit_context "SessionStart" "$GUARDRAIL_CONTEXT"
 fi
 
-log_info "session-start ok project=${PID:-unknown} root=$ROOT soul=${SOUL:-none}"
+log_info "session-start ok project=${PID:-unknown} root=$ROOT guardrail=${GUARDRAIL:-none}"
 exit 0

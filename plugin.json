@@ -11,9 +11,11 @@
     "gpt",
     "plugin",
     "memory",
+    "remember",
     "context",
     "slack",
     "notion",
+    "search",
     "setup",
     "vector",
     "rag"
@@ -31,7 +33,9 @@
     ],
     "defaultPrompt": [
       "Show recent project memory",
+      "Remember this project decision",
       "Search memory for this feature",
+      "Search project context with evidence",
       "Explain retrieved context",
       "Set up vector search"
     ],
