@@ -1,6 +1,6 @@
 ---
 name: search
-description: Search project context with imprint hybrid retrieval. Use when the user asks to /search, semantically search remembered project history, inspect retrieval evidence, or find broader implementation context beyond simple /memory keyword search.
+description: imprint hybrid retrieval로 프로젝트 맥락을 검색합니다. /search 요청, 저장된 구현 히스토리 의미 검색, retrieval 근거 확인, 단순 /memory 키워드 검색보다 넓은 구현 맥락 조회에 사용합니다.
 level: 3
 ---
 

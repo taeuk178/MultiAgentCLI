@@ -1,6 +1,6 @@
 ---
 name: setup
-description: Set up imprint runtime features such as optional vector search. Use when the user asks to install dependencies, enable semantic/vector RAG, warm up embedding models, backfill memory embeddings, or check imprint setup status.
+description: imprint 런타임 기능을 설정합니다. 선택 벡터 검색 의존성 설치, semantic/vector RAG 활성화, embedding 모델 warmup, 기존 기억 embedding backfill, setup 상태 확인에 사용합니다.
 level: 2
 ---
 

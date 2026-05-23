@@ -1,6 +1,6 @@
 ---
 name: hud
-description: Customize the imprint statusline HUD via natural language. Use when the user asks to change HUD fields (e.g. "HUD에 cost 추가", "HUD 5h만 보이게", "HUD 켜줘", "HUD 어떤 옵션 있어?"). Translates the request into hud-setup.sh commands; asks for clarification with AskUserQuestion only when truly ambiguous.
+description: 자연어로 imprint statusline HUD를 설정합니다. "HUD에 cost 추가", "HUD 5h만 보이게", "HUD 켜줘", "HUD 어떤 옵션 있어?"처럼 HUD 필드 변경을 요청할 때 사용하며, 요청을 hud-setup.sh 명령으로 변환합니다.
 level: 2
 ---
 

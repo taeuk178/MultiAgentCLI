@@ -10,6 +10,23 @@
 - 영구 기억은 `search_entries` 로 모읍니다. `/remember`, Stop extract, rollup extract, external fetch, source document ingest 가 모두 같은 검색 인덱스를 씁니다.
 - vector 검색은 선택 기능입니다. `imprint setup vector --backfill` 로 `search_entries.embedding` 을 채운 뒤에만 semantic lane 이 참여합니다.
 
+## 사용 기술과 역할
+
+| 기술 | 쓰이는 곳 | 역할 |
+|---|---|---|
+| Claude Code / Codex plugin manifest | `.claude-plugin`, `.codex-plugin`, `plugin.json` | 같은 hook/skill/runtime 을 Claude Code 와 Codex 양쪽에서 로드합니다. |
+| Bash hook/dispatcher | `session-start.sh`, `user-prompt-submit.sh`, `stop.sh`, `search.sh`, `remember.sh`, `rollup.sh` | host 가 호출하는 얇은 진입점입니다. 세션을 막지 않도록 실패는 로그로 내리고, 무거운 작업은 background 로 보냅니다. |
+| Python retrieval runtime | `scripts/imprint/lib/retrieval/*.py`, `ingestion.py` | chunk 저장, 검색 조립, entity/summary/contradiction, migration, rollup 같은 결정적 로직을 담당합니다. |
+| SQLite + WAL | `~/.imprint/app.sqlite` | 로컬 영구 저장소입니다. WAL 로 읽기/쓰기 경합을 줄이고, hook write 는 짧게 끝내는 것을 원칙으로 합니다. |
+| SQLite FTS5 trigram | `search_entries_fts`, `search_summaries_fts` | 기본 lexical 검색입니다. 파일명, 함수명, 에러 문자열, 명령어처럼 정확한 토큰 회수에 필요합니다. |
+| Optional vector embedding | `search_entries.embedding`, `search_summaries.embedding` | `sentence-transformers` 의 BGE-M3 로 의미 유사도 lane 을 추가합니다. 설치하지 않으면 FTS-only 로 동작합니다. |
+| Optional rerank / NLI | `rerank.py`, `contradiction.py` | cross-encoder rerank 와 contradiction 판정 품질을 올립니다. 없으면 rule/LLM fallback 으로 내려갑니다. |
+| Background LLM call | Claude/Codex CLI | Slack/Notion lazy fetch 정리, Stop flat extract, rollup rich extract, summary/contradiction judge 를 세션 밖에서 수행합니다. |
+| Redaction rule | `redact-rules.default.json`, `redact_text` | event, extract text, rollup metadata, retrieval surface 에 민감정보가 남지 않도록 저장 전 정리합니다. |
+| RRF + boost/penalty | `retrieve.py`, `routing.py` | FTS/vector/summary/working 후보를 합치고 entity, recency, contradiction 신호로 정렬합니다. |
+
+현재 핵심 검색 경로는 **FTS5 가 기본**, **vector 가 선택 보강**, **rollup 이 events 에서 검색용 implementation memory 를 만드는 후처리**입니다. raw `events` 는 archive/provenance 로 보존하지만 `/search` primary index 로 직접 쓰지 않습니다.
+
 ## Alternate Mermaid Views
 
 ### 일반 LLM 사용 Sequence

@@ -15,6 +15,12 @@
 
 기록 순서는 **최신이 위**. 항목당 한 단락 안에 변경/사유/대안 폐기 근거를 묶는다.
 
+## 2026-05-24 — 0.1.3 release metadata 동기화
+
+**무엇:** `flow.md` 에 현재 RAG 구현 기술 역할표를 추가하고, imprint skill frontmatter 설명을 한국어로 바꿨다. local runtime state 인 `.imprint/` 는 repo 에 섞이지 않도록 `.gitignore` 에 명시했다. `VERSION`, root/Codex/Claude plugin manifest, Claude marketplace, Codex marketplace ref, 설치 문서의 release 예시를 `0.1.3` 으로 맞췄다.
+
+**왜:** `0.1.3` 은 RAG 구조 변경 release 라기보다, 0.1.2 의 `search_entries`/rollup 기반 RAG를 사용자가 이해하고 설치 경로에서 덜 헷갈리게 만드는 문서·skill UX 정리 release 다. Codex skill picker 에 한국어 설명이 보이도록 하고, 프로젝트별 Guardrail/runtime 산출물이 소스 커밋에 섞이지 않게 한다.
+
 ## 2026-05-24 — 0.1.2 release metadata 동기화
 
 **무엇:** `search_entries` 통합 스키마, delta/rollup extract, `/search` rollup 근거 출력, 설치 문서의 migration 안내가 `main` 에 반영된 뒤 plugin release metadata 를 `0.1.2` 로 올렸다. `VERSION`, root/Codex/Claude plugin manifest, Claude marketplace, Codex marketplace ref, 설치 문서의 release 예시를 같은 버전으로 맞췄다.

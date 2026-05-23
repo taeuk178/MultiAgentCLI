@@ -1,6 +1,6 @@
 ---
 name: memory
-description: Manage local project memory - search, inject, remember, pin, list, forget. Persistent SQLite-backed memory shared across Claude Code and Codex sessions/projects.
+description: 로컬 프로젝트 기억을 관리합니다. 검색, 주입, 저장, pin, 목록, 삭제를 지원하며 Claude Code와 Codex 세션/프로젝트가 공유하는 SQLite 기반 영구 기억을 다룹니다.
 level: 3
 ---
 

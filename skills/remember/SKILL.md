@@ -1,6 +1,6 @@
 ---
 name: remember
-description: Store explicit project memory with imprint. Use when the user asks to /remember, 기억해줘, save a decision, capture project context, or persist a fact for later semantic search.
+description: 명시적인 프로젝트 기억을 imprint에 저장합니다. /remember, 기억해줘, 결정 저장, 프로젝트 맥락 캡처, 나중에 의미 검색할 사실 보존 요청에 사용합니다.
 level: 3
 ---
 
