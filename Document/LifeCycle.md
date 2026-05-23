@@ -85,7 +85,7 @@
   - JSON 출력으로 `{"decision": "block", "reason": "..."}`을 돌려보내면 사용자에게 reason을 보여주며 차단
   - JSON 출력의 `additionalContext`로 모델 입력에 주입 가능 (현재 imprint 플러그인은 stdout 직접 출력 방식으로 `[Project memory context]` 블록을 prepend)
 - **한계**: 매 턴 실행되므로 비용/지연이 누적된다. 사용자에게 "주입이 일어났다"는 가시적 표시가 없으므로 디버깅이 까다롭다. matcher가 없어서 모든 prompt에 무조건 걸린다.
-- **활용**: 메모리 컨텍스트 자동 주입, 민감 명령어 검출 후 차단, 현재 git branch · 환경 정보 주입, 플러그인 강제 directive 주입(시스템 프롬프트 대용).
+- **활용**: 메모리 컨텍스트 보강, 민감 명령어 검출 후 차단, 현재 git branch · 환경 정보 주입, 플러그인 강제 directive 주입(시스템 프롬프트 대용).
 
 ### 3.3 도구 호출 사이클
 
@@ -253,16 +253,16 @@
 - 한국어 키워드에 `\b`(word boundary) 사용 금지 — Python `re` 가 한글을 word character로 봐서 "커밋해줘"의 끝 boundary를 인식하지 못함. 한국어는 boundary 없이 substring 매칭 권장
 - 매 turn 평가되어 토큰을 소모하므로 룰 수는 적게 유지
 
-### 4.3 메모리 자동 적재 → 자동 주입 사이클
+### 4.3 메모리 적재 → 검색 재사용 사이클
 
 ```
-UserPromptSubmit  →  events 테이블에 user_input 저장 + pinned/recent 청크를 컨텍스트로 prepend
+UserPromptSubmit  →  events 테이블에 user_input 저장 + working 청크 저장
        ↓
 PostToolUse       →  도구 결과(파일 변경, bash 출력)에서 의미 있는 청크 추출
        ↓
 Stop              →  마지막 assistant 응답에서 결정/오류/명령 청크 추출 후 memory_chunks 적재
        ↓
-SessionStart      →  새 세션이 열리면 위에서 쌓인 메모리가 다시 prepend됨
+명시 검색         →  `/search`, `/memory search/show/inject` 로 저장된 메모리 재사용
 ```
 
 ### 4.4 컨텍스트 압축 안전망

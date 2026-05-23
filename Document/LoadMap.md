@@ -64,7 +64,7 @@ API key 없이 host 의 OAuth 구독을 그대로 사용합니다. 무거운 LLM
 
 `events` 는 raw I/O archive 입니다. redaction 후 저장하고, 짧은 backchannel turn 은 `noise=1` 로 soft flag 만 붙입니다.
 
-`memory_chunks` 는 기본 사용자 RAG 기억입니다. working mini-chunk, Stop hook 추출, external lazy-fetch, `/memory remember` 가 여기에 저장합니다. 다음 turn prefill, `/memory search/list/show/inject`, 명시 검색 fallback 이 이 테이블을 읽습니다.
+`memory_chunks` 는 기본 사용자 RAG 기억입니다. working mini-chunk, Stop hook 추출, external lazy-fetch, `/remember` 가 여기에 저장합니다. 다음 turn prefill, `/memory search/list/show/inject`, 명시 검색 fallback 이 이 테이블을 읽습니다.
 
 `documents` / `chunks_v2` / `summaries` 는 retrieval v2 문서 RAG 계층입니다. 명시 ingestion 된 문서는 chunking, versioning, summary, contradiction, entity alias pipeline 을 탑니다. 2026-05-22부터 persistent `memory_chunks` 는 synthetic document/chunk 로도 bridge 되어 `chunks_v2` 검색 후보에 들어갑니다.
 
@@ -109,7 +109,7 @@ retrieval v2 ingestion 은 `ingest_queue` 를 통해 후속 작업을 순차 처
 - hook memory loop smoke test.
 - 첫 turn working overlay.
 - context section 기반 prefill.
-- `/memory` 기본 검색/list/show/inject/remember/refresh/profile/status.
+- `/remember` 명시 저장과 `/memory` 기본 검색/list/show/inject/refresh/profile/status.
 - 한국어 2자 토큰 fallback.
 - external source 상태 가시화.
 - events noise soft flag.
@@ -147,17 +147,18 @@ retrieval v2 ingestion 은 `ingest_queue` 를 통해 후속 작업을 순차 처
 
 1차 bridge 는 완료됐습니다. 남은 작업은 embedding 채움과 검증입니다.
 
-- 자동 hook, external lazy-fetch, `/memory remember` 로 저장된 persistent memory 는 retrieval v2 후보로 복제됩니다.
+- 자동 hook, external lazy-fetch, `/remember` 로 저장된 persistent memory 는 retrieval v2 후보로 복제됩니다.
 - 기존 `memory_chunks` 는 `bridge-memory <project_id> --all [--embed] [limit]` 로 backfill/reindex 합니다.
 - bridge row 의 provenance 는 원본 `memory_chunks.id`, `source_event_id`, `chunk_type`, `source_type`, `evidence_level`, `text_hash` 를 보존합니다.
 - 신규/기존 memory 가 명시 검색 경로에서 `chunks_v2` 후보로 보이는 것은 테스트로 고정했습니다. 다음은 embedding 가용 시 vector path 품질 검증입니다.
 - fallback 으로 남는 `memory_chunks` read-only search 는 migration 안정화 기간 동안 유지합니다.
+- 확장 가능성: `/search` 유사도 품질과 latency 가 충분히 검증되면, 명시 검색 결과를 prefill 자동 주입으로 연결할 수 있습니다. 현재 로드맵에서는 가능성만 남기고 기본 동작으로 두지 않습니다.
 
 ### 2. RAG 사용성 검증과 운영 캘리브레이션
 
 자동 메모리 bridge 가 들어간 상태에서 진행합니다.
 
-- 실제 프로젝트에서 자동 prefill 과 수동 `/memory` 경로가 충분히 유용한지 확인.
+- 실제 프로젝트에서 `/search` 와 수동 `/memory` 경로가 충분히 유용한지 확인.
 - 명시 검색 trace 가 사용자의 “근거 확인” 기대를 만족하는지 확인.
 - 작은 eval 세트로 gate, fallback, rerank, contradiction penalty 를 관찰.
 - `IMPRINT_PROFILE=1` 로 latency, payload, background worker 상태를 측정.

@@ -151,7 +151,7 @@ Codex 개발 설치는 `.codex-plugin/plugin.json` manifest를 사용합니다. 
 Coding agent 세션 안에서:
 
 ```text
-/memory remember <text> [--type decision|fix|todo|...] [--pin] [--redact]
+/remember <text> [--require|--high|--middle|--low] [--redact]
 /memory search <query>
 /memory list [--recent|--pinned|--type <t>|--source <slack|notion|internal>|--working]
 /memory show <chunk-id> [--json]
@@ -172,6 +172,7 @@ search "디버그 토글 누르면 어떻게 돼?"
 search "테스트 모드 진입 UX 시나리오"
 
 # 셸에서 직접 실행할 때
+imprint remember "테스트 모드 진입은 확인 모달을 먼저 거친다." --high
 imprint search "테스트 모드 진입 UX 시나리오"
 # 또는: (cd scripts/imprint/lib && python3 -m retrieval.cli retrieve_json <project_id> "<질문>" 5)
 ```

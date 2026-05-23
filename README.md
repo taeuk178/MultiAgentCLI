@@ -58,7 +58,7 @@ export IMPRINT_CLAUDE_MODEL=haiku
 
 | 영역 | 설명 |
 |---|---|
-| Memory | prompt, assistant response, `/memory remember`, Slack/Notion fetch 결과를 redaction 후 `memory_chunks` 에 저장하고, persistent memory 는 `chunks_v2` 후보로 bridge 합니다. |
+| Memory | prompt, assistant response, `/remember`, Slack/Notion fetch 결과를 redaction 후 `memory_chunks` 에 저장하고, persistent memory 는 `chunks_v2` 후보로 bridge 합니다. |
 | Prefill | 매 prompt 전에 query context, session memory, retrieved memory, external source context 를 `[Project memory context]` 로 자동 prepend 합니다. |
 | `/memory` | 저장된 memory 를 검색, 확인, 주입, pin, 삭제, refresh 합니다. |
 | `/search` | 문서 RAG(`chunks_v2`/`summaries`)를 우선 검색하고, 결과가 약하면 `memory_chunks` 를 read-only fallback 으로 조회합니다. |
@@ -97,7 +97,7 @@ export IMPRINT_CLAUDE_MODEL=haiku
 | memory 검색 | `/memory search <query>` |
 | 특정 chunk 보기 | `/memory show <id>` 또는 `/memory show <id> --json` |
 | 특정 chunk 를 현재 turn 에 주입 | `/memory inject <id>` |
-| 직접 기억 저장 | `/memory remember <text> --type decision` |
+| 직접 기억 저장 | `/remember <text> --high` |
 | 항상 위로 올리기 | `/memory pin <id>` |
 | pin 해제 | `/memory unpin <id>` |
 | 최근/pinned/source별 목록 | `/memory list --recent`, `/memory list --pinned`, `/memory list --source notion`, `/memory list --working` |
@@ -131,7 +131,7 @@ working TTL/max 설정을 요약합니다. latency/payload 추이는 `IMPRINT_PR
 
 ## RAG context sections
 
-자동 prefill 은 raw 질문을 retrieved context 처럼 취급하지 않도록 context section 을 나눠 출력합니다.
+Foreground prefill 은 raw 질문을 retrieved context 처럼 취급하지 않도록 context section 을 나눠 출력합니다.
 
 - `Query context`: 현재 질문과 deterministic search surface
 - `Session memory`: 최근 session-visible working memory

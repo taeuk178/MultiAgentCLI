@@ -44,7 +44,7 @@ claude CLI 호출. 전체 케이스 합계 시간 < 60 s 목표.
 **측정**: 실행 ms, chunk 수, section 수.
 **pass 조건**: chunks_v2 ≥ 3, distinct section_path ≥ 3.
 
-### TC-03. Retrieve 짧은 쿼리 (local scope)
+### TC-03. Search 짧은 쿼리 (local scope)
 
 **입력**: "test 버튼" (≤ 10자, entity alias).
 **기대 결과**:
@@ -54,7 +54,7 @@ claude CLI 호출. 전체 케이스 합계 시간 < 60 s 목표.
 **측정**: 실행 ms, scope, chunk 수, alias resolve 수.
 **pass 조건**: scope = local, candidates ≥ 1.
 
-### TC-04. Retrieve 긴 쿼리 (feature scope)
+### TC-04. Search 긴 쿼리 (feature scope)
 
 **입력**: "테스트 모드 진입 UX 시나리오 흐름 설명".
 **기대 결과**:
@@ -65,7 +65,7 @@ claude CLI 호출. 전체 케이스 합계 시간 < 60 s 목표.
 **측정**: 실행 ms, scope, summary 수, chunk 수, ground_chunks 수.
 **pass 조건**: scope = feature, summaries ≥ 1, chunks ≥ 1.
 
-### TC-05. Retrieve global 쿼리
+### TC-05. Search global 쿼리
 
 **입력**: "이 프로젝트의 테스트 관련 정책 전체 정리해줘".
 **기대 결과**:

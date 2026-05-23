@@ -115,6 +115,10 @@ case "\${1:-}" in
     shift
     exec "\$IMPRINT_PLUGIN_ROOT/scripts/imprint/memory.sh" "\$@"
     ;;
+  remember)
+    shift
+    exec "\$IMPRINT_PLUGIN_ROOT/scripts/imprint/remember.sh" "\$@"
+    ;;
   retrieve)
     shift
     exec "\$IMPRINT_PLUGIN_ROOT/scripts/imprint/retrieve.sh" "\$@"
@@ -128,7 +132,7 @@ case "\${1:-}" in
     exec "\$IMPRINT_PLUGIN_ROOT/scripts/imprint/setup.sh" "\$@"
     ;;
   *)
-    echo "usage: imprint <memory|search|retrieve|setup> [args]" >&2
+    echo "usage: imprint <memory|remember|search|retrieve|setup> [args]" >&2
     exit 2
     ;;
 esac

@@ -11,8 +11,15 @@
 - 단기 픽업(즉시 검토·deferred TODO·미완 Phase): `HANDOFF.md`
 - hook 단계별 시스템 의존·운영 환경 변수: `flow.md`
 - 사용·설치: `README.md`
+- 보관용 초안·폐기/후순위 handoff: `archive/`
 
 기록 순서는 **최신이 위**. 항목당 한 단락 안에 변경/사유/대안 폐기 근거를 묶는다.
+
+## 2026-05-23 — `/remember` 명시 저장 스킬 추가
+
+**무엇:** `skills/remember/SKILL.md` 와 `scripts/imprint/remember.sh` 를 추가해 기존 `/memory remember` 저장 경로를 사용자-facing `/remember` 로 노출했다. Codex 설치 wrapper 에도 `imprint remember` subcommand 를 추가했고, plugin keyword/default prompt 와 사용 문서를 `/remember` 기준으로 보강했다. `/remember` 는 새 저장소를 만들지 않고 `memory_chunks` 에 저장한 뒤 기존 bridge 를 통해 `chunks_v2` 검색 후보로 승격한다. public 중요도 플래그는 `--require` / `--high` / `--middle` / `--low` 로 두고 기본값은 `middle` 이며, metadata 의 `importance` 로 보존한다. 알 수 없는 `--옵션` 은 텍스트로 저장하지 않고 에러와 plugin log 를 남긴다.
+
+**왜:** imprint 의 사용 핵심은 "이 결정/맥락을 다음 세션에서도 찾아줘"라는 명시 저장 행위다. `/memory remember` 는 기능적으로 맞지만 사용자가 매번 namespace 를 기억해야 하므로, `/search` 와 같은 수준의 짧은 진입점이 더 자연스럽다. 별도 `remember` SQLite 테이블을 만드는 대안은 이름은 선명하지만 pin/forget/search/bridge/redaction 로직을 이중화하므로 보류했다. 현재는 `remember` 를 public verb 로 두고, 저장 canonical table 은 `memory_chunks` 로 유지한다.
 
 ## 2026-05-23 — `/search` skill 로 벡터 검색 사용자 진입점 추가
 
@@ -64,7 +71,7 @@
 
 **무엇:** RAG 기본 동작 안정화 우선순위 1~4를 1차 적용. `user-prompt-submit.sh` 는 user prompt를 `events`에 저장하기 전 redaction 하고, lazy-fetch/prefill 입력도 redacted text를 사용한다. `stop.sh` 는 마지막 assistant 응답을 `events.llm_response`에 저장하기 전 redaction 하고, response extract worker에도 redacted text를 넘긴다. `ingestion.py` 는 external source chunk/text/metadata 와 extracted response chunk를 `memory_chunks`에 INSERT 하기 직전 Python 쪽 redaction을 한 번 더 적용한다. `/memory remember` 도 secret-shaped text를 기본 redaction 하며, default 룰셋에 fine-grained GitHub PAT, bearer/authorization, password assignment, 주민등록번호, card-like 패턴을 추가했다. 테스트에는 `TC-11 Hook memory loop + redaction`, `TC-12 Memory search/list/inject fixture` 를 추가해 자동 hook 루프와 기본 `/memory` 검색 경로를 고정했다.
 
-**왜:** 실제 프로젝트에서 RAG를 쓰려면 기능 수보다 “안전하게 저장되고, 다음 turn에 다시 보이며, 사용자가 근거로 꺼내볼 수 있음”이 먼저다. Redaction 누락은 DB/FTS raw 누출로 바로 이어져 사용 불가 리스크가 가장 크다. Hook loop smoke test는 `SessionStart → UserPromptSubmit → Stop → 다음 UserPromptSubmit` 생명선을 직접 검증한다. 읽기 경로는 단기적으로 기본 사용자 RAG를 자동 prefill + `/memory search/inject` 로 명확히 하고, `/retrieve` 는 별도 `chunks_v2`/`summaries` 문서 retrieval 경로로 유지한다. 검색 품질 fixture는 decision/fix/todo/note/spec/message/thread, pinned 우선순위, type/source 필터, inject 출력을 고정해 “저장됐는데 못 찾는” 회귀를 먼저 잡기 위함이다.
+**왜:** 실제 프로젝트에서 RAG를 쓰려면 기능 수보다 “안전하게 저장되고, 다음 turn에 다시 보이며, 사용자가 근거로 꺼내볼 수 있음”이 먼저다. Redaction 누락은 DB/FTS raw 누출로 바로 이어져 사용 불가 리스크가 가장 크다. Hook loop smoke test는 `SessionStart → UserPromptSubmit → Stop → 다음 UserPromptSubmit` 생명선을 직접 검증한다. 읽기 경로는 단기적으로 기본 사용자 RAG와 `/memory search/inject` 로 명확히 하고, 별도 `chunks_v2`/`summaries` 문서 retrieval 경로는 분리해 유지한다. 검색 품질 fixture는 decision/fix/todo/note/spec/message/thread, pinned 우선순위, type/source 필터, inject 출력을 고정해 “저장됐는데 못 찾는” 회귀를 먼저 잡기 위함이다.
 
 **남은 점:** `memory_chunks → chunks_v2` bridge 또는 `/retrieve` legacy fallback 은 아직 중기 과제다. 과거에 이미 raw 로 저장된 row 청소는 사용자 승인 액션으로 분리한다. Credit-card-like 정규식은 단순 패턴이라 false positive 가능성이 있어, 필요하면 Luhn callback 기반 redaction helper 로 고도화한다.
 

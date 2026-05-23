@@ -298,6 +298,14 @@ def _search_script_output(env: dict, query: str, cwd: str) -> tuple[int, str, st
     return proc.returncode, proc.stdout, proc.stderr
 
 
+def _remember_script_output(env: dict, args: list[str], cwd: str) -> tuple[int, str, str]:
+    proc = subprocess.run(
+        ["bash", str(ROOT / "scripts" / "imprint" / "remember.sh"), *args],
+        env=env, capture_output=True, text=True, cwd=cwd,
+    )
+    return proc.returncode, proc.stdout, proc.stderr
+
+
 def tc_03_retrieve_short(env: dict, home: str, case: CaseResult) -> None:
     out = _retrieve_json(env, "A 버튼 클릭 동작 알려줘")
     scope = (out.get("scope") or {}).get("scope")
@@ -979,8 +987,93 @@ def tc_21_search_skill_dispatcher(env: dict, home: str, case: CaseResult) -> Non
     )
 
 
+def tc_22_remember_skill_dispatcher(env: dict, home: str, case: CaseResult) -> None:
+    """User-facing /remember dispatcher stores through memory_chunks + bridge."""
+    project_root = tempfile.mkdtemp(prefix="imprint-remember-project-")
+    pid_proc = subprocess.run(
+        ["bash", "-lc", f"source {ROOT / 'scripts' / 'imprint' / 'lib' / 'common.sh'}; project_id"],
+        env=env, capture_output=True, text=True, cwd=project_root,
+    )
+    pid = pid_proc.stdout.strip()
+    now = "2026-05-23T00:00:00Z"
+    conn = sqlite3.connect(str(Path(home) / "app.sqlite"))
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO projects VALUES (?, ?, ?, ?, ?)",
+            (pid, project_root, "remember-fixture", now, now),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    rc, out, err = _remember_script_output(
+        env,
+        ["아틀라스 저장 스킬은 /remember 이름으로 memory_chunks에 저장한다.", "--require"],
+        project_root,
+    )
+    rc_bad, _, err_bad = _remember_script_output(
+        env,
+        ["오타 옵션은 저장되면 안 된다.", "--row"],
+        project_root,
+    )
+    conn = sqlite3.connect(str(Path(home) / "app.sqlite"))
+    try:
+        rows = conn.execute(
+            """
+            SELECT id, chunk_type, text, pinned, metadata_json
+            FROM memory_chunks
+            WHERE project_id = ? AND text LIKE '%/remember 이름%'
+            """,
+            (pid,),
+        ).fetchall()
+        bridge_rows = conn.execute(
+            """
+            SELECT d.source_ref, c.raw_chunk_type, c.normalized_chunk_type
+            FROM documents d
+            JOIN chunks_v2 c ON c.document_id = d.id
+            WHERE d.project_id = ? AND d.source_ref LIKE 'memory_chunks:%'
+            """,
+            (pid,),
+        ).fetchall()
+        bad_rows = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM memory_chunks
+            WHERE project_id = ? AND text LIKE '%오타 옵션%'
+            """,
+            (pid,),
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    log_text = (Path(home) / "plugin.log").read_text() if (Path(home) / "plugin.log").exists() else ""
+
+    checks = {
+        "script_ok": pid_proc.returncode == 0 and bool(pid) and rc == 0 and "remembered" in out,
+        "stored": len(rows) == 1
+        and rows[0][1] == "note"
+        and rows[0][3] == 1
+        and json.loads(rows[0][4]).get("importance") == "require",
+        "bridged": len(bridge_rows) == 1 and bridge_rows[0][1] == "note",
+        "typo_rejected": rc_bad == 2
+        and "unknown option --row" in err_bad
+        and bad_rows == 0
+        and "remember unknown option: --row" in log_text,
+    }
+    case.metrics = checks | {
+        "rows": len(rows),
+        "bridge_rows": len(bridge_rows),
+        "bad_rows": bad_rows,
+        "error": (err or err_bad)[:120],
+    }
+    case.passed = all(checks.values())
+    case.detail = (
+        f"script={checks['script_ok']} stored={checks['stored']} "
+        f"bridged={checks['bridged']} typo_rejected={checks['typo_rejected']}"
+    )
+
+
 def tc_15_first_turn_working_overlay(env: dict, home: str, case: CaseResult) -> None:
-    """UserPromptSubmit sync mini-chunk + prefill/retrieve working overlay."""
+    """UserPromptSubmit sync mini-chunk + prefill/search working overlay."""
     env_h = hook_env(env)
     env_h["IMPRINT_CLAUDE_BIN"] = make_fake_claude(home)
     rc, _, err = run_cmd(env_h, ["bash", "scripts/imprint/session-start.sh"])
@@ -1612,6 +1705,7 @@ CASES: list[tuple[str, str, callable]] = [
     ("TC-19", "Legacy DB 자동 migration", tc_19_legacy_db_migration),
     ("TC-20", "memory_chunks bridge/backfill", tc_20_memory_bridge_backfill),
     ("TC-21", "Search skill dispatcher", tc_21_search_skill_dispatcher),
+    ("TC-22", "Remember skill dispatcher", tc_22_remember_skill_dispatcher),
 ]
 
 
