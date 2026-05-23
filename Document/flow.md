@@ -40,8 +40,8 @@
   A. UserPromptSubmit lazy-fetch
      - background model 이 prompt 키워드/URL 분석
      - prompt URL 또는 sources.json 기반 Slack/Notion read-only fetch
-     - section chunk 를 search_entries(origin=source_document 또는 assistant_extract) 에 직접 INSERT
-     - fetch_failed/fetch_empty/skipped_by_cap marker 는 search_entries(raw_type=source_status) 로 관찰 가능하게 남김
+     - section chunk 를 search_entries(origin=external_fetch) 에 직접 INSERT
+     - fetch_failed/fetch_empty/skipped_by_cap marker 는 search_entries(origin=source_status, raw_type=source_status) 로 관찰 가능하게 남김
 
   B. Stop response extract
      - background model 이 응답에서 persistent memory chunk 분류
@@ -351,8 +351,9 @@ CREATE TABLE search_entries (
 );
 ```
 
-- `origin`: `manual_remember | assistant_extract | source_document`
+- `origin`: `manual_remember | assistant_extract | external_fetch | source_status | source_document`
 - `raw_type`: `decision | fix | todo | code_context | note | plan_step | requirement | message | thread | command | error | test_result | summary | source_status`
+- `origin=source_document` 는 `source_document_id` 가 있는 명시 source document ingest row 에만 사용합니다. Slack/Notion lazy-fetch 결과처럼 원본 문서를 별도 row 로 만들지 않는 경우는 `external_fetch` 를 씁니다.
 - `normalized_type`: `decision | requirement | discussion | code_note`
 - `raw_type=summary` 는 assistant extract 의 요약 메모이고, `search_summaries` 의 feature/global 요약과는 다른 개념입니다.
 - `plan_key` / `feature_key` 는 자리만 있습니다. day-1 대부분 `NULL` 이며, 값을 채우는 추출/ingest 경로와 entity 통합 정책은 별도 과제입니다.

@@ -17,7 +17,7 @@
 
 ## 2026-05-24 — `search_entries` 통합 스키마 구현
 
-**무엇:** 2026-05-24 결정 로그의 `search_entries` 통합 설계를 실제 코드에 반영했다. 새 스키마는 `source_documents`, `search_entries`, `search_summaries`, `entry_entities` 를 만들고, 신규 DB에서는 `memory_chunks`, `documents`, `chunks_v2`, `events_fts` 를 더 이상 만들지 않는다. `/remember`, assistant response extract, Slack/Notion lazy-fetch, source document ingest 는 모두 `search_entries` 에 직접 저장한다. working overlay 는 영구 entry 로 만들지 않고 `events.metadata_json.query_surfaces`/`need_retrieval`/`retrieval_reason` 을 검색 시점에 읽는다. 기존 사용자 DB는 자동 파괴하지 않고 `imprint migrate search-entries` 명시 명령으로 백업 후 one-shot migration 한다.
+**무엇:** 2026-05-24 결정 로그의 `search_entries` 통합 설계를 실제 코드에 반영했다. 새 스키마는 `source_documents`, `search_entries`, `search_summaries`, `entry_entities` 를 만들고, 신규 DB에서는 `memory_chunks`, `documents`, `chunks_v2`, `events_fts` 를 더 이상 만들지 않는다. `/remember`, assistant response extract, Slack/Notion lazy-fetch, source document ingest 는 모두 `search_entries` 에 직접 저장한다. working overlay 는 영구 entry 로 만들지 않고 `events.metadata_json.query_surfaces`/`need_retrieval`/`retrieval_reason` 을 검색 시점에 읽는다. `origin=source_document` 는 `source_document_id` 가 있는 명시 ingest row 에만 쓰고, lazy-fetch 는 `external_fetch`, 상태 marker 는 `source_status` 로 분리한다. 기존 사용자 DB는 자동 파괴하지 않고 `imprint migrate search-entries` 명시 명령으로 백업 후 one-shot migration 한다.
 
 **왜:** bridge 구조는 memory 한 건을 synthetic document 와 chunk 로 복제해 저장 의미와 검색 경로를 동시에 흐렸다. 구현을 단일 entry 인덱스로 수렴시키면 `/remember` 와 `/search` 의 사용자 모델이 단순해지고, optional vector backfill 도 `search_entries.embedding` 하나만 채우면 된다. raw events 전체 자동 fallback 은 정확도와 민감정보 노출 리스크가 있어 열지 않고, 사용자가 확인 가능한 `/search` trace 와 명시 저장을 중심으로 둔다.
 

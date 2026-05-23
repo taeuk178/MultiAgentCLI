@@ -39,7 +39,7 @@ def _metadata(raw: str | None) -> dict[str, Any]:
 def _origin_from_memory(metadata: dict[str, Any]) -> str:
     source = str(metadata.get("source") or metadata.get("source_type") or "")
     if source in {"slack", "notion"}:
-        return "source_document"
+        return "external_fetch"
     if source == "llm_response" or metadata.get("evidence_level") == "assistant_extracted":
         return "assistant_extract"
     return "manual_remember"
@@ -57,11 +57,6 @@ def _apply_schema(conn: sqlite3.Connection) -> None:
 def migrate(db_path: Path | None = None) -> dict[str, Any]:
     db_path = db_path or IMPRINT_DB
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    if db_path.exists():
-        backup = _backup_path(db_path)
-        shutil.copy2(db_path, backup)
-    else:
-        backup = None
 
     conn = sqlite3.connect(str(db_path), timeout=5.0)
     conn.row_factory = sqlite3.Row
@@ -78,6 +73,10 @@ def migrate(db_path: Path | None = None) -> dict[str, Any]:
             "summary_links": _table_exists(conn, "summary_links")
             and _table_exists(conn, "summaries"),
         }
+        backup = None
+        if db_path.exists() and any(legacy.values()):
+            backup = _backup_path(db_path)
+            shutil.copy2(db_path, backup)
         if legacy["contradictions"]:
             conn.execute("ALTER TABLE contradictions RENAME TO contradictions_legacy")
         if legacy["summary_links"]:
@@ -197,7 +196,15 @@ def migrate(db_path: Path | None = None) -> dict[str, Any]:
             cur = conn.execute(
                 """
                 INSERT OR IGNORE INTO search_summaries
-                SELECT * FROM summaries
+                  (id, project_id, level, target_key, title, summary_text,
+                   retrieval_text, embedding, source_chunk_count,
+                   source_summary_count, valid_from, valid_to, is_current,
+                   generator, updated_at)
+                SELECT id, project_id, level, target_key, title, summary_text,
+                       retrieval_text, embedding, source_chunk_count,
+                       source_summary_count, valid_from, valid_to, is_current,
+                       generator, updated_at
+                FROM summaries
                 """
             )
             stats["search_summaries"] = cur.rowcount if cur.rowcount >= 0 else 0

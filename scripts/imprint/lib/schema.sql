@@ -71,7 +71,7 @@ CREATE TABLE IF NOT EXISTS search_entries (
   project_id          TEXT NOT NULL REFERENCES projects(id),
   source_document_id  TEXT REFERENCES source_documents(id),
   source_event_id     TEXT REFERENCES events(id),
-  origin              TEXT NOT NULL DEFAULT 'manual_remember', -- manual_remember | assistant_extract | source_document
+  origin              TEXT NOT NULL DEFAULT 'manual_remember', -- manual_remember | assistant_extract | external_fetch | source_status | source_document
   raw_type            TEXT,                   -- decision/fix/todo/code_context/note/plan_step/requirement/message/thread/command/error/test_result/summary
   normalized_type     TEXT,                   -- requirement/decision/discussion/code_note
   chunk_index         INTEGER,

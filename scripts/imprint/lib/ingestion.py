@@ -721,7 +721,7 @@ def insert_external_chunk(
     insert_search_entry(
         conn,
         project_id=project_id,
-        origin="source_document",
+        origin="external_fetch",
         raw_type=chunk_type,
         text=text,
         metadata=metadata,
@@ -803,7 +803,7 @@ def insert_source_status_chunk(
     insert_search_entry(
         conn,
         project_id=project_id,
-        origin="source_document",
+        origin="source_status",
         raw_type="source_status",
         text=text,
         metadata=md,

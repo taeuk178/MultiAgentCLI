@@ -96,6 +96,8 @@ def insert_search_entry(
     embedding: bytes | None = None,
     generate_embedding: bool = False,
 ) -> str:
+    if origin == "source_document" and not source_document_id:
+        raise ValueError("origin=source_document requires source_document_id")
     safe_text = text.strip()
     retrieval_text = f"{context_prefix}\n{safe_text}" if context_prefix else safe_text
     md = dict(metadata or {})

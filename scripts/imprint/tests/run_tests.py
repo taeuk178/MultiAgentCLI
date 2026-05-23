@@ -879,6 +879,11 @@ def tc_20_legacy_migration_backfill(env: dict, home: str, case: CaseResult) -> N
         [sys.executable, "-m", "retrieval.cli", "migrate-search-entries"],
     )
     stats = json.loads(out) if out else {}
+    rc_noop, out_noop, _ = run_cmd(
+        env,
+        [sys.executable, "-m", "retrieval.cli", "migrate-search-entries"],
+    )
+    stats_noop = json.loads(out_noop) if out_noop else {}
     rows = db_query(
         home,
         """
@@ -905,12 +910,19 @@ def tc_20_legacy_migration_backfill(env: dict, home: str, case: CaseResult) -> N
         "provenance": metadata.get("migrated_from") == "memory_chunks"
         and metadata.get("text_hash") == "tc20hash",
         "retrieve_search_entries": bridged_candidate is not None,
+        "noop_no_backup": rc_noop == 0 and stats_noop.get("backup") is None,
     }
-    case.metrics = checks | {"stats": stats, "rows": len(rows), "err": err[:120]}
+    case.metrics = checks | {
+        "stats": stats,
+        "noop": stats_noop,
+        "rows": len(rows),
+        "err": err[:120],
+    }
     case.passed = all(checks.values())
     case.detail = (
         f"migrated={stats.get('entries_from_memory')} rows={len(rows)} "
-        f"retrieve_search_entries={checks['retrieve_search_entries']}"
+        f"retrieve_search_entries={checks['retrieve_search_entries']} "
+        f"noop_backup={stats_noop.get('backup')}"
     )
 
 
@@ -1334,7 +1346,7 @@ with db() as conn:
         ).fetchone()
         provenance_rows = conn.execute(
             """
-            SELECT raw_type, metadata_json FROM search_entries
+            SELECT raw_type, origin, source_document_id, metadata_json FROM search_entries
             WHERE text IN ('외부 원문 근거', 'assistant 추출 근거', 'slack failed')
             ORDER BY raw_type
             """
@@ -1370,7 +1382,9 @@ with db() as conn:
 
     gate_md = json.loads(gate_md_raw[0]) if gate_md_raw else {}
     provenance = []
-    for _ctype, md_raw in provenance_rows:
+    origins = {}
+    for ctype, origin, source_document_id, md_raw in provenance_rows:
+        origins[ctype] = {"origin": origin, "source_document_id": source_document_id}
         try:
             provenance.append(json.loads(md_raw))
         except json.JSONDecodeError:
@@ -1395,6 +1409,12 @@ with db() as conn:
             and any(p.get("evidence_level") == "assistant_extracted" and p.get("source_type") == "chat" for p in provenance)
             and any(p.get("evidence_level") == "status_marker" and p.get("grounded") is False for p in provenance)
         ),
+        "origin_invariant": (
+            origins.get("spec", {}).get("origin") == "external_fetch"
+            and origins.get("spec", {}).get("source_document_id") is None
+            and origins.get("source_status", {}).get("origin") == "source_status"
+            and origins.get("decision", {}).get("origin") == "assistant_extract"
+        ),
         "low_conf_trace": (
             (low.get("trace") or {}).get("fallback_triggered") is False
             and "primary entry" in low_text
@@ -1407,7 +1427,8 @@ with db() as conn:
     case.passed = all(checks.values())
     case.detail = (
         f"cleanup={checks['cleanup']} gate={checks['gate']} "
-        f"provenance={checks['provenance']} low_trace={checks['low_conf_trace']}"
+        f"provenance={checks['provenance']} origin={checks['origin_invariant']} "
+        f"low_trace={checks['low_conf_trace']}"
     )
     if not case.passed and err_prov:
         case.detail += f" prov_err={err_prov[:120]}"
