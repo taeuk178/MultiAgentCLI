@@ -1218,6 +1218,116 @@ print(json.dumps({
         case.detail += f" err={err[:120]}"
 
 
+def tc_26_decision_rich_extract(env: dict, home: str, case: CaseResult) -> None:
+    """Decision extract keeps reason/file/symbol metadata, redacts, and preserves flat chunks."""
+    code = """
+import json, sys
+sys.path.insert(0, %r)
+import ingestion
+
+secret = "ghp_" + "A" * 24
+response = (
+    "결정: ShareLinkBuilder를 Sources/Auth/ShareLinkBuilder.swift에 둡니다. "
+    "이유: LoginViewModel 책임을 줄입니다. "
+    f"토큰 {secret}은 저장하면 안 됩니다. "
+    "검증은 pytest tests/test_share_link.py 입니다."
+)
+
+def fake_model(_prompt, **_kwargs):
+    return json.dumps([
+        {
+            "chunk_type": "decision",
+            "text": "ShareLinkBuilder로 공유 링크 생성을 분리한다.",
+            "keywords": ["ShareLinkBuilder", "공유 링크"],
+            "reason": f"LoginViewModel 책임 분리 때문에 {secret}를 참고했다.",
+            "files": ["Sources/Auth/ShareLinkBuilder.swift", "Sources/Fake.swift"],
+            "symbols": ["ShareLinkBuilder", "GhostSymbol"],
+            "alternatives": [f"LoginViewModel에 계속 둔다 {secret}"],
+            "tests": ["pytest tests/test_share_link.py"],
+        },
+        {
+            "chunk_type": "fix",
+            "text": "공유 링크 테스트 실패를 수정했다.",
+            "keywords": ["공유 링크", "테스트"],
+        },
+    ], ensure_ascii=False)
+
+ingestion.run_background_model = fake_model
+chunks = ingestion.extract_chunks_from_response(response)
+with ingestion.db() as conn:
+    ids = []
+    for ch in chunks:
+        ids.append(ingestion.insert_extracted_chunk(
+            conn,
+            %r,
+            None,
+            ch["chunk_type"],
+            ch["text"],
+            ch.get("keywords") or [],
+            reason=ch.get("reason"),
+            files=ch.get("files"),
+            symbols=ch.get("symbols"),
+            alternatives=ch.get("alternatives"),
+            tests=ch.get("tests"),
+        ))
+    conn.commit()
+    rows = conn.execute(
+        "SELECT raw_type, text, retrieval_text, metadata_json FROM search_entries "
+        "WHERE id IN (%s) ORDER BY raw_type",
+        ids,
+    ).fetchall()
+
+print(json.dumps({
+    "chunks": chunks,
+    "rows": [
+        {
+            "raw_type": r[0],
+            "text": r[1],
+            "retrieval_text": r[2],
+            "metadata": json.loads(r[3] or "{}"),
+        }
+        for r in rows
+    ],
+    "secret": secret,
+}, ensure_ascii=False))
+""" % (str(LIB_DIR), PROJECT_ID, ",".join(["?"] * 2))
+    rc, out, err = run_python(env, code)
+    try:
+        result = json.loads(out)
+    except json.JSONDecodeError:
+        result = {}
+    chunks = result.get("chunks") or []
+    rows = result.get("rows") or []
+    decision_chunk = next((c for c in chunks if c.get("chunk_type") == "decision"), {})
+    decision_row = next((r for r in rows if r.get("raw_type") == "decision"), {})
+    fix_row = next((r for r in rows if r.get("raw_type") == "fix"), {})
+    metadata = decision_row.get("metadata") or {}
+    retrieval_text = decision_row.get("retrieval_text") or ""
+    metadata_blob = json.dumps(metadata, ensure_ascii=False)
+    secret = result.get("secret") or ""
+    checks = {
+        "ok": rc == 0,
+        "kept_flat_fix": bool(fix_row and fix_row.get("text") == "공유 링크 테스트 실패를 수정했다."),
+        "kept_real_file": metadata.get("files") == ["Sources/Auth/ShareLinkBuilder.swift"],
+        "dropped_fake_file": "Sources/Fake.swift" not in metadata_blob,
+        "kept_real_symbol": metadata.get("symbols") == ["ShareLinkBuilder"],
+        "dropped_fake_symbol": "GhostSymbol" not in metadata_blob,
+        "redacted_metadata": bool(secret) and secret not in metadata_blob and "gh*_[REDACTED]" in metadata_blob,
+        "redacted_surface": bool(secret) and secret not in retrieval_text and "gh*_[REDACTED]" in retrieval_text,
+        "surface_signal": "Sources/Auth/ShareLinkBuilder.swift" in retrieval_text and "ShareLinkBuilder" in retrieval_text,
+        "surface_capped": len(retrieval_text) <= 1500,
+        "chunk_shape": decision_chunk.get("reason") and decision_chunk.get("files") == ["Sources/Auth/ShareLinkBuilder.swift"],
+    }
+    case.metrics = checks | {"result": result, "err": err[:120]}
+    case.passed = all(checks.values())
+    case.detail = (
+        f"rows={len(rows)} file={checks['kept_real_file']} "
+        f"redacted={checks['redacted_surface']}"
+    )
+    if not case.passed:
+        case.detail += f" err={err[:120]}"
+
+
 def tc_15_first_turn_working_overlay(env: dict, home: str, case: CaseResult) -> None:
     """UserPromptSubmit sync mini-chunk + prefill/search working overlay."""
     env_h = hook_env(env)
@@ -1907,6 +2017,7 @@ CASES: list[tuple[str, str, callable]] = [
     ("TC-23", "Setup vector progress logging", tc_23_setup_vector_logging),
     ("TC-24", "Extract eval harness", tc_24_extract_eval_harness),
     ("TC-25", "Retrieval text override", tc_25_retrieval_text_override),
+    ("TC-26", "Decision-rich extract", tc_26_decision_rich_extract),
 ]
 
 

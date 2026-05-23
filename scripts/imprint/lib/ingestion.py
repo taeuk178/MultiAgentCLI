@@ -33,7 +33,7 @@ from typing import Any, Iterable
 
 from retrieval.model_runtime import run_background_model
 from retrieval._common import migrate_legacy_claude_db_if_needed
-from retrieval.entries import dedup_exists, insert_search_entry
+from retrieval.entries import build_retrieval_surface, dedup_exists, insert_search_entry
 
 # Runtime paths. IMPRINT_HOME 으로 테스트/실사용 DB 를 쉽게 격리한다.
 IMPRINT_HOME = Path(os.environ.get("IMPRINT_HOME") or (Path.home() / ".imprint"))
@@ -739,10 +739,20 @@ def insert_extracted_chunk(
     chunk_type: str,
     text: str,
     keywords: list[str],
+    reason: str | None = None,
+    files: list[str] | None = None,
+    symbols: list[str] | None = None,
+    alternatives: list[str] | None = None,
+    tests: list[str] | None = None,
 ) -> str:
     cid = str(uuid.uuid4())
     text = redact_text(text)
     keywords = [redact_text(k) for k in keywords]
+    reason = redact_text(reason or "").strip()
+    files = [redact_text(v) for v in (files or []) if v]
+    symbols = [redact_text(v) for v in (symbols or []) if v]
+    alternatives = [redact_text(v) for v in (alternatives or []) if v]
+    tests = [redact_text(v) for v in (tests or []) if v]
     text_hash = stable_text_hash(text)
     if chunk_dedup_exists(
         conn,
@@ -762,6 +772,25 @@ def insert_extracted_chunk(
         "keywords": keywords,
         "text_hash": text_hash,
     }
+    if reason:
+        md["reason"] = reason
+    if files:
+        md["files"] = files
+    if symbols:
+        md["symbols"] = symbols
+    if alternatives:
+        md["alternatives"] = alternatives
+    if tests:
+        md["tests"] = tests
+    md = redact_json_value(md)
+    retrieval_text = None
+    if chunk_type == "decision" and (reason or files or symbols):
+        retrieval_text = build_retrieval_surface(
+            text=text,
+            reason=reason or None,
+            files=files or None,
+            symbols=symbols or None,
+        )
     insert_search_entry(
         conn,
         project_id=project_id,
@@ -771,6 +800,7 @@ def insert_extracted_chunk(
         metadata=md,
         source_event_id=source_event_id,
         entry_id=cid,
+        retrieval_text=retrieval_text,
     )
     return cid
 
@@ -822,12 +852,21 @@ Extract persistent memory chunks from this assistant response. Return STRICT JSO
 Each item:
 {
   "chunk_type": one of ["decision","error","fix","command","test_result","summary","todo","code_context","note"],
-  "text": "<<=400 chars, captures the chunk in plain prose>",
-  "keywords": [<3-8 short search terms, Korean+English synonyms when natural>]
+  "text": "<<=400 chars for most items, <=1200 chars for decision, captures the chunk in plain prose>",
+  "keywords": [<3-8 short search terms, Korean+English synonyms when natural>],
+  "reason": "<optional, decision only, why this decision was made>",
+  "files": ["<optional, decision only, file paths literally present in the response>"],
+  "symbols": ["<optional, decision only, code symbols literally present in the response>"],
+  "alternatives": ["<optional, decision only, rejected options if explicit>"],
+  "tests": ["<optional, decision only, test/verification facts if explicit>"]
 }
 
 Skip greetings, small talk, repeated content, narration of what you did.
 ONLY save items that would be useful in a future session as a fact, decision, or pointer.
+For decision items, keep the decision and its reason together in one item when possible.
+The only required fields are "chunk_type" and "text"; if a sub-field is uncertain, omit it.
+For files/symbols, include only exact strings that appear in the assistant response. Do not infer
+or invent paths, filenames, classes, functions, or symbols.
 Preserve the original language of the assistant response in "text". Do not translate
 Korean facts into English or English facts into Korean.
 If nothing worth saving: return [].
@@ -839,6 +878,38 @@ Assistant response:
 {RESPONSE}
 >>>
 """
+
+
+def _safe_optional_text(value: Any, max_chars: int) -> str:
+    if not isinstance(value, str):
+        return ""
+    return value.strip()[:max_chars].strip()
+
+
+def _safe_optional_list(
+    value: Any,
+    *,
+    response: str,
+    literal_only: bool = False,
+    max_items: int = 8,
+    max_chars: int = 160,
+) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    out: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        candidate = item.strip()[:max_chars].strip()
+        if not candidate:
+            continue
+        literal = candidate.strip("`'\"")
+        if literal_only and literal not in response and candidate not in response:
+            continue
+        out.append(candidate)
+        if len(out) >= max_items:
+            break
+    return out
 
 
 def extract_chunks_from_response(response: str) -> list[dict]:
@@ -864,7 +935,47 @@ def extract_chunks_from_response(response: str) -> list[dict]:
         if not isinstance(kw, list):
             kw = []
         kw = [str(k).strip() for k in kw if isinstance(k, str) and str(k).strip()][:12]
-        chunks.append({"chunk_type": ct, "text": text[:400], "keywords": kw})
+        max_text = 1200 if ct == "decision" else 400
+        chunk = {"chunk_type": ct, "text": text[:max_text], "keywords": kw}
+        if ct == "decision":
+            reason = _safe_optional_text(item.get("reason"), 800)
+            files = _safe_optional_list(
+                item.get("files"),
+                response=response,
+                literal_only=True,
+                max_items=8,
+                max_chars=180,
+            )
+            symbols = _safe_optional_list(
+                item.get("symbols"),
+                response=response,
+                literal_only=True,
+                max_items=12,
+                max_chars=120,
+            )
+            alternatives = _safe_optional_list(
+                item.get("alternatives"),
+                response=response,
+                max_items=5,
+                max_chars=240,
+            )
+            tests = _safe_optional_list(
+                item.get("tests"),
+                response=response,
+                max_items=5,
+                max_chars=240,
+            )
+            if reason:
+                chunk["reason"] = reason
+            if files:
+                chunk["files"] = files
+            if symbols:
+                chunk["symbols"] = symbols
+            if alternatives:
+                chunk["alternatives"] = alternatives
+            if tests:
+                chunk["tests"] = tests
+        chunks.append(chunk)
     return chunks
 
 
@@ -1635,6 +1746,11 @@ def cmd_extract(argv: list[str]) -> int:
                     if insert_extracted_chunk(
                         conn, project_id, source_event_id,
                         c["chunk_type"], c["text"], c["keywords"],
+                        reason=c.get("reason"),
+                        files=c.get("files"),
+                        symbols=c.get("symbols"),
+                        alternatives=c.get("alternatives"),
+                        tests=c.get("tests"),
                     ):
                         inserted_count += 1
                 conn.commit()
