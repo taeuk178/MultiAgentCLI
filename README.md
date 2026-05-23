@@ -64,7 +64,7 @@ export IMPRINT_CLAUDE_MODEL=haiku
 | `/search` | 문서 RAG(`chunks_v2`/`summaries`)를 우선 검색하고, 결과가 약하면 `memory_chunks` 를 read-only fallback 으로 조회합니다. |
 | Setup | 선택 벡터 검색 의존성 설치, 모델 warmup, memory embedding backfill 을 한 명령으로 처리합니다. |
 | Routing | `<project>/.imprint/UserPromptSubmit.md` 의 키워드 룰을 보고 routing advisory 를 prepend 합니다. |
-| Soul | `<project>/.imprint/soul.md` 를 세션 시작·압축 후 자동 prepend 합니다. |
+| Guardrail | `<project>/.imprint/Guardrail.md` 를 세션 시작·압축 후 자동 prepend 합니다. |
 | HUD | Claude Code statusline 에 5h/wk/context 사용량과 plugin 상태를 표시할 수 있습니다. |
 
 ## 기본 흐름

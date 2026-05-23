@@ -1537,7 +1537,7 @@ with db() as conn:
 
 
 def tc_18_codex_hook_io(env: dict, home: str, case: CaseResult) -> None:
-    """Codex hook JSON output + last_assistant_message Stop 경로."""
+    """Codex hook JSON output + compact Guardrail + last_assistant_message Stop 경로."""
     env_h = codex_hook_env(env)
     env_h["IMPRINT_CODEX_BIN"] = make_fake_codex(home)
 
@@ -1550,6 +1550,40 @@ def tc_18_codex_hook_io(env: dict, home: str, case: CaseResult) -> None:
         case.passed = False
         case.detail = f"session-start rc={rc} err={err[:120]}"
         return
+
+    rc, compact_out, err = run_cmd(
+        env_h,
+        ["bash", "scripts/imprint/session-start.sh"],
+        input_text=json.dumps(
+            {"hook_event_name": "SessionStart", "matcher": "compact"},
+            ensure_ascii=False,
+        ),
+    )
+    if rc != 0:
+        case.passed = False
+        case.detail = f"compact session-start rc={rc} err={err[:120]}"
+        return
+
+    with tempfile.TemporaryDirectory(prefix="imprint-guardrail-project-") as project_tmp:
+        legacy_dir = Path(project_tmp) / ".imprint"
+        legacy_dir.mkdir(parents=True, exist_ok=True)
+        (legacy_dir / "soul.md").write_text("legacy guardrail 문구", encoding="utf-8")
+        env_legacy = dict(env_h)
+        env_legacy.pop("IMPRINT_NO_SEED", None)
+        legacy_proc = subprocess.run(
+            ["bash", str(ROOT / "scripts" / "imprint" / "session-start.sh")],
+            input=json.dumps({"hook_event_name": "SessionStart"}, ensure_ascii=False),
+            env=env_legacy,
+            capture_output=True,
+            text=True,
+            cwd=project_tmp,
+        )
+        legacy_guardrail = legacy_dir / "Guardrail.md"
+        legacy_migrated = (
+            legacy_proc.returncode == 0
+            and legacy_guardrail.exists()
+            and legacy_guardrail.read_text(encoding="utf-8") == "legacy guardrail 문구"
+        )
 
     ups_input = json.dumps(
         {
@@ -1582,12 +1616,16 @@ def tc_18_codex_hook_io(env: dict, home: str, case: CaseResult) -> None:
         session_json = json.loads(session_out)
         ups_json = json.loads(ups_out)
         stop_json = json.loads(stop_out)
+        legacy_json = json.loads(legacy_proc.stdout)
     except json.JSONDecodeError as exc:
         case.passed = False
         case.detail = f"json parse failed: {exc}"
         return
 
     session_ctx = session_json.get("hookSpecificOutput", {}).get("additionalContext", "")
+    compact_json = json.loads(compact_out)
+    compact_ctx = compact_json.get("hookSpecificOutput", {}).get("additionalContext", "")
+    legacy_ctx = legacy_json.get("hookSpecificOutput", {}).get("additionalContext", "")
     ups_ctx = ups_json.get("hookSpecificOutput", {}).get("additionalContext", "")
     rows = db_query(
         home,
@@ -1597,19 +1635,24 @@ def tc_18_codex_hook_io(env: dict, home: str, case: CaseResult) -> None:
     )
     case.metrics = {
         "session_json": bool(session_ctx),
+        "compact_guardrail": bool(compact_ctx),
+        "legacy_guardrail": legacy_migrated and "legacy guardrail 문구" in legacy_ctx,
         "ups_json": bool(ups_ctx),
         "stop_continue": stop_json.get("continue"),
         "llm_response": len(rows),
     }
     case.passed = (
-        "[imprint soul" in session_ctx
+        "[imprint Guardrail" in session_ctx
+        and "[imprint Guardrail" in compact_ctx
+        and case.metrics["legacy_guardrail"]
         and "[Project memory context]" in ups_ctx
         and stop_json.get("continue") is True
         and len(rows) == 1
         and "테스트 모드" in rows[0][1]
     )
     case.detail = (
-        f"session_json={bool(session_ctx)} ups_json={bool(ups_ctx)} "
+        f"session_json={bool(session_ctx)} compact={bool(compact_ctx)} "
+        f"legacy={case.metrics['legacy_guardrail']} ups_json={bool(ups_ctx)} "
         f"stop_continue={stop_json.get('continue')} llm_response={len(rows)}"
     )
 

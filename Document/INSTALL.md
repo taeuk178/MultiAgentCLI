@@ -259,7 +259,7 @@ export IMPRINT_DISABLE_SQLITE_VEC=1
 
 ### 자동 hook 경로
 
-- `SessionStart`: SQLite 스키마 적용, 프로젝트 등록, `.imprint/soul.md` prepend.
+- `SessionStart`: SQLite 스키마 적용, 프로젝트 등록, `.imprint/Guardrail.md` prepend.
 - `UserPromptSubmit`: user prompt redaction, `events.user_message` 저장, working mini-chunk 저장, routing rule 평가, need-retrieval gate, context section prefill, lazy-fetch worker spawn.
 - `Stop`: 마지막 assistant 응답 redaction, `events.llm_response` 저장, persistent response extract worker spawn.
 

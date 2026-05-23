@@ -54,7 +54,7 @@ API key 없이 host 의 OAuth 구독을 그대로 사용합니다. 무거운 LLM
 
 ### Hook 계층
 
-- `SessionStart`: 스키마 적용, 프로젝트 row upsert, `.imprint/soul.md` prepend.
+- `SessionStart`: 스키마 적용, 프로젝트 row upsert, `.imprint/Guardrail.md` prepend. `startup|resume|clear|compact` matcher 로 세션 시작과 compact 이후 모두 Guardrail 을 다시 주입합니다.
 - `UserPromptSubmit`: prompt redaction, `events.user_message` 저장, working mini-chunk 저장, routing rule 평가, need-retrieval gate, context section prefill, lazy-fetch worker spawn.
 - `Stop`: assistant 응답 redaction, `events.llm_response` archive, response extract worker spawn.
 
@@ -223,9 +223,10 @@ RAG 기본 루프가 안정된 뒤 진입합니다.
 prompt, terminal output, external source 에 secret 이 섞일 수 있습니다.
 
 대응:
+- 민감한 정보는 저장하지 않는 것을 원칙으로 합니다. API key, OAuth token, 비밀번호, 인증 쿠키, 개인식별정보, 사내 기밀 원문은 `/remember`, memory candidate, 문서 chunk 로 남기지 않습니다.
 - default redaction rule.
 - 사용자 custom redaction rule.
-- 저장 전 redaction.
+- 저장이 꼭 필요한 경우에는 값 자체를 `[REDACTED]` 로 치환하고 비민감 요약만 남깁니다.
 - 과거 DB 청소는 사용자 승인 후 별도 작업.
 
 ### 컨텍스트 오염

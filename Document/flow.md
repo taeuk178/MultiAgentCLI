@@ -84,7 +84,7 @@ flowchart LR
     %% ===== Center: foreground hook path =====
     subgraph FG["Foreground hook path"]
       direction TB
-      SS["SessionStart<br/>schema + project upsert<br/>soul.md prepend"]
+      SS["SessionStart<br/>schema + project upsert<br/>Guardrail.md prepend"]
       UPS["UserPromptSubmit<br/>redact + event archive"]
       MINI["Working mini-chunk<br/>raw_turn + deterministic surfaces"]
       GATE{"Need retrieval?"}
@@ -228,7 +228,7 @@ flowchart LR
 | schema 적용 | `sqlite3` | DB 초기화 누락, hook 은 silent exit |
 | project upsert | `sqlite3`, project root | memory project 분리 누락 |
 | `.imprint/` seed | `bash`, filesystem | 기본 파일만 누락, 기존 파일은 덮어쓰지 않음 |
-| `soul.md` emit | `cat` | persona prepend 누락 |
+| `Guardrail.md` emit | `cat` | Guardrail prepend 누락 |
 
 ### UserPromptSubmit
 
@@ -481,7 +481,7 @@ UPS hook 자동 경로는 `LOG → ROUTE → PREFILL → CTX0` 만 실행해 < 5
 
 | 경로 | 내용 |
 |---|---|
-| `<project>/.imprint/soul.md` | 세션 시작·압축 후 prepend 되는 project persona |
+| `<project>/.imprint/Guardrail.md` | 세션 시작·압축 후 prepend 되는 project Guardrail |
 | `<project>/.imprint/UserPromptSubmit.md` | keyword 기반 routing advisory rule |
 | `<project>/.imprint/sources.json` | Slack/Notion lazy-fetch 대상 |
 | `~/.imprint/app.sqlite` | events, memory_chunks, retrieval v2 tables |

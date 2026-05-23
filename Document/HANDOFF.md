@@ -38,7 +38,7 @@ TOTAL  23 PASS / 0 FAIL
 
 ## 확인 체크리스트
 
-- 새 세션 시작 시 `SessionStart` 가 스키마 적용과 `soul.md` prepend 를 조용히 수행하는지.
+- 새 세션 시작과 compact 직후 `SessionStart` 가 스키마 적용과 `Guardrail.md` prepend 를 조용히 수행하는지.
 - 질문 직후 `[Project memory context]` 가 query/session/retrieved/external section 으로 나뉘는지.
 - Stop extract 또는 external lazy-fetch 결과가 다음 turn 의 후보로 보이는지.
 - `/search` 가 `chunks_v2` 를 우선하고, 저신뢰일 때만 `memory_chunks` fallback 을 여는지.

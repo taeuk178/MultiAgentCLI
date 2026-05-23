@@ -15,6 +15,12 @@
 
 기록 순서는 **최신이 위**. 항목당 한 단락 안에 변경/사유/대안 폐기 근거를 묶는다.
 
+## 2026-05-24 — Soul 을 Guardrail 로 명칭 변경
+
+**무엇:** 세션 시작 컨텍스트 파일의 사용자-facing 명칭을 `soul.md` 에서 `Guardrail.md` 로 바꿨다. `SessionStart` 는 이제 `<project>/.imprint/Guardrail.md` 를 우선 prepend 하고, `startup|resume|clear|compact` matcher 로 compact 이후에도 같은 Guardrail 을 다시 주입한다. 기존 프로젝트의 `.imprint/soul.md` 는 첫 seed 시 `.imprint/Guardrail.md` 로 1회 복사하되 legacy 파일은 자동 삭제하지 않는다. Guardrail default 에 민감정보 저장 금지 원칙을 넣고, LoadMap 에도 API key, OAuth token, 비밀번호, 인증 쿠키, 개인식별정보, 사내 기밀 원문은 memory 로 남기지 않는다는 원칙을 명시했다.
+
+**왜:** `Soul` 은 persona 느낌이 강해 실제 역할인 안전 기준·운영 규칙·저장 금지 정책을 설명하기에 모호했다. `Guardrail` 은 모델이 세션 시작과 compact 이후 다시 참고해야 하는 기준선이라는 뜻이 명확하다. 기존 파일을 바로 삭제하거나 rename 만 강제하는 대안은 사용자 편집 파일을 잃을 수 있으므로, 복사 migration 과 legacy fallback 을 둔다.
+
 ## 2026-05-24 — setup vector 진행 로그와 실패 힌트 보강
 
 **무엇:** `imprint setup vector` 가 `--status`, `--install`, `--warmup`, `--backfill` 단계마다 `[imprint setup] status 시작/완료`, `install 실패 ...` 같은 한국어 진행 로그를 stdout/stderr 와 `plugin.log` 에 남기도록 보강했다. 실패 시 단계별 힌트(`pip`/네트워크/PEP 668, HF Hub 인증·모델 cache, project id/backfill 확인)를 출력하고, 알 수 없는 옵션은 사용자가 입력한 오타를 그대로 저장하거나 무시하지 않고 에러와 로그로 남긴다. `TC-23` 으로 status 진행 로그와 오타 옵션 거부를 회귀 테스트에 추가했다.
