@@ -39,6 +39,15 @@ CREATE INDEX IF NOT EXISTS idx_events_project_created
 CREATE INDEX IF NOT EXISTS idx_events_project_noise
   ON events (project_id, noise, created_at DESC);
 
+CREATE TABLE IF NOT EXISTS extract_state (
+  project_id      TEXT NOT NULL REFERENCES projects(id),
+  session_id      TEXT NOT NULL,
+  last_created_at TEXT,
+  last_event_id   TEXT,
+  last_rolled_at  TEXT,
+  PRIMARY KEY (project_id, session_id)
+);
+
 -- 과거 advisor skill이 사용했던 provider_runs 테이블은 제거됐다.
 -- 기존 사용자 DB에 남아 있는 row는 그대로 두되 새 사용자는 만들지 않는다.
 

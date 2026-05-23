@@ -54,9 +54,9 @@ API key 없이 host 의 OAuth 구독을 그대로 사용합니다. 무거운 LLM
 
 ### Hook 계층
 
-- `SessionStart`: 스키마 적용, 프로젝트 row upsert, `.imprint/Guardrail.md` prepend. `startup|resume|clear|compact` matcher 로 세션 시작과 compact 이후 모두 Guardrail 을 다시 주입합니다.
+- `SessionStart`: 스키마 적용, 프로젝트 row upsert, `.imprint/Guardrail.md` prepend. `startup|resume|clear|compact` matcher 로 세션 시작과 compact 이후 모두 Guardrail 을 다시 주입합니다. 현재 session_id 를 알면 현재 세션을 제외한 stale session rollup 을 background 로 보완합니다.
 - `UserPromptSubmit`: prompt redaction, `events.user_message` 저장, working surface metadata 저장, routing rule 평가, need-retrieval gate, context section prefill, lazy-fetch worker spawn.
-- `Stop`: assistant 응답 redaction, `events.llm_response` archive, response extract worker spawn.
+- `Stop`: assistant 응답 redaction, `events.llm_response` archive 및 session_id metadata 저장, flat response extract worker spawn.
 
 동기 hook 은 사용자 turn 을 막지 않는 경량 작업만 수행합니다. 외부 fetch 와 Haiku 기반 추출은 background 로 분리합니다.
 
@@ -64,7 +64,7 @@ API key 없이 host 의 OAuth 구독을 그대로 사용합니다. 무거운 LLM
 
 `events` 는 raw I/O archive 입니다. redaction 후 저장하고, 짧은 backchannel turn 은 `noise=1` 로 soft flag 만 붙입니다.
 
-`search_entries` 는 기본 사용자 RAG 기억이자 명시 검색 단일 인덱스입니다. Stop hook 추출, external lazy-fetch, `/remember`, source document chunk 가 여기에 저장됩니다. 다음 turn prefill, `/memory search/list/show/inject`, `/search` 가 이 테이블을 읽습니다.
+`search_entries` 는 기본 사용자 RAG 기억이자 명시 검색 단일 인덱스입니다. Stop hook flat 추출, delta/rollup rich 추출, external lazy-fetch, `/remember`, source document chunk 가 여기에 저장됩니다. 다음 turn prefill, `/memory search/list/show/inject`, `/search` 가 이 테이블을 읽습니다.
 
 `source_documents` / `search_entries` / `search_summaries` 는 retrieval 문서 RAG 계층입니다. 명시 ingestion 된 원본 문서는 `source_documents` 에 저장되고, chunking 된 검색 단위는 `search_entries(origin=source_document)` 로 들어가며, feature/document/project 요약은 `search_summaries` 로 관리합니다.
 

@@ -12,6 +12,9 @@ usage:
   python3 -m retrieval.cli summarize <project_id> [source_document_id]
   python3 -m retrieval.cli contradiction-scan <project_id>
   python3 -m retrieval.cli migrate-search-entries
+  python3 -m retrieval.cli rollup-session <project_id> <session_id> [--all] [--json]
+  python3 -m retrieval.cli rollup-latest <project_id> [--all] [--json]
+  python3 -m retrieval.cli rollup-stale <project_id> [--exclude-session <id>] [--max-sessions <n>] [--json]
 """
 from __future__ import annotations
 
@@ -26,6 +29,7 @@ from . import summary as summary_mod
 from .assembly import format_for_claude, format_routed_for_claude
 from .ingest import ingest_document
 from .retrieve import retrieve
+from . import rollup as rollup_mod
 from .routing import routed_retrieve
 from .scope import classify
 from .version import find_supersede_candidates
@@ -296,6 +300,110 @@ def cmd_extract_entities(argv: list[str]) -> int:
     return 0
 
 
+def _print_rollup(data: dict, *, as_json: bool) -> None:
+    if as_json:
+        print(json.dumps(data, ensure_ascii=False))
+        return
+    if "results" in data:
+        print(
+            f"rollup stale sessions={len(data.get('sessions') or [])} "
+            f"entries={data.get('entries_inserted', 0)}"
+        )
+        for result in data.get("results") or []:
+            print(
+                f"- {result.get('session_id')}: batches={result.get('batches')} "
+                f"events={result.get('events_processed')} entries={result.get('entries_inserted')}"
+            )
+        return
+    print(
+        f"rollup session={data.get('session_id')} batches={data.get('batches')} "
+        f"events={data.get('events_processed')} entries={data.get('entries_inserted')} "
+        f"remaining={data.get('remaining')}"
+    )
+
+
+def cmd_rollup_session(argv: list[str]) -> int:
+    if len(argv) < 2:
+        print("usage: rollup-session <project_id> <session_id> [--all] [--json]", file=sys.stderr)
+        return 2
+    project_id, session_id = argv[:2]
+    flags = set(argv[2:])
+    unknown = [a for a in argv[2:] if a not in {"--all", "--json"}]
+    if unknown:
+        print(f"unknown option: {unknown[0]}", file=sys.stderr)
+        return 2
+    stats = rollup_mod.rollup_session(project_id, session_id, all_batches="--all" in flags)
+    _print_rollup(stats.to_dict(), as_json="--json" in flags)
+    return 0
+
+
+def cmd_rollup_latest(argv: list[str]) -> int:
+    if not argv:
+        print("usage: rollup-latest <project_id> [--all] [--json]", file=sys.stderr)
+        return 2
+    project_id = argv[0]
+    flags = set(argv[1:])
+    unknown = [a for a in argv[1:] if a not in {"--all", "--json"}]
+    if unknown:
+        print(f"unknown option: {unknown[0]}", file=sys.stderr)
+        return 2
+    session_id = rollup_mod.latest_session(project_id)
+    if not session_id:
+        data = {"project_id": project_id, "session_id": "", "batches": 0, "events_processed": 0, "entries_inserted": 0}
+        _print_rollup(data, as_json="--json" in flags)
+        return 0
+    stats = rollup_mod.rollup_session(project_id, session_id, all_batches="--all" in flags)
+    _print_rollup(stats.to_dict(), as_json="--json" in flags)
+    return 0
+
+
+def cmd_rollup_stale(argv: list[str]) -> int:
+    if not argv:
+        print("usage: rollup-stale <project_id> [--exclude-session <id>] [--max-sessions <n>] [--all] [--json]", file=sys.stderr)
+        return 2
+    project_id = argv[0]
+    exclude_session = ""
+    max_sessions = rollup_mod.DEFAULT_MAX_STALE_SESSIONS
+    all_batches = False
+    as_json = False
+    i = 1
+    while i < len(argv):
+        arg = argv[i]
+        if arg == "--exclude-session":
+            if i + 1 >= len(argv):
+                print("usage: --exclude-session <id>", file=sys.stderr)
+                return 2
+            exclude_session = argv[i + 1]
+            i += 2
+        elif arg == "--max-sessions":
+            if i + 1 >= len(argv):
+                print("usage: --max-sessions <n>", file=sys.stderr)
+                return 2
+            try:
+                max_sessions = int(argv[i + 1])
+            except ValueError:
+                print("error: --max-sessions must be an integer", file=sys.stderr)
+                return 2
+            i += 2
+        elif arg == "--all":
+            all_batches = True
+            i += 1
+        elif arg == "--json":
+            as_json = True
+            i += 1
+        else:
+            print(f"unknown option: {arg}", file=sys.stderr)
+            return 2
+    data = rollup_mod.rollup_stale(
+        project_id,
+        exclude_session=exclude_session,
+        max_sessions=max_sessions,
+        all_batches=all_batches,
+    )
+    _print_rollup(data, as_json=as_json)
+    return 0
+
+
 def cmd_entities(argv: list[str]) -> int:
     """`/memory entities` 류 review queue UI 의 텍스트 백엔드.
 
@@ -388,6 +496,9 @@ COMMANDS = {
     "migrate-search-entries": cmd_migrate_search_entries,
     "embed-entries": cmd_embed_entries,
     "extract-entities": cmd_extract_entities,
+    "rollup-session": cmd_rollup_session,
+    "rollup-latest": cmd_rollup_latest,
+    "rollup-stale": cmd_rollup_stale,
     "entities": cmd_entities,
 }
 

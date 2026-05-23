@@ -34,14 +34,16 @@ def _insert_event(
     kind: str,
     text: str,
     created_at: str,
+    session_id: str = "",
 ) -> None:
+    metadata = {"session_id": session_id} if session_id else {}
     conn.execute(
         """
         INSERT OR REPLACE INTO events
           (id, project_id, source, kind, text_clean, metadata_json, noise, created_at)
-        VALUES (?, ?, 'eval', ?, ?, '{}', 0, ?)
+        VALUES (?, ?, 'eval', ?, ?, ?, 0, ?)
         """,
-        (event_id, project_id, kind, text, created_at),
+        (event_id, project_id, kind, text, json.dumps(metadata, ensure_ascii=False), created_at),
     )
 
 
@@ -57,6 +59,7 @@ def seed_events_and_extract(
 
     inserted = 0
     assistant_turns = 0
+    session_id = str(fixture.get("session_id") or fixture.get("id") or "eval-session")
     for idx, turn in enumerate(fixture.get("turns") or []):
         if not isinstance(turn, dict):
             continue
@@ -72,6 +75,7 @@ def seed_events_and_extract(
             kind="user_message" if role == "user" else "llm_response",
             text=text,
             created_at=f"2026-05-24T00:{idx:02d}:00Z",
+            session_id=session_id,
         )
         if role != "assistant":
             continue
@@ -91,6 +95,11 @@ def seed_events_and_extract(
                 chunk_type,
                 chunk_text,
                 [str(k) for k in keywords],
+                reason=chunk.get("reason"),
+                files=chunk.get("files"),
+                symbols=chunk.get("symbols"),
+                alternatives=chunk.get("alternatives"),
+                tests=chunk.get("tests"),
             ):
                 inserted += 1
     return {"assistant_turns": assistant_turns, "inserted": inserted}

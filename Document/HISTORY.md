@@ -15,6 +15,14 @@
 
 기록 순서는 **최신이 위**. 항목당 한 단락 안에 변경/사유/대안 폐기 근거를 묶는다.
 
+## 2026-05-24 — delta/rollup extract 로 구현 결정 arc 저장
+
+**무엇:** 여러 turn 에 걸친 구현 결정 흐름을 `search_entries` 로 정제하기 위해 delta/rollup extract 를 추가했다. `Stop` 은 assistant `llm_response` event 에도 `metadata_json.session_id` 를 저장하고, per-turn extract 는 `fix/todo/command/error/test_result` 같은 flat 타입만 즉시 저장한다. `decision/code_context/summary/note` 는 `extract_state(project_id, session_id)` cursor 기반 bounded rollup 이 담당하며, 명시 명령은 `scripts/imprint/rollup.sh --session-id <id>|--latest|--stale` 와 `python3 -m retrieval.cli rollup-*` 로 제공한다. `SessionStart` 는 현재 session_id 를 알 때만 현재 세션을 제외한 30분 이상 stale session 을 background 로 보완 rollup 한다.
+
+**왜:** 구현 이유는 보통 "A안 제안 → 사용자 반박 → B안 결정 → 테스트"처럼 여러 turn 에 걸쳐 드러난다. 마지막 assistant 응답만 보는 Stop extract 를 단순히 N-turn window 로 넓히면 같은 결정이 매 turn 다른 문장으로 재추출되어 text_hash dedup 을 빠져나가는 near-duplicate 가 쌓인다. 따라서 per-turn 과 rollup 의 타입 집합을 분리해 중복을 구조적으로 막고, rollup 재실행 중복은 search entry insert 와 cursor 전진을 한 SQLite transaction 으로 묶어 dedup 이 아니라 atomic cursor 로 막는다.
+
+**남은 점:** 신선도 요구가 생기면 per-turn decision 즉시 저장 + rollup supersede(B안) 로 승격할 수 있다. 긴 세션 자동 K-turn cadence, `feature_key`/`plan_key` 자동 채움, file/symbol 정규화, search 결과 grouping, `/search --events` 는 별도 retrieval/output 트랙으로 남긴다.
+
 ## 2026-05-24 — `search_entries` 통합 스키마 구현
 
 **무엇:** 2026-05-24 결정 로그의 `search_entries` 통합 설계를 실제 코드에 반영했다. 새 스키마는 `source_documents`, `search_entries`, `search_summaries`, `entry_entities` 를 만들고, 신규 DB에서는 `memory_chunks`, `documents`, `chunks_v2`, `events_fts` 를 더 이상 만들지 않는다. `/remember`, assistant response extract, Slack/Notion lazy-fetch, source document ingest 는 모두 `search_entries` 에 직접 저장한다. working overlay 는 영구 entry 로 만들지 않고 `events.metadata_json.query_surfaces`/`need_retrieval`/`retrieval_reason` 을 검색 시점에 읽는다. `origin=source_document` 는 `source_document_id` 가 있는 명시 ingest row 에만 쓰고, lazy-fetch 는 `external_fetch`, 상태 marker 는 `source_status` 로 분리한다. 기존 사용자 DB는 자동 파괴하지 않고 `imprint migrate search-entries` 명시 명령으로 백업 후 one-shot migration 한다.

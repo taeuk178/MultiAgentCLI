@@ -144,8 +144,14 @@ joined="$*"
 stdin="$(cat)"
 joined="$joined $stdin"
 case "$joined" in
+  *"Extract low-cost flat memory chunks"*)
+    printf '%s\\n' '[{{"chunk_type":"fix","text":"A 버튼 클릭 테스트 명령을 수정했습니다. {raw_token}","keywords":["A 버튼","{raw_token}"]}}]'
+    ;;
+  *"Extract cross-turn implementation memory"*)
+    printf '%s\\n' '[{{"chunk_type":"summary","text":"A 버튼 구현 흐름을 세션 rollup으로 요약했습니다.","keywords":["A 버튼","rollup"]}}]'
+    ;;
   *"Extract persistent memory chunks"*)
-    printf '%s\\n' '[{{"raw_type":"decision","text":"A 버튼 클릭은 {raw_token} 없이 테스트 모드를 시작합니다.","keywords":["A 버튼","{raw_token}"]}}]'
+    printf '%s\\n' '[{{"chunk_type":"decision","text":"A 버튼 클릭은 {raw_token} 없이 테스트 모드를 시작합니다.","keywords":["A 버튼","{raw_token}"]}}]'
     ;;
   *"contradiction judge"*)
     printf '%s\\n' '{{"verdict":"contradiction","score":0.95,"reason":"새 결정이 기존 즉시 진입 결정을 대체합니다."}}'
@@ -181,8 +187,14 @@ joined="$*"
 stdin="$(cat)"
 joined="$joined $stdin"
 case "$joined" in
+  *"Extract low-cost flat memory chunks"*)
+    result='[{{"chunk_type":"fix","text":"A 버튼 클릭 테스트 명령을 수정했습니다. {raw_token}","keywords":["A 버튼","{raw_token}"]}}]'
+    ;;
+  *"Extract cross-turn implementation memory"*)
+    result='[{{"chunk_type":"summary","text":"A 버튼 구현 흐름을 세션 rollup으로 요약했습니다.","keywords":["A 버튼","rollup"]}}]'
+    ;;
   *"Extract persistent memory chunks"*)
-    result='[{{"raw_type":"decision","text":"A 버튼 클릭은 {raw_token} 없이 테스트 모드를 시작합니다.","keywords":["A 버튼","{raw_token}"]}}]'
+    result='[{{"chunk_type":"decision","text":"A 버튼 클릭은 {raw_token} 없이 테스트 모드를 시작합니다.","keywords":["A 버튼","{raw_token}"]}}]'
     ;;
   *"contradiction judge"*)
     result='{{"verdict":"contradiction","score":0.95,"reason":"새 결정이 기존 즉시 진입 결정을 대체합니다."}}'
@@ -1245,11 +1257,6 @@ def fake_model(_prompt, **_kwargs):
             "alternatives": [f"LoginViewModel에 계속 둔다 {secret}"],
             "tests": ["pytest tests/test_share_link.py"],
         },
-        {
-            "chunk_type": "fix",
-            "text": "공유 링크 테스트 실패를 수정했다.",
-            "keywords": ["공유 링크", "테스트"],
-        },
     ], ensure_ascii=False)
 
 ingestion.run_background_model = fake_model
@@ -1271,10 +1278,11 @@ with ingestion.db() as conn:
             tests=ch.get("tests"),
         ))
     conn.commit()
+    placeholders = ",".join("?" for _ in ids)
     rows = conn.execute(
         "SELECT raw_type, text, retrieval_text, metadata_json FROM search_entries "
-        "WHERE id IN (%s) ORDER BY raw_type",
-        ids,
+        f"WHERE id IN ({placeholders}) ORDER BY raw_type",
+        tuple(ids),
     ).fetchall()
 
 print(json.dumps({
@@ -1290,7 +1298,7 @@ print(json.dumps({
     ],
     "secret": secret,
 }, ensure_ascii=False))
-""" % (str(LIB_DIR), PROJECT_ID, ",".join(["?"] * 2))
+""" % (str(LIB_DIR), PROJECT_ID)
     rc, out, err = run_python(env, code)
     try:
         result = json.loads(out)
@@ -1300,14 +1308,12 @@ print(json.dumps({
     rows = result.get("rows") or []
     decision_chunk = next((c for c in chunks if c.get("chunk_type") == "decision"), {})
     decision_row = next((r for r in rows if r.get("raw_type") == "decision"), {})
-    fix_row = next((r for r in rows if r.get("raw_type") == "fix"), {})
     metadata = decision_row.get("metadata") or {}
     retrieval_text = decision_row.get("retrieval_text") or ""
     metadata_blob = json.dumps(metadata, ensure_ascii=False)
     secret = result.get("secret") or ""
     checks = {
         "ok": rc == 0,
-        "kept_flat_fix": bool(fix_row and fix_row.get("text") == "공유 링크 테스트 실패를 수정했다."),
         "kept_real_file": metadata.get("files") == ["Sources/Auth/ShareLinkBuilder.swift"],
         "dropped_fake_file": "Sources/Fake.swift" not in metadata_blob,
         "kept_real_symbol": metadata.get("symbols") == ["ShareLinkBuilder"],
@@ -1323,6 +1329,231 @@ print(json.dumps({
     case.detail = (
         f"rows={len(rows)} file={checks['kept_real_file']} "
         f"redacted={checks['redacted_surface']}"
+    )
+    if not case.passed:
+        case.detail += f" err={err[:120]}"
+
+
+def tc_27_stop_session_and_flat_extract(env: dict, home: str, case: CaseResult) -> None:
+    """Stop stores session_id metadata and flat extract excludes rich decision types."""
+    env_h = codex_hook_env(env)
+    stop_input = json.dumps(
+        {
+            "hook_event_name": "Stop",
+            "last_assistant_message": "결정: A 대신 B로 바꿉니다. 수정: 테스트 명령을 고쳤습니다.",
+            "session_id": "tc27-session",
+        },
+        ensure_ascii=False,
+    )
+    rc, _, err = run_cmd(env_h, ["bash", "scripts/imprint/stop.sh"], input_text=stop_input)
+    rows = db_query(
+        home,
+        """
+        SELECT json_extract(metadata_json, '$.session_id'), text_clean
+        FROM events
+        WHERE kind = 'llm_response'
+          AND text_clean LIKE '%A 대신 B%'
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1
+        """,
+    )
+    code = """
+import json, sys
+sys.path.insert(0, %r)
+import ingestion
+
+def fake_model(_prompt, **_kwargs):
+    return json.dumps([
+        {"chunk_type": "decision", "text": "B안으로 바꾼다.", "keywords": ["B안"]},
+        {"chunk_type": "fix", "text": "테스트 명령을 고쳤다.", "keywords": ["테스트"]},
+    ], ensure_ascii=False)
+
+ingestion.run_background_model = fake_model
+print(json.dumps({
+    "flat": ingestion.extract_chunks_from_response("결정과 수정이 함께 있음", mode="flat"),
+    "rich": ingestion.extract_chunks_from_response("결정과 수정이 함께 있음", mode="rich"),
+}, ensure_ascii=False))
+""" % (str(LIB_DIR),)
+    rc_py, out, err_py = run_python(env, code)
+    parsed = json.loads(out) if out else {}
+    flat_types = [c.get("chunk_type") for c in parsed.get("flat") or []]
+    rich_types = [c.get("chunk_type") for c in parsed.get("rich") or []]
+    checks = {
+        "stop_ok": rc == 0,
+        "session_metadata": bool(rows and rows[0][0] == "tc27-session"),
+        "flat_excludes_decision": flat_types == ["fix"],
+        "rich_excludes_fix": rich_types == ["decision"],
+        "py_ok": rc_py == 0,
+    }
+    case.metrics = checks | {"flat": flat_types, "rich": rich_types, "err": (err or err_py)[:120]}
+    case.passed = all(checks.values())
+    case.detail = f"session={rows[0][0] if rows else None} flat={flat_types} rich={rich_types}"
+
+
+def tc_28_rollup_session_cursor(env: dict, home: str, case: CaseResult) -> None:
+    """Rollup creates rich entries once and cursor prevents duplicate reruns."""
+    code = """
+import json, sqlite3, sys
+sys.path.insert(0, %r)
+import ingestion
+from retrieval import rollup
+from retrieval.retrieve import retrieve
+
+def fake_model(_prompt, **_kwargs):
+    return json.dumps([
+        {
+            "chunk_type": "decision",
+            "text": "공유 링크 구현은 B안인 ShareLinkBuilder로 분리한다.",
+            "keywords": ["ShareLinkBuilder", "B안", "공유 링크"],
+            "reason": "A안은 LoginViewModel 책임이 커져서 폐기했다.",
+            "files": ["Sources/Auth/ShareLinkBuilder.swift"],
+            "symbols": ["ShareLinkBuilder"],
+            "tests": ["pytest tests/test_share_link.py"],
+        }
+    ], ensure_ascii=False)
+
+ingestion.run_background_model = fake_model
+with ingestion.db() as conn:
+    rows = [
+        ("tc28-01", "user_message", "처음엔 LoginViewModel에 공유 링크를 넣는 A안으로 갈까요?", "2026-05-24T01:00:00Z"),
+        ("tc28-02", "llm_response", "A안은 가능하지만 LoginViewModel 책임이 커집니다.", "2026-05-24T01:01:00Z"),
+        ("tc28-03", "user_message", "책임이 커지면 별도 builder가 낫지 않나요?", "2026-05-24T01:02:00Z"),
+        ("tc28-04", "llm_response", "결정: Sources/Auth/ShareLinkBuilder.swift의 ShareLinkBuilder로 B안 분리합니다. pytest tests/test_share_link.py로 검증합니다.", "2026-05-24T01:03:00Z"),
+    ]
+    for event_id, kind, text, created_at in rows:
+        conn.execute(
+            "INSERT INTO events (id, project_id, source, kind, text_clean, metadata_json, noise, created_at) "
+            "VALUES (?, ?, 'eval', ?, ?, ?, 0, ?)",
+            (event_id, %r, kind, text, json.dumps({"session_id": "tc28-session"}, ensure_ascii=False), created_at),
+        )
+    conn.commit()
+
+first = rollup.rollup_session(%r, "tc28-session", all_batches=True).to_dict()
+second = rollup.rollup_session(%r, "tc28-session", all_batches=True).to_dict()
+with ingestion.db() as conn:
+    entries = conn.execute(
+        "SELECT raw_type, text, retrieval_text, metadata_json FROM search_entries "
+        "WHERE project_id = ? AND json_extract(metadata_json, '$.session_id') = 'tc28-session'",
+        (%r,),
+    ).fetchall()
+    state = conn.execute(
+        "SELECT last_event_id FROM extract_state WHERE project_id = ? AND session_id = 'tc28-session'",
+        (%r,),
+    ).fetchone()
+result = retrieve("ShareLinkBuilder 왜 B안", %r, top_k=5)
+haystack = "\\n".join([c.text + "\\n" + c.retrieval_text for c in result.candidates])
+print(json.dumps({
+    "first": first,
+    "second": second,
+    "entries": [
+        {"raw_type": r[0], "text": r[1], "retrieval_text": r[2], "metadata": json.loads(r[3] or "{}")}
+        for r in entries
+    ],
+    "state": state[0] if state else None,
+    "haystack": haystack,
+}, ensure_ascii=False))
+""" % (str(LIB_DIR), PROJECT_ID, PROJECT_ID, PROJECT_ID, PROJECT_ID, PROJECT_ID, PROJECT_ID)
+    rc, out, err = run_python(env, code)
+    parsed = json.loads(out) if out else {}
+    entries = parsed.get("entries") or []
+    blob = json.dumps(entries, ensure_ascii=False)
+    haystack = parsed.get("haystack") or ""
+    checks = {
+        "ok": rc == 0,
+        "first_inserted": (parsed.get("first") or {}).get("entries_inserted") == 1,
+        "second_noop": (parsed.get("second") or {}).get("events_processed") == 0,
+        "one_entry": len(entries) == 1,
+        "cursor_last": parsed.get("state") == "tc28-04",
+        "metadata_range": "tc28-01" in blob and "tc28-04" in blob,
+        "search_recovers": "ShareLinkBuilder" in haystack and "A안은 LoginViewModel 책임" in haystack,
+    }
+    case.metrics = checks | {"parsed": parsed, "err": err[:160]}
+    case.passed = all(checks.values())
+    case.detail = (
+        f"inserted={(parsed.get('first') or {}).get('entries_inserted')} "
+        f"second={(parsed.get('second') or {}).get('events_processed')} entries={len(entries)}"
+    )
+    if not case.passed:
+        case.detail += f" err={err[:120]}"
+
+
+def tc_29_rollup_stale_and_bounded(env: dict, home: str, case: CaseResult) -> None:
+    """Stale session selection excludes current session and bounded batches advance cursor."""
+    code = """
+import json, sys
+sys.path.insert(0, %r)
+import ingestion
+from retrieval import rollup
+
+def fake_model(_prompt, **_kwargs):
+    return json.dumps([
+        {"chunk_type": "summary", "text": "bounded batch 요약", "keywords": ["bounded"]}
+    ], ensure_ascii=False)
+
+ingestion.run_background_model = fake_model
+with ingestion.db() as conn:
+    conn.execute(
+        "INSERT OR IGNORE INTO projects VALUES (?, ?, ?, ?, ?)",
+        (%r, %r, "root", "2026-05-24", "2026-05-24"),
+    )
+    events = [
+        ("tc29-old-1", "tc29-old", "user_message", "오래된 세션 1", "2020-01-01T01:00:00Z"),
+        ("tc29-old-2", "tc29-old", "llm_response", "오래된 세션 2", "2020-01-01T01:01:00Z"),
+        ("tc29-current-1", "tc29-current", "user_message", "현재 세션", "2020-01-01T01:00:00Z"),
+        ("tc29-fresh-1", "tc29-fresh", "user_message", "최신 세션", "2999-01-01T00:00:00Z"),
+        ("tc29-b-1", "tc29-bounded", "user_message", "bounded 1", "2026-05-24T02:00:00Z"),
+        ("tc29-b-2", "tc29-bounded", "llm_response", "bounded 2", "2026-05-24T02:01:00Z"),
+        ("tc29-b-3", "tc29-bounded", "user_message", "bounded 3", "2026-05-24T02:02:00Z"),
+    ]
+    for event_id, session_id, kind, text, created_at in events:
+        conn.execute(
+            "INSERT INTO events (id, project_id, source, kind, text_clean, metadata_json, noise, created_at) "
+            "VALUES (?, ?, 'eval', ?, ?, ?, 0, ?)",
+            (event_id, %r, kind, text, json.dumps({"session_id": session_id}, ensure_ascii=False), created_at),
+        )
+    conn.execute(
+        "INSERT INTO events (id, project_id, source, kind, text_clean, metadata_json, noise, created_at) "
+        "VALUES ('tc29-root-1', ?, 'eval', 'llm_response', 'root stale session', ?, 0, '2020-01-01T01:00:00Z')",
+        (%r, json.dumps({"session_id": "tc29-root"}, ensure_ascii=False)),
+    )
+    conn.commit()
+
+stale = rollup.stale_sessions(%r, exclude_session="tc29-current", stale_minutes=30, max_sessions=10)
+first = rollup.rollup_session(%r, "tc29-bounded", batch_events=2, max_chars=120).to_dict()
+second = rollup.rollup_session(%r, "tc29-bounded", batch_events=2, max_chars=120).to_dict()
+print(json.dumps({"stale": stale, "first": first, "second": second}, ensure_ascii=False))
+""" % (str(LIB_DIR), ROOT_PROJECT_ID, str(ROOT), PROJECT_ID, ROOT_PROJECT_ID, PROJECT_ID, PROJECT_ID, PROJECT_ID)
+    rc, out, err = run_python(env, code)
+    parsed = json.loads(out) if out else {}
+    env_cli = dict(env)
+    env_cli["IMPRINT_CODEX_BIN"] = make_fake_codex(home)
+    rc_script, out_script, err_script = run_cmd(
+        env_cli,
+        ["bash", "scripts/imprint/rollup.sh", "--stale", "--exclude-session", "tc29-current", "--json"],
+    )
+    try:
+        script_json = json.loads(out_script) if out_script else {}
+    except json.JSONDecodeError:
+        script_json = {}
+    stale = parsed.get("stale") or []
+    checks = {
+        "ok": rc == 0,
+        "old_selected": "tc29-old" in stale,
+        "current_excluded": "tc29-current" not in stale,
+        "fresh_excluded": "tc29-fresh" not in stale,
+        "first_batch_two": (parsed.get("first") or {}).get("events_processed") == 2,
+        "second_batch_one": (parsed.get("second") or {}).get("events_processed") == 1,
+        "script_ok": (
+            rc_script == 0
+            and script_json.get("project_id") == ROOT_PROJECT_ID
+            and "tc29-root" in (script_json.get("sessions") or [])
+        ),
+    }
+    case.metrics = checks | {"parsed": parsed, "script": script_json, "err": (err or err_script)[:160]}
+    case.passed = all(checks.values())
+    case.detail = (
+        f"stale={stale} first={(parsed.get('first') or {}).get('events_processed')} "
+        f"second={(parsed.get('second') or {}).get('events_processed')} script={rc_script}"
     )
     if not case.passed:
         case.detail += f" err={err[:120]}"
@@ -2018,6 +2249,9 @@ CASES: list[tuple[str, str, callable]] = [
     ("TC-24", "Extract eval harness", tc_24_extract_eval_harness),
     ("TC-25", "Retrieval text override", tc_25_retrieval_text_override),
     ("TC-26", "Decision-rich extract", tc_26_decision_rich_extract),
+    ("TC-27", "Stop session + flat extract", tc_27_stop_session_and_flat_extract),
+    ("TC-28", "Rollup session cursor", tc_28_rollup_session_cursor),
+    ("TC-29", "Rollup stale/bounded", tc_29_rollup_stale_and_bounded),
 ]
 
 

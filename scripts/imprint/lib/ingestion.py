@@ -64,6 +64,8 @@ CHUNK_TYPES = (
     "decision", "error", "fix", "command", "test_result",
     "summary", "todo", "code_context", "note",
 )
+FLAT_CHUNK_TYPES = ("fix", "todo", "command", "error", "test_result")
+RICH_CHUNK_TYPES = ("decision", "code_context", "summary", "note")
 EXTERNAL_CHUNK_TYPES = ("spec", "message", "thread")
 
 # External lazy-fetch trigger patterns.
@@ -744,6 +746,7 @@ def insert_extracted_chunk(
     symbols: list[str] | None = None,
     alternatives: list[str] | None = None,
     tests: list[str] | None = None,
+    metadata_extra: dict[str, Any] | None = None,
 ) -> str:
     cid = str(uuid.uuid4())
     text = redact_text(text)
@@ -772,6 +775,8 @@ def insert_extracted_chunk(
         "keywords": keywords,
         "text_hash": text_hash,
     }
+    if metadata_extra:
+        md.update(metadata_extra)
     if reason:
         md["reason"] = reason
     if files:
@@ -846,12 +851,39 @@ def insert_source_status_chunk(
 # Stop-hook chunk extraction (AC3, AC11, D8, D12)
 # ---------------------------------------------------------------------------
 
-EXTRACT_PROMPT = """\
-Extract persistent memory chunks from this assistant response. Return STRICT JSON array.
+FLAT_EXTRACT_PROMPT = """\
+Extract low-cost flat memory chunks from this assistant response. Return STRICT JSON array.
 
 Each item:
 {
-  "chunk_type": one of ["decision","error","fix","command","test_result","summary","todo","code_context","note"],
+  "chunk_type": one of ["fix","todo","command","error","test_result"],
+  "text": "<<=400 chars, captures the chunk in plain prose>",
+  "keywords": [<3-8 short search terms, Korean+English synonyms when natural>]
+}
+
+Skip decisions, architecture rationale, code_context, summary, and generic note items.
+Those cross-turn rich memories are handled by session rollup, not per-turn Stop extract.
+Skip greetings, small talk, repeated content, narration of what you did.
+ONLY save concrete facts useful in a future session as a fix, todo, command, error, or test result.
+Preserve the original language of the assistant response in "text". Do not translate
+Korean facts into English or English facts into Korean.
+If nothing worth saving: return [].
+
+Output ONLY the JSON array. No markdown fence, no prose.
+
+Assistant response:
+<<<
+{RESPONSE}
+>>>
+"""
+
+
+RICH_EXTRACT_PROMPT = """\
+Extract cross-turn implementation memory chunks from this transcript. Return STRICT JSON array.
+
+Each item:
+{
+  "chunk_type": one of ["decision","code_context","summary","note"],
   "text": "<<=400 chars for most items, <=1200 chars for decision, captures the chunk in plain prose>",
   "keywords": [<3-8 short search terms, Korean+English synonyms when natural>],
   "reason": "<optional, decision only, why this decision was made>",
@@ -878,6 +910,9 @@ Assistant response:
 {RESPONSE}
 >>>
 """
+
+# Backward-compatible alias for tests/importers that inspect the old name.
+EXTRACT_PROMPT = RICH_EXTRACT_PROMPT
 
 
 def _safe_optional_text(value: Any, max_chars: int) -> str:
@@ -912,11 +947,18 @@ def _safe_optional_list(
     return out
 
 
-def extract_chunks_from_response(response: str) -> list[dict]:
+def _extract_prompt_for_mode(mode: str) -> tuple[str, set[str]]:
+    if mode == "flat":
+        return FLAT_EXTRACT_PROMPT, set(FLAT_CHUNK_TYPES)
+    return RICH_EXTRACT_PROMPT, set(RICH_CHUNK_TYPES)
+
+
+def extract_chunks_from_response(response: str, *, mode: str = "rich") -> list[dict]:
     if not response.strip():
         return []
+    prompt, allowed_types = _extract_prompt_for_mode(mode)
     out = run_background_model(
-        EXTRACT_PROMPT.replace("{RESPONSE}", response[:8000]),
+        prompt.replace("{RESPONSE}", response[:8000]),
         timeout=MODEL_TIMEOUT_EXTRACT,
         needs_tools=False,
     )
@@ -930,7 +972,7 @@ def extract_chunks_from_response(response: str) -> list[dict]:
         ct = item.get("chunk_type")
         text = (item.get("text") or "").strip()
         kw = item.get("keywords") or []
-        if ct not in CHUNK_TYPES or not text:
+        if ct not in allowed_types or not text:
             continue
         if not isinstance(kw, list):
             kw = []
@@ -1735,7 +1777,7 @@ def cmd_extract(argv: list[str]) -> int:
     t0 = time.monotonic()
     chunks_count = 0
     try:
-        chunks = extract_chunks_from_response(response)
+        chunks = extract_chunks_from_response(response, mode="flat")
         chunks_count = len(chunks)
         if not chunks:
             return 0

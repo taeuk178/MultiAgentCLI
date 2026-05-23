@@ -43,9 +43,15 @@
      - section chunk 를 search_entries(origin=external_fetch) 에 직접 INSERT
      - fetch_failed/fetch_empty/skipped_by_cap marker 는 search_entries(origin=source_status, raw_type=source_status) 로 관찰 가능하게 남김
 
-  B. Stop response extract
+  B. Stop response extract (flat)
      - background model 이 응답에서 persistent memory chunk 분류
-     - decision/error/fix/command/test_result/summary/todo/code_context/note 를 search_entries(origin=assistant_extract) 에 직접 INSERT
+     - fix/todo/command/error/test_result 를 search_entries(origin=assistant_extract) 에 직접 INSERT
+     - llm_response event metadata_json.session_id 를 저장해 rollup provenance 로 사용
+
+  C. Delta/rollup extract (rich)
+     - 명시 rollup 또는 SessionStart stale 보완이 session 단위 미처리 events 를 bounded batch 로 읽음
+     - decision/code_context/summary/note 를 search_entries(origin=assistant_extract) 에 직접 INSERT
+     - extract_state cursor 를 insert 와 같은 transaction 으로 전진시켜 재실행 중복을 차단
 
 다음 turn:
   새로 저장된 search_entries 와 현재 세션 working surface 가 다시 prefill/search 후보가 됩니다.
@@ -288,6 +294,7 @@ confirmed contradiction 에 연결된 entry 는 BOOST 단계에서 강하게 감
 | `projects` | project root 를 안정적인 `project_id` 로 묶는 최상위 scope | `session-start.sh`, `common.sh` | 모든 hook/검색 경로 |
 | `conversations` | host 대화 단위 메타데이터. 현재 핵심 경로에서는 보조적입니다. | 향후 conversation 연동 | `events.conversation_id` 참조 |
 | `events` | user prompt 와 assistant response 의 redacted raw archive. working overlay surface 도 `metadata_json` 에 저장합니다. | `user-prompt-submit.sh`, `stop.sh`, `ingestion.py` | observability, provenance, `/search` working overlay |
+| `extract_state` | session 단위 delta/rollup cursor 입니다. 마지막 처리 event keyset(`created_at`, `id`)을 저장합니다. | `retrieval.rollup` | rollup 재실행 중복 방지, stale session 보완 |
 | `source_documents` | Slack/Notion/PRD/Plan/ADR/file 같은 진짜 원본 문서입니다. synthetic memory 문서는 넣지 않습니다. | `retrieval.ingest`, lazy-fetch | source document provenance, stale 판단 |
 | `search_entries` | 검색 가능한 영구 단위의 단일 인덱스입니다. `/remember`, assistant extract, source document chunk 가 모두 여기에 들어갑니다. | `memory.sh`, `ingestion.py`, `retrieval.ingest`, migration | `/memory`, `/search`, prefill |
 
@@ -376,7 +383,7 @@ UserPromptSubmit gate 는 결정적 rule 기반입니다. `noise=1`, 짧은 back
 | `IMPRINT_WORKING_MAX_PER_SESSION` | `20` | env | session 별 working raw_turn 최신 row 제한 |
 | `IMPRINT_AMBIGUITY_THRESHOLD` | `0.5` | env | prompt 분석 결과의 ambiguity 판단 기준 |
 
-### Lazy fetch / response extract
+### Lazy fetch / response extract / rollup
 
 | 변수 | 기본값 | 수정 위치 | 바꾸면 달라지는 것 |
 |---|---:|---|---|
@@ -389,7 +396,13 @@ UserPromptSubmit gate 는 결정적 rule 기반입니다. `noise=1`, 짧은 back
 | `IMPRINT_MODEL_TIMEOUT_FETCH` | `45` | env | Slack/Notion fetch timeout 초 |
 | `IMPRINT_MODEL_TIMEOUT_EXTRACT` | `30` | env | Stop response extract timeout 초 |
 | `IMPRINT_ALLOWED_TOOLS_FETCH` | Notion/Slack wildcard | env | fetch worker 에 허용할 MCP tool 범위 |
-| `CHUNK_TYPES` | 9개 persistent memory type | `ingestion.py` | Stop extract 가 저장할 수 있는 assistant memory type |
+| `FLAT_CHUNK_TYPES` | `fix/todo/command/error/test_result` | `ingestion.py` | Stop extract 가 즉시 저장할 수 있는 assistant memory type |
+| `RICH_CHUNK_TYPES` | `decision/code_context/summary/note` | `ingestion.py` | delta/rollup extract 가 저장할 수 있는 cross-turn memory type |
+| `IMPRINT_DISABLE_ROLLUP` | `0` | env | `1`이면 SessionStart stale rollup 비활성 |
+| `IMPRINT_ROLLUP_STALE_MINUTES` | `30` | env | SessionStart 보완 rollup stale 기준 분 |
+| `IMPRINT_ROLLUP_BATCH_EVENTS` | `24` | env | rollup 1회 처리 event 상한 |
+| `IMPRINT_ROLLUP_MAX_CHARS` | `12000` | env | rollup model 입력 문자 상한 |
+| `IMPRINT_ROLLUP_MAX_STALE_SESSIONS` | `3` | env | SessionStart 보완 대상 session 수 상한 |
 | `EXTERNAL_CHUNK_TYPES` | `spec/message/thread` | `ingestion.py` | Slack/Notion chunk type 구분 |
 
 ### Chunk retrieval / fusion
@@ -510,6 +523,11 @@ UPS hook 자동 경로는 `LOG → ROUTE → PREFILL → CTX0` 만 실행해 < 5
 | `IMPRINT_ALLOWED_TOOLS_FETCH` | Notion/Slack wildcard | fetch 호출에 넘길 allowed tools |
 | `IMPRINT_BYPASS_HOOKS` | `0` | `1`이면 hook 즉시 종료, 재귀 가드 |
 | `IMPRINT_DISABLE_EXTRACT` | `0` | `1`이면 Stop extract 비활성 |
+| `IMPRINT_DISABLE_ROLLUP` | `0` | `1`이면 SessionStart stale rollup 비활성 |
+| `IMPRINT_ROLLUP_STALE_MINUTES` | `30` | rollup stale session 기준 분 |
+| `IMPRINT_ROLLUP_BATCH_EVENTS` | `24` | rollup 1회 처리 event 상한 |
+| `IMPRINT_ROLLUP_MAX_CHARS` | `12000` | rollup model 입력 문자 상한 |
+| `IMPRINT_ROLLUP_MAX_STALE_SESSIONS` | `3` | SessionStart 보완 대상 session 수 상한 |
 | `IMPRINT_NO_SEED` | `0` | `1`이면 `.imprint/` 기본 파일 seed 비활성 |
 | `IMPRINT_PROFILE` | `0` | `1`이면 profile JSONL 기록 |
 | `IMPRINT_STALE_DAYS` | `14` | 외부 source stale 표시 기준 |
