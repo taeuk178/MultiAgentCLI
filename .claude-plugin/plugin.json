@@ -1,6 +1,6 @@
 {
   "name": "imprint",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Per-project context memory for Claude Code. Local SQLite + FTS5, prefill injection, lazy fetch from Slack/Notion. OAuth subscription based, no API key required.",
   "author": {
     "name": "Imprint contributors"

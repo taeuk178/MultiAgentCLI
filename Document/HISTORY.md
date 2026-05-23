@@ -15,6 +15,12 @@
 
 기록 순서는 **최신이 위**. 항목당 한 단락 안에 변경/사유/대안 폐기 근거를 묶는다.
 
+## 2026-05-24 — 0.1.2 release metadata 동기화
+
+**무엇:** `search_entries` 통합 스키마, delta/rollup extract, `/search` rollup 근거 출력, 설치 문서의 migration 안내가 `main` 에 반영된 뒤 plugin release metadata 를 `0.1.2` 로 올렸다. `VERSION`, root/Codex/Claude plugin manifest, Claude marketplace, Codex marketplace ref, 설치 문서의 release 예시를 같은 버전으로 맞췄다.
+
+**왜:** `0.1.2` 는 bridge 기반 과도기 구조를 끝내고 `/remember`, assistant extract, source document chunk, rollup decision memory 를 `search_entries` 단일 인덱스로 수렴시키는 release 다. 기존 사용자 DB는 자동 파괴하지 않고 `imprint migrate search-entries` 를 명시 실행해야 하므로, 설치 문서와 GitHub Release 에 migration 주의사항을 함께 남긴다.
+
 ## 2026-05-24 — `/search` rollup 세부 근거 출력 개선
 
 **무엇:** `/search` 와 `retrieval.cli retrieve_json` 이 `search_entries.metadata_json` 과 `source_event_id` 를 후보에 보존하도록 했다. 텍스트 출력은 rollup decision entry 에 `reason`, `files`, `symbols`, `tests`, `event_range`, `rollup session` 이 있으면 본문 아래에 짧은 detail line 으로 함께 보여준다.
