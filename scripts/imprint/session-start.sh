@@ -43,12 +43,6 @@ if command -v sqlite3 >/dev/null 2>&1; then
     db_exec "ALTER TABLE events ADD COLUMN noise INTEGER NOT NULL DEFAULT 0;" \
       >/dev/null 2>>"$IMPRINT_LOG" || true
   fi
-  HAS_CHUNKS_V2_MD_COL=$(db_exec "SELECT COUNT(*) FROM pragma_table_info('chunks_v2') WHERE name = 'metadata_json';" \
-    2>>"$IMPRINT_LOG" || echo 0)
-  if [[ "$HAS_CHUNKS_V2_MD_COL" == "0" ]]; then
-    db_exec "ALTER TABLE chunks_v2 ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}';" \
-      >/dev/null 2>>"$IMPRINT_LOG" || true
-  fi
   db_exec "CREATE INDEX IF NOT EXISTS idx_events_project_noise ON events (project_id, noise, created_at DESC);" \
     >/dev/null 2>>"$IMPRINT_LOG" || true
 

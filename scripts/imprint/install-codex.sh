@@ -131,8 +131,12 @@ case "\${1:-}" in
     shift
     exec "\$IMPRINT_PLUGIN_ROOT/scripts/imprint/setup.sh" "\$@"
     ;;
+  migrate)
+    shift
+    exec "\$IMPRINT_PLUGIN_ROOT/scripts/imprint/migrate.sh" "\$@"
+    ;;
   *)
-    echo "usage: imprint <memory|remember|search|retrieve|setup> [args]" >&2
+    echo "usage: imprint <memory|remember|search|retrieve|setup|migrate> [args]" >&2
     exit 2
     ;;
 esac

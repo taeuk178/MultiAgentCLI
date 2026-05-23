@@ -6,9 +6,9 @@ level: 3
 
 # Search - Project Context Retrieval
 
-Use this skill when the user wants to search remembered project context, implementation history, decisions, or broader feature flow with the hybrid `chunks_v2`/summary/memory fallback path.
+Use this skill when the user wants to search remembered project context, implementation history, decisions, or broader feature flow with the unified `search_entries`/summary path.
 
-Prefer `/search` language in user-facing replies. `/memory search` remains the lightweight FTS search over `memory_chunks`; this skill is for the fuller project search path that can use document chunks, summaries, bridged memory, routing, and optional vector search.
+Prefer `/search` language in user-facing replies. `/memory search` remains the lightweight FTS search over `search_entries`; this skill is for the fuller project search path that can use source document entries, summaries, routing, and optional vector search.
 
 ## Dispatcher
 

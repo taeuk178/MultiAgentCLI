@@ -1,7 +1,7 @@
 """versioning 헬퍼.
 
-새 청크가 기존 청크를 대체할 때 valid_to / is_current / supersedes_chunk_id 갱신.
-자동 supersede 결정은 안 함 — 호출자가 명시적으로 supersedes_chunk_id 지정.
+새 청크가 기존 청크를 대체할 때 valid_to / is_current / supersedes_entry_id 갱신.
+자동 supersede 결정은 안 함 — 호출자가 명시적으로 supersedes_entry_id 지정.
 정규식 트리거가 매칭되면 후보를 제시할 뿐 자동 적용은 X.
 """
 from __future__ import annotations
@@ -14,12 +14,12 @@ from .normalize import detect_supersede_signal
 
 
 def mark_superseded(
-    chunk_id: str,
+    entry_id: str,
     superseded_by: str,
     valid_to: str | None = None,
     conn: sqlite3.Connection | None = None,
 ) -> None:
-    """chunk_id 를 superseded_by 가 대체하는 것으로 마킹."""
+    """entry_id 를 superseded_by 가 대체하는 것으로 마킹."""
     own = conn is None
     if own:
         conn = db_connect()
@@ -27,15 +27,15 @@ def mark_superseded(
     try:
         conn.execute(
             """
-            UPDATE chunks_v2
+            UPDATE search_entries
             SET valid_to = ?, is_current = 0
             WHERE id = ?
             """,
-            (ts, chunk_id),
+            (ts, entry_id),
         )
         conn.execute(
-            "UPDATE chunks_v2 SET supersedes_chunk_id = ?, valid_from = ? WHERE id = ?",
-            (chunk_id, ts, superseded_by),
+            "UPDATE search_entries SET supersedes_entry_id = ?, valid_from = ? WHERE id = ?",
+            (entry_id, ts, superseded_by),
         )
     finally:
         if own:
@@ -44,7 +44,7 @@ def mark_superseded(
 
 def find_supersede_candidates(
     project_id: str,
-    new_chunk_text: str,
+    new_text: str,
     section_path: str | None = None,
     conn: sqlite3.Connection | None = None,
     limit: int = 5,
@@ -53,7 +53,7 @@ def find_supersede_candidates(
 
     매칭이 없거나 시그널이 없으면 빈 리스트. 호출자가 사용자에게 후보 제시 후 명시 결정.
     """
-    if not detect_supersede_signal(new_chunk_text):
+    if not detect_supersede_signal(new_text):
         return []
     own = conn is None
     if own:
@@ -62,8 +62,8 @@ def find_supersede_candidates(
         if section_path:
             cur = conn.execute(
                 """
-                SELECT id, chunk_text, section_path, source_updated_at, created_at
-                FROM chunks_v2
+                SELECT id, text, section_path, source_updated_at, created_at
+                FROM search_entries
                 WHERE project_id = ? AND is_current = 1 AND section_path = ?
                 ORDER BY created_at DESC
                 LIMIT ?
@@ -73,8 +73,8 @@ def find_supersede_candidates(
         else:
             cur = conn.execute(
                 """
-                SELECT id, chunk_text, section_path, source_updated_at, created_at
-                FROM chunks_v2
+                SELECT id, text, section_path, source_updated_at, created_at
+                FROM search_entries
                 WHERE project_id = ? AND is_current = 1
                 ORDER BY created_at DESC
                 LIMIT ?

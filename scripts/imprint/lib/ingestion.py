@@ -11,7 +11,7 @@ Design constraints:
 - Hook scripts must NEVER block the user session. Every LLM call has a hard
   timeout; every JSON parse is wrapped; every failure path returns silently.
 - External-source chunks (slack/notion) bypass the events table and are
-  inserted directly into memory_chunks with source_event_id NULL (D11, AC7).
+  inserted directly into search_entries with source_event_id NULL (D11, AC7).
 - Dedup key = source_uri/url + evidence_level + text_hash where possible.
   Legacy URL/page-level dedup remains for broad external refresh avoidance.
 - Background model calls go through retrieval.model_runtime and use the detected host CLI.
@@ -33,7 +33,7 @@ from typing import Any, Iterable
 
 from retrieval.model_runtime import run_background_model
 from retrieval._common import migrate_legacy_claude_db_if_needed
-from retrieval.memory_bridge import bridge_memory_chunk
+from retrieval.entries import dedup_exists, insert_search_entry
 
 # Runtime paths. IMPRINT_HOME 으로 테스트/실사용 DB 를 쉽게 격리한다.
 IMPRINT_HOME = Path(os.environ.get("IMPRINT_HOME") or (Path.home() / ".imprint"))
@@ -151,17 +151,6 @@ def db() -> sqlite3.Connection:
     conn = sqlite3.connect(IMPRINT_DB, timeout=5.0)
     conn.execute("PRAGMA foreign_keys = ON;")
     return conn
-
-
-def bridge_memory_best_effort(conn: sqlite3.Connection, chunk_id: str) -> None:
-    try:
-        bridge_memory_chunk(
-            conn,
-            chunk_id,
-            generate_embedding=os.environ.get("IMPRINT_MEMORY_BRIDGE_EMBEDDING") == "1",
-        )
-    except Exception as exc:  # noqa: BLE001 - bridge failure must not block hooks.
-        log("WARN", f"memory bridge skipped chunk={chunk_id}: {exc!r}")
 
 
 def project_root() -> Path:
@@ -663,11 +652,11 @@ def chunk_url_exists(conn: sqlite3.Connection, project_id: str, url: str) -> boo
     저장되므로 page-URL로 들어온 query는 정확 일치만으로는 못 잡는다.
     `url` 또는 `url#...` 형태가 하나라도 있으면 hit으로 간주한다."""
     cur = conn.execute(
-        "SELECT 1 FROM memory_chunks "
+        "SELECT 1 FROM search_entries "
         "WHERE project_id = ? AND ("
         "  json_extract(metadata_json, '$.url') = ? "
         "  OR json_extract(metadata_json, '$.url') LIKE ? "
-        ") AND chunk_type != 'source_status' LIMIT 1;",
+        ") AND raw_type != 'source_status' AND is_current = 1 LIMIT 1;",
         (project_id, url, url + "#%"),
     )
     return cur.fetchone() is not None
@@ -690,36 +679,15 @@ def chunk_dedup_exists(
     chunk_type: str | None = None,
 ) -> bool:
     """새 metadata text_hash 기준 dedup. 기존 row 에 hash 가 없으면 건드리지 않는다."""
-    if source_uri and evidence_level:
-        cur = conn.execute(
-            """
-            SELECT 1 FROM memory_chunks
-            WHERE project_id = ?
-              AND chunk_type != 'source_status'
-              AND json_extract(metadata_json, '$.source_uri') = ?
-              AND json_extract(metadata_json, '$.evidence_level') = ?
-              AND json_extract(metadata_json, '$.text_hash') = ?
-            LIMIT 1
-            """,
-            (project_id, source_uri, evidence_level, text_hash),
-        )
-        if cur.fetchone() is not None:
-            return True
-    if source_event_id and chunk_type:
-        cur = conn.execute(
-            """
-            SELECT 1 FROM memory_chunks
-            WHERE project_id = ?
-              AND source_event_id = ?
-              AND chunk_type = ?
-              AND json_extract(metadata_json, '$.text_hash') = ?
-            LIMIT 1
-            """,
-            (project_id, source_event_id, chunk_type, text_hash),
-        )
-        if cur.fetchone() is not None:
-            return True
-    return False
+    return dedup_exists(
+        conn,
+        project_id,
+        source_uri=source_uri,
+        evidence_level=evidence_level,
+        text_hash=text_hash,
+        source_event_id=source_event_id,
+        raw_type=chunk_type,
+    )
 
 
 def insert_external_chunk(
@@ -750,13 +718,17 @@ def insert_external_chunk(
     ):
         return ""
     cid = str(uuid.uuid4())
-    conn.execute(
-        "INSERT INTO memory_chunks "
-        "(id, project_id, source_event_id, chunk_type, text, metadata_json, created_at, pinned) "
-        "VALUES (?, ?, NULL, ?, ?, ?, ?, 0);",
-        (cid, project_id, chunk_type, text, json.dumps(metadata, ensure_ascii=False), now_iso()),
+    insert_search_entry(
+        conn,
+        project_id=project_id,
+        origin="source_document",
+        raw_type=chunk_type,
+        text=text,
+        metadata=metadata,
+        entry_id=cid,
+        source_created_at=metadata.get("posted_at") or metadata.get("last_edited_at"),
+        source_updated_at=metadata.get("edited_at") or metadata.get("last_edited_at") or metadata.get("fetched_at"),
     )
-    bridge_memory_best_effort(conn, cid)
     return cid
 
 
@@ -790,13 +762,16 @@ def insert_extracted_chunk(
         "keywords": keywords,
         "text_hash": text_hash,
     }
-    conn.execute(
-        "INSERT INTO memory_chunks "
-        "(id, project_id, source_event_id, chunk_type, text, metadata_json, created_at, pinned) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, 0);",
-        (cid, project_id, source_event_id, chunk_type, text, json.dumps(md, ensure_ascii=False), now_iso()),
+    insert_search_entry(
+        conn,
+        project_id=project_id,
+        origin="assistant_extract",
+        raw_type=chunk_type,
+        text=text,
+        metadata=md,
+        source_event_id=source_event_id,
+        entry_id=cid,
     )
-    bridge_memory_best_effort(conn, cid)
     return cid
 
 
@@ -825,11 +800,14 @@ def insert_source_status_chunk(
     md.setdefault("text_hash", stable_text_hash(text))
     md = redact_json_value(md)
     cid = str(uuid.uuid4())
-    conn.execute(
-        "INSERT INTO memory_chunks "
-        "(id, project_id, source_event_id, chunk_type, text, metadata_json, created_at, pinned) "
-        "VALUES (?, ?, NULL, 'source_status', ?, ?, ?, 0);",
-        (cid, project_id, text, json.dumps(md, ensure_ascii=False), now_iso()),
+    insert_search_entry(
+        conn,
+        project_id=project_id,
+        origin="source_document",
+        raw_type="source_status",
+        text=text,
+        metadata=md,
+        entry_id=cid,
     )
     return cid
 
@@ -1019,40 +997,12 @@ def cleanup_working_memory(
     session_id: str,
     now: str,
 ) -> None:
-    """working tier 만 TTL/max 정책으로 정리."""
-    try:
-        now_dt = datetime.fromisoformat(now.replace("Z", "+00:00"))
-    except ValueError:
-        now_dt = datetime.now(timezone.utc)
-    cutoff = (now_dt - timedelta(hours=WORKING_TTL_HOURS)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    conn.execute(
-        """
-        DELETE FROM memory_chunks
-        WHERE project_id = ?
-          AND json_extract(metadata_json, '$.memory_tier') = 'working'
-          AND created_at < ?;
-        """,
-        (project_id, cutoff),
-    )
-    if not session_id or WORKING_MAX_PER_SESSION <= 0:
-        return
-    conn.execute(
-        f"""
-        DELETE FROM memory_chunks
-        WHERE project_id = ?
-          AND json_extract(metadata_json, '$.memory_tier') = 'working'
-          AND json_extract(metadata_json, '$.session_id') = ?
-          AND id NOT IN (
-            SELECT id FROM memory_chunks
-            WHERE project_id = ?
-              AND json_extract(metadata_json, '$.memory_tier') = 'working'
-              AND json_extract(metadata_json, '$.session_id') = ?
-            ORDER BY created_at DESC, rowid DESC
-            LIMIT {WORKING_MAX_PER_SESSION}
-          );
-        """,
-        (project_id, session_id, project_id, session_id),
-    )
+    """Legacy no-op.
+
+    working overlay 는 더 이상 별도 row 로 쓰지 않고 events.metadata_json 에 붙인다.
+    TTL/max 정책은 조회 시점의 created_at LIMIT/window 로 처리한다.
+    """
+    _ = (conn, project_id, session_id, now)
 
 
 def insert_working_turn_chunk(
@@ -1063,11 +1013,9 @@ def insert_working_turn_chunk(
     prompt: str,
 ) -> str:
     now = now_iso()
-    cleanup_working_memory(conn, project_id, session_id, now)
     query_surfaces = deterministic_query_surfaces(prompt)
     rewrite_terms = deterministic_rewrite_terms(prompt)
     need_retrieval, retrieval_reason = retrieval_gate(prompt)
-    cid = str(uuid.uuid4())
     text = prompt.strip()
     if rewrite_terms:
         text = f"{text}\nSearch surface: {' '.join(rewrite_terms)}"
@@ -1091,21 +1039,21 @@ def insert_working_turn_chunk(
         "keywords": prefill_keywords(prompt),
         "text_hash": stable_text_hash(safe_text),
     }
+    existing = {}
+    row = conn.execute("SELECT metadata_json FROM events WHERE id = ?", (source_event_id,)).fetchone()
+    if row:
+        try:
+            value = json.loads(row[0] or "{}")
+            if isinstance(value, dict):
+                existing = value
+        except (json.JSONDecodeError, TypeError):
+            existing = {}
+    existing.update(redact_json_value(metadata))
     conn.execute(
-        "INSERT INTO memory_chunks "
-        "(id, project_id, source_event_id, chunk_type, text, metadata_json, created_at, pinned) "
-        "VALUES (?, ?, ?, 'raw_turn', ?, ?, ?, 0);",
-        (
-            cid,
-            project_id,
-            source_event_id,
-            safe_text,
-            json.dumps(redact_json_value(metadata), ensure_ascii=False),
-            now,
-        ),
+        "UPDATE events SET metadata_json = ? WHERE id = ? AND project_id = ?",
+        (json.dumps(existing, ensure_ascii=False), source_event_id, project_id),
     )
-    cleanup_working_memory(conn, project_id, session_id, now)
-    return cid
+    return source_event_id
 
 
 def load_working_context(
@@ -1122,10 +1070,10 @@ def load_working_context(
     params.append(limit)
     cur = conn.execute(
         f"""
-        SELECT id, chunk_type, text, metadata_json, pinned, created_at
-        FROM memory_chunks
+        SELECT id, kind AS chunk_type, text_clean AS text, metadata_json, 0 AS pinned, created_at
+        FROM events
         WHERE project_id = ?
-          AND chunk_type != 'source_status'
+          AND kind = 'user_message'
           AND json_extract(metadata_json, '$.memory_tier') = 'working'
           AND json_extract(metadata_json, '$.session_visible') = 1
           {session_clause}
@@ -1178,12 +1126,12 @@ def search_memory(
         if fts_query:
             try:
                 cur = conn.execute(
-                    "SELECT m.id, m.chunk_type, m.text, m.metadata_json, m.pinned, m.created_at "
-                    "FROM memory_chunks_fts f "
-                    "JOIN memory_chunks m ON m.rowid = f.rowid "
-                    "WHERE f.text MATCH ? AND m.project_id = ? "
-                    "  AND m.chunk_type != 'source_status' "
-                    "  AND coalesce(json_extract(m.metadata_json, '$.memory_tier'), '') != 'working' "
+                    "SELECT m.id, m.raw_type, m.text, m.metadata_json, m.pinned, m.created_at "
+                    "FROM search_entries_fts f "
+                    "JOIN search_entries m ON m.rowid = f.rowid "
+                    "WHERE f.retrieval_text MATCH ? AND m.project_id = ? "
+                    "  AND m.raw_type != 'source_status' "
+                    "  AND m.is_current = 1 "
                     "ORDER BY m.pinned DESC, m.created_at DESC LIMIT ?;",
                     (fts_query, project_id, limit * 2),
                 )
@@ -1203,12 +1151,12 @@ def search_memory(
         try:
             cur = conn.execute(
                 f"""
-                SELECT m.id, m.chunk_type, m.text, m.metadata_json, m.pinned, m.created_at,
+                SELECT m.id, m.raw_type, m.text, m.metadata_json, m.pinned, m.created_at,
                        COUNT(DISTINCT je.value) AS hits
-                FROM memory_chunks m, json_each(json_extract(m.metadata_json, '$.keywords')) je
+                FROM search_entries m, json_each(json_extract(m.metadata_json, '$.keywords')) je
                 WHERE m.project_id = ?
-                  AND m.chunk_type != 'source_status'
-                  AND coalesce(json_extract(m.metadata_json, '$.memory_tier'), '') != 'working'
+                  AND m.raw_type != 'source_status'
+                  AND m.is_current = 1
                   AND je.value IN ({placeholders})
                 GROUP BY m.id
                 ORDER BY hits DESC, m.pinned DESC, m.created_at DESC
@@ -1250,11 +1198,11 @@ def search_memory(
             try:
                 cur = conn.execute(
                     f"""
-                    SELECT m.id, m.chunk_type, m.text, m.metadata_json, m.pinned, m.created_at
-                    FROM memory_chunks m
+                    SELECT m.id, m.raw_type, m.text, m.metadata_json, m.pinned, m.created_at
+                    FROM search_entries m
                     WHERE m.project_id = ?
-                      AND m.chunk_type != 'source_status'
-                      AND coalesce(json_extract(m.metadata_json, '$.memory_tier'), '') != 'working'
+                      AND m.raw_type != 'source_status'
+                      AND m.is_current = 1
                       AND ({' OR '.join(clauses)})
                     ORDER BY m.pinned DESC, m.created_at DESC
                     LIMIT ?;
@@ -1278,11 +1226,11 @@ def search_memory(
     if not seen:
         try:
             cur = conn.execute(
-                "SELECT id, chunk_type, text, metadata_json, pinned, created_at "
-                "FROM memory_chunks "
-                "WHERE project_id = ? AND chunk_type IN "
+                "SELECT id, raw_type, text, metadata_json, pinned, created_at "
+                "FROM search_entries "
+                "WHERE project_id = ? AND raw_type IN "
                 "  ('decision','fix','todo','note','spec','message','thread') "
-                "  AND coalesce(json_extract(metadata_json, '$.memory_tier'), '') != 'working' "
+                "  AND is_current = 1 "
                 "ORDER BY pinned DESC, created_at DESC LIMIT ?;",
                 (project_id, limit),
             )
@@ -1604,7 +1552,7 @@ def cmd_prefill(argv: list[str]) -> int:
 def cmd_mini_ingest(argv: list[str]) -> int:
     """UserPromptSubmit 동기 경량 저장.
 
-    현재 turn 의 raw query 를 즉시 FTS-visible memory_chunks row 로 넣는다.
+    현재 turn 의 raw query surface 를 events.metadata_json 에 붙인다.
     LLM 기반 persistent memory 분류는 기존처럼 Stop/lazy-fetch background 에 남긴다.
     """
     if len(argv) < 2:
@@ -1723,7 +1671,7 @@ def cmd_refresh(argv: list[str]) -> int:
         with db() as conn:
             if spec.startswith("http"):
                 cur = conn.execute(
-                    "DELETE FROM memory_chunks "
+                    "DELETE FROM search_entries "
                     "WHERE project_id = ? AND json_extract(metadata_json, '$.url') = ?;",
                     (project_id, spec),
                 )
@@ -1746,7 +1694,7 @@ def cmd_refresh(argv: list[str]) -> int:
             elif spec == "source" and rest and rest[0] in ("slack", "notion"):
                 src = rest[0]
                 cur = conn.execute(
-                    "DELETE FROM memory_chunks "
+                    "DELETE FROM search_entries "
                     "WHERE project_id = ? AND json_extract(metadata_json, '$.source') = ?;",
                     (project_id, src),
                 )
@@ -1756,7 +1704,7 @@ def cmd_refresh(argv: list[str]) -> int:
                 # via keyword lazy fetch. This matches D24 (DELETE → 다음 prompt에서 자연 fetch).
             elif spec == "project":
                 cur = conn.execute(
-                    "DELETE FROM memory_chunks "
+                    "DELETE FROM search_entries "
                     "WHERE project_id = ? AND json_extract(metadata_json, '$.source') IN ('slack','notion');",
                     (project_id,),
                 )

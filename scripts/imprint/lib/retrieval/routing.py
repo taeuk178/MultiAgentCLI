@@ -54,11 +54,15 @@ class RoutedResult:
     query: str
     scope: ScopeDecision
     resolved_entities: list[dict]
-    summaries: list[SummaryHit] = field(default_factory=list)
+    search_summaries: list[SummaryHit] = field(default_factory=list)
     chunks: list[RetrievalCandidate] = field(default_factory=list)
     ground_chunks: list[dict] = field(default_factory=list)
     contradictions: list[dict] = field(default_factory=list)
     trace: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def summaries(self) -> list[SummaryHit]:
+        return self.search_summaries
 
 
 def _build_fts_query(query: str) -> str | None:
@@ -79,10 +83,10 @@ def _summary_fts(
         cur = conn.execute(
             """
             SELECT s.id, s.level, s.target_key, s.title, s.summary_text,
-                   s.is_current, s.embedding, bm25(summaries_fts) AS bm25_score
-            FROM summaries_fts
-            JOIN summaries s ON s.rowid = summaries_fts.rowid
-            WHERE summaries_fts MATCH ?
+                   s.is_current, s.embedding, bm25(search_summaries_fts) AS bm25_score
+            FROM search_summaries_fts
+            JOIN search_summaries s ON s.rowid = search_summaries_fts.rowid
+            WHERE search_summaries_fts MATCH ?
               AND s.project_id = ? AND s.level = ? AND s.is_current = 1
             ORDER BY bm25_score
             LIMIT ?
@@ -93,10 +97,10 @@ def _summary_fts(
         cur = conn.execute(
             """
             SELECT s.id, s.level, s.target_key, s.title, s.summary_text,
-                   s.is_current, s.embedding, bm25(summaries_fts) AS bm25_score
-            FROM summaries_fts
-            JOIN summaries s ON s.rowid = summaries_fts.rowid
-            WHERE summaries_fts MATCH ?
+                   s.is_current, s.embedding, bm25(search_summaries_fts) AS bm25_score
+            FROM search_summaries_fts
+            JOIN search_summaries s ON s.rowid = search_summaries_fts.rowid
+            WHERE search_summaries_fts MATCH ?
               AND s.project_id = ? AND s.is_current = 1
             ORDER BY bm25_score
             LIMIT ?
@@ -114,7 +118,7 @@ def _summary_vector(
         cur = conn.execute(
             """
             SELECT id, level, target_key, title, summary_text, is_current, embedding
-            FROM summaries
+            FROM search_summaries
             WHERE project_id = ? AND level = ? AND is_current = 1 AND embedding IS NOT NULL
             """,
             (project_id, level),
@@ -123,7 +127,7 @@ def _summary_vector(
         cur = conn.execute(
             """
             SELECT id, level, target_key, title, summary_text, is_current, embedding
-            FROM summaries
+            FROM search_summaries
             WHERE project_id = ? AND is_current = 1 AND embedding IS NOT NULL
             """,
             (project_id,),
@@ -139,7 +143,7 @@ def _summary_vector(
 def _retrieve_summaries(
     conn: sqlite3.Connection, project_id: str, query: str, level: str | None, top_n: int,
 ) -> list[SummaryHit]:
-    """summary level 별 hybrid retrieve. RRF 재사용 — chunks_v2 와 동일 패턴."""
+    """summary level 별 hybrid retrieve. RRF 재사용 — search_entries 와 동일 패턴."""
     bm25_rows = _summary_fts(conn, project_id, query, level, top_n)
     vector_rows: list[tuple[sqlite3.Row, float]] = []
     if emb_mod.is_available():
@@ -173,9 +177,9 @@ def _retrieve_summaries(
 
 
 def _ground_drilldown(
-    conn: sqlite3.Connection, summary_ids: list[str], existing_chunk_ids: set[str], limit: int,
+    conn: sqlite3.Connection, summary_ids: list[str], existing_entry_ids: set[str], limit: int,
 ) -> list[dict]:
-    """summary_links 따라 child_kind=chunk 1~3개 추가 회수. 중복 제거."""
+    """summary_links 따라 child_kind=entry 1~3개 추가 회수. 중복 제거."""
     out: list[dict] = []
     if not summary_ids:
         return out
@@ -183,20 +187,20 @@ def _ground_drilldown(
     cur = conn.execute(
         f"""
         SELECT sl.parent_summary_id, sl.rank_order,
-               c.id AS chunk_id, c.chunk_text, c.section_path, c.is_current,
+               c.id AS entry_id, c.text, c.section_path, c.is_current,
                c.source_updated_at, d.source_type, d.title AS document_title
         FROM summary_links sl
-        JOIN chunks_v2 c ON c.id = sl.child_id
-        JOIN documents d ON d.id = c.document_id
+        JOIN search_entries c ON c.id = sl.child_id
+        LEFT JOIN source_documents d ON d.id = c.source_document_id
         WHERE sl.parent_summary_id IN ({placeholders})
-          AND sl.child_kind = 'chunk'
+          AND sl.child_kind = 'entry'
         ORDER BY sl.parent_summary_id, sl.rank_order
         """,
         tuple(summary_ids),
     )
     per_parent: dict[str, int] = {}
     for row in cur.fetchall():
-        if row["chunk_id"] in existing_chunk_ids:
+        if row["entry_id"] in existing_entry_ids:
             continue
         parent = row["parent_summary_id"]
         if per_parent.get(parent, 0) >= limit:
@@ -204,8 +208,10 @@ def _ground_drilldown(
         per_parent[parent] = per_parent.get(parent, 0) + 1
         out.append({
             "parent_summary_id": parent,
-            "chunk_id": row["chunk_id"],
-            "chunk_text": row["chunk_text"],
+            "entry_id": row["entry_id"],
+            "text": row["text"],
+            "chunk_id": row["entry_id"],
+            "chunk_text": row["text"],
             "section_path": row["section_path"],
             "source_type": row["source_type"],
             "document_title": row["document_title"],
@@ -232,8 +238,8 @@ def _ccheck(
                 "entity_id": eid,
                 "canonical_name": hit.get("canonical_name"),
                 "scope_key": row["scope_key"],
-                "chunk_a_id": row["chunk_a_id"],
-                "chunk_b_id": row["chunk_b_id"],
+                "entry_a_id": row["entry_a_id"],
+                "entry_b_id": row["entry_b_id"],
                 "score": row["contradiction_score"],
                 "reason": row["reason"],
             })
@@ -257,7 +263,7 @@ def routed_retrieve(query: str, project_id: str) -> RoutedResult:
         if scope.scope == "local":
             with Span("HYB1"):
                 base = chunk_retrieve(query, project_id, top_k=10)
-            existing_ids = {c.chunk_id for c in base.candidates}
+            existing_ids = {c.entry_id for c in base.candidates}
             conn = db_connect()
             try:
                 with Span("CCHECK"):
@@ -283,15 +289,15 @@ def routed_retrieve(query: str, project_id: str) -> RoutedResult:
         try:
             if scope.scope == "feature":
                 with Span("HYB2_summary"):
-                    summaries = _retrieve_summaries(
+                    search_summaries = _retrieve_summaries(
                         conn, project_id, query, level="feature", top_n=FEATURE_SUMMARY_LIMIT,
                     )
                 with Span("HYB2_chunks"):
                     base = chunk_retrieve(query, project_id, top_k=FEATURE_CHUNK_LIMIT)
                 with Span("GROUND"):
-                    existing_ids = {c.chunk_id for c in base.candidates}
+                    existing_ids = {c.entry_id for c in base.candidates}
                     ground = _ground_drilldown(
-                        conn, [s.summary_id for s in summaries],
+                        conn, [s.summary_id for s in search_summaries],
                         existing_ids, GROUND_DRILLDOWN_LIMIT,
                     )
                 with Span("CCHECK"):
@@ -299,7 +305,7 @@ def routed_retrieve(query: str, project_id: str) -> RoutedResult:
                 return RoutedResult(
                     query=query, scope=scope,
                     resolved_entities=resolved_entities,
-                    summaries=summaries,
+                    search_summaries=search_summaries,
                     chunks=base.candidates,
                     ground_chunks=ground,
                     contradictions=contradictions,
@@ -326,7 +332,7 @@ def routed_retrieve(query: str, project_id: str) -> RoutedResult:
             with Span("HYB3_chunks"):
                 base = chunk_retrieve(query, project_id, top_k=GLOBAL_CHUNK_LIMIT)
             with Span("GROUND"):
-                existing_ids = {c.chunk_id for c in base.candidates}
+                existing_ids = {c.entry_id for c in base.candidates}
                 all_summary_ids = (
                     [s.summary_id for s in proj_summaries]
                     + [s.summary_id for s in doc_summaries]
@@ -340,7 +346,7 @@ def routed_retrieve(query: str, project_id: str) -> RoutedResult:
             return RoutedResult(
                 query=query, scope=scope,
                 resolved_entities=resolved_entities,
-                summaries=proj_summaries + doc_summaries + feat_summaries,
+                search_summaries=proj_summaries + doc_summaries + feat_summaries,
                 chunks=base.candidates,
                 ground_chunks=ground,
                 contradictions=contradictions,

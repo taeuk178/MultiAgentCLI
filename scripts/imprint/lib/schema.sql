@@ -39,69 +39,14 @@ CREATE INDEX IF NOT EXISTS idx_events_project_created
 CREATE INDEX IF NOT EXISTS idx_events_project_noise
   ON events (project_id, noise, created_at DESC);
 
-CREATE TABLE IF NOT EXISTS memory_chunks (
-  id              TEXT PRIMARY KEY,
-  project_id      TEXT NOT NULL REFERENCES projects(id),
-  source_event_id TEXT REFERENCES events(id),
-  chunk_type      TEXT NOT NULL,
-  text            TEXT NOT NULL,
-  metadata_json   TEXT NOT NULL DEFAULT '{}',
-  created_at      TEXT NOT NULL,
-  pinned          INTEGER NOT NULL DEFAULT 0
-);
-
-CREATE INDEX IF NOT EXISTS idx_chunks_project_pinned_created
-  ON memory_chunks (project_id, pinned DESC, created_at DESC);
-
-CREATE INDEX IF NOT EXISTS idx_chunks_type
-  ON memory_chunks (project_id, chunk_type);
-
 -- 과거 advisor skill이 사용했던 provider_runs 테이블은 제거됐다.
 -- 기존 사용자 DB에 남아 있는 row는 그대로 두되 새 사용자는 만들지 않는다.
 
--- FTS5 인덱스: 한국어 부분문자열 매칭(예: '더스트' → '더스트가/더스트의')을
--- 위해 trigram tokenizer 사용. unicode61 기반 기존 인덱스가 남아 있으면
--- session-start.sh에서 DROP + REBUILD 마이그레이션을 수행한다 (D16, AC10).
-CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(
-  text_clean,
-  content='events',
-  content_rowid='rowid',
-  tokenize='trigram'
-);
-
-CREATE VIRTUAL TABLE IF NOT EXISTS memory_chunks_fts USING fts5(
-  text,
-  content='memory_chunks',
-  content_rowid='rowid',
-  tokenize='trigram'
-);
-
-CREATE TRIGGER IF NOT EXISTS events_ai AFTER INSERT ON events BEGIN
-  INSERT INTO events_fts(rowid, text_clean) VALUES (new.rowid, new.text_clean);
-END;
-
-CREATE TRIGGER IF NOT EXISTS events_ad AFTER DELETE ON events BEGIN
-  INSERT INTO events_fts(events_fts, rowid, text_clean) VALUES ('delete', old.rowid, old.text_clean);
-END;
-
-CREATE TRIGGER IF NOT EXISTS chunks_ai AFTER INSERT ON memory_chunks BEGIN
-  INSERT INTO memory_chunks_fts(rowid, text) VALUES (new.rowid, new.text);
-END;
-
-CREATE TRIGGER IF NOT EXISTS chunks_ad AFTER DELETE ON memory_chunks BEGIN
-  INSERT INTO memory_chunks_fts(memory_chunks_fts, rowid, text) VALUES ('delete', old.rowid, old.text);
-END;
-
-CREATE TRIGGER IF NOT EXISTS chunks_au AFTER UPDATE ON memory_chunks BEGIN
-  INSERT INTO memory_chunks_fts(memory_chunks_fts, rowid, text) VALUES ('delete', old.rowid, old.text);
-  INSERT INTO memory_chunks_fts(rowid, text) VALUES (new.rowid, new.text);
-END;
-
--- 외부 문서 원문 (Notion, Slack, PRD, 회의록 등). events 와 분리.
-CREATE TABLE IF NOT EXISTS documents (
+-- 원본 문서 (Notion, Slack, PRD, Plan, ADR, file 등). synthetic memory 문서는 넣지 않는다.
+CREATE TABLE IF NOT EXISTS source_documents (
   id                TEXT PRIMARY KEY,
   project_id        TEXT NOT NULL REFERENCES projects(id),
-  source_type       TEXT NOT NULL,            -- notion | slack | prd | meeting | jira | file
+  source_type       TEXT NOT NULL,            -- notion | slack | prd | plan | adr | meeting | jira | file
   source_ref        TEXT NOT NULL,            -- notion page id, slack ts/channel, file path
   title             TEXT,
   author            TEXT,
@@ -115,67 +60,80 @@ CREATE TABLE IF NOT EXISTS documents (
   UNIQUE (project_id, source_type, source_ref)
 );
 
-CREATE INDEX IF NOT EXISTS idx_documents_project_source
-  ON documents (project_id, source_type, source_updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_source_documents_project_source
+  ON source_documents (project_id, source_type, source_updated_at DESC);
 
--- 외부 문서에서 파생된 contextualized chunk. 기존 memory_chunks 와 입력원이 달라 분리.
-CREATE TABLE IF NOT EXISTS chunks_v2 (
-  id                    TEXT PRIMARY KEY,
-  project_id            TEXT NOT NULL REFERENCES projects(id),
-  document_id           TEXT NOT NULL REFERENCES documents(id),
-  chunk_index           INTEGER NOT NULL,
-  section_path          TEXT,                 -- 예: "결제 > 테스트모드 > 버튼동작"
-  chunk_text            TEXT NOT NULL,        -- 원문 청크
-  context_prefix        TEXT,                 -- LLM 생성 1~2 문장 문맥
-  retrieval_text        TEXT NOT NULL,        -- context_prefix + '\n' + chunk_text — 임베딩·FTS 모두 이 컬럼 기준
-  embedding             BLOB,                 -- 1024 dim float32 (4096 bytes). 검색 시 sqlite-vec extension 가용하면 vec0 에 join.
-  raw_chunk_type        TEXT,                 -- decision/fix/todo/error/command/test_result/summary/code_context/note/spec/message/thread
-  normalized_chunk_type TEXT,                 -- requirement/decision/discussion/code_note
-  source_created_at     TEXT,
-  source_updated_at     TEXT,
-  valid_from            TEXT,
-  valid_to              TEXT,
-  is_current            INTEGER NOT NULL DEFAULT 1,
-  supersedes_chunk_id   TEXT REFERENCES chunks_v2(id),
-  created_at            TEXT NOT NULL,
-  metadata_json         TEXT NOT NULL DEFAULT '{}',
-  UNIQUE (document_id, chunk_index)
+-- 검색 가능한 영구 단위의 단일 인덱스.
+-- /remember, assistant extract, source_documents chunking 결과가 모두 여기에 들어온다.
+-- working overlay는 이 테이블에 저장하지 않고 events.metadata_json에서 검색 시점에 읽는다.
+CREATE TABLE IF NOT EXISTS search_entries (
+  id                  TEXT PRIMARY KEY,
+  project_id          TEXT NOT NULL REFERENCES projects(id),
+  source_document_id  TEXT REFERENCES source_documents(id),
+  source_event_id     TEXT REFERENCES events(id),
+  origin              TEXT NOT NULL DEFAULT 'manual_remember', -- manual_remember | assistant_extract | source_document
+  raw_type            TEXT,                   -- decision/fix/todo/code_context/note/plan_step/requirement/message/thread/command/error/test_result/summary
+  normalized_type     TEXT,                   -- requirement/decision/discussion/code_note
+  chunk_index         INTEGER,
+  section_path        TEXT,
+  text                TEXT NOT NULL,
+  context_prefix      TEXT,
+  retrieval_text      TEXT,
+  embedding           BLOB,
+  plan_key            TEXT,
+  feature_key         TEXT,
+  source_created_at   TEXT,
+  source_updated_at   TEXT,
+  valid_from          TEXT,
+  valid_to            TEXT,
+  is_current          INTEGER NOT NULL DEFAULT 1,
+  supersedes_entry_id TEXT REFERENCES search_entries(id),
+  pinned              INTEGER NOT NULL DEFAULT 0,
+  metadata_json       TEXT NOT NULL DEFAULT '{}',
+  created_at          TEXT NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_chunks_v2_project_doc
-  ON chunks_v2 (project_id, document_id);
-CREATE INDEX IF NOT EXISTS idx_chunks_v2_current
-  ON chunks_v2 (project_id, is_current);
-CREATE INDEX IF NOT EXISTS idx_chunks_v2_valid_time
-  ON chunks_v2 (project_id, valid_from, valid_to);
-CREATE INDEX IF NOT EXISTS idx_chunks_v2_section
-  ON chunks_v2 (project_id, section_path);
-CREATE INDEX IF NOT EXISTS idx_chunks_v2_normalized_type
-  ON chunks_v2 (project_id, normalized_chunk_type);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_search_entries_source_doc_chunk
+  ON search_entries (source_document_id, chunk_index)
+  WHERE source_document_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_search_entries_project_doc
+  ON search_entries (project_id, source_document_id);
+CREATE INDEX IF NOT EXISTS idx_search_entries_current
+  ON search_entries (project_id, is_current);
+CREATE INDEX IF NOT EXISTS idx_search_entries_valid_time
+  ON search_entries (project_id, valid_from, valid_to);
+CREATE INDEX IF NOT EXISTS idx_search_entries_section
+  ON search_entries (project_id, section_path);
+CREATE INDEX IF NOT EXISTS idx_search_entries_normalized_type
+  ON search_entries (project_id, normalized_type);
+CREATE INDEX IF NOT EXISTS idx_search_entries_origin
+  ON search_entries (project_id, origin);
+CREATE INDEX IF NOT EXISTS idx_search_entries_pinned_created
+  ON search_entries (project_id, pinned DESC, created_at DESC);
 
 -- retrieval_text 의 BM25 검색용. trigram tokenizer — 한국어 부분 매칭.
-CREATE VIRTUAL TABLE IF NOT EXISTS chunks_v2_fts USING fts5(
+CREATE VIRTUAL TABLE IF NOT EXISTS search_entries_fts USING fts5(
   retrieval_text,
-  content='chunks_v2',
+  content='search_entries',
   content_rowid='rowid',
   tokenize='trigram'
 );
 
-CREATE TRIGGER IF NOT EXISTS chunks_v2_ai AFTER INSERT ON chunks_v2 BEGIN
-  INSERT INTO chunks_v2_fts(rowid, retrieval_text)
-  VALUES (new.rowid, new.retrieval_text);
+CREATE TRIGGER IF NOT EXISTS search_entries_ai AFTER INSERT ON search_entries BEGIN
+  INSERT INTO search_entries_fts(rowid, retrieval_text)
+  VALUES (new.rowid, COALESCE(NULLIF(new.retrieval_text, ''), new.text));
 END;
 
-CREATE TRIGGER IF NOT EXISTS chunks_v2_ad AFTER DELETE ON chunks_v2 BEGIN
-  INSERT INTO chunks_v2_fts(chunks_v2_fts, rowid, retrieval_text)
-  VALUES ('delete', old.rowid, old.retrieval_text);
+CREATE TRIGGER IF NOT EXISTS search_entries_ad AFTER DELETE ON search_entries BEGIN
+  INSERT INTO search_entries_fts(search_entries_fts, rowid, retrieval_text)
+  VALUES ('delete', old.rowid, COALESCE(NULLIF(old.retrieval_text, ''), old.text));
 END;
 
-CREATE TRIGGER IF NOT EXISTS chunks_v2_au AFTER UPDATE ON chunks_v2 BEGIN
-  INSERT INTO chunks_v2_fts(chunks_v2_fts, rowid, retrieval_text)
-  VALUES ('delete', old.rowid, old.retrieval_text);
-  INSERT INTO chunks_v2_fts(rowid, retrieval_text)
-  VALUES (new.rowid, new.retrieval_text);
+CREATE TRIGGER IF NOT EXISTS search_entries_au AFTER UPDATE ON search_entries BEGIN
+  INSERT INTO search_entries_fts(search_entries_fts, rowid, retrieval_text)
+  VALUES ('delete', old.rowid, COALESCE(NULLIF(old.retrieval_text, ''), old.text));
+  INSERT INTO search_entries_fts(rowid, retrieval_text)
+  VALUES (new.rowid, COALESCE(NULLIF(new.retrieval_text, ''), new.text));
 END;
 
 -- canonical entity. 같은 UI 요소·feature 를 여러 표현으로 가리키는 alias 들의 결착점.
@@ -209,17 +167,17 @@ CREATE INDEX IF NOT EXISTS idx_entity_aliases_norm
 CREATE INDEX IF NOT EXISTS idx_entity_aliases_status
   ON entity_aliases (status);
 
--- chunk ↔ entity 다대다 mention link.
-CREATE TABLE IF NOT EXISTS chunk_entities (
-  chunk_id    TEXT NOT NULL REFERENCES chunks_v2(id),
+-- search_entry ↔ entity 다대다 mention link.
+CREATE TABLE IF NOT EXISTS entry_entities (
+  entry_id    TEXT NOT NULL REFERENCES search_entries(id),
   entity_id   TEXT NOT NULL REFERENCES entities(id),
-  mention     TEXT NOT NULL,                  -- 청크 내 등장한 표현
+  mention     TEXT NOT NULL,                  -- entry 내 등장한 표현
   confidence  REAL NOT NULL,
-  PRIMARY KEY (chunk_id, entity_id, mention)
+  PRIMARY KEY (entry_id, entity_id, mention)
 );
 
-CREATE INDEX IF NOT EXISTS idx_chunk_entities_entity
-  ON chunk_entities (entity_id);
+CREATE INDEX IF NOT EXISTS idx_entry_entities_entity
+  ON entry_entities (entity_id);
 
 -- append-only ingest queue. polling worker 가 status 와 priority 로 drain.
 -- priority: 낮을수록 먼저 처리 (1=높음, 5=중간, 9=낮음). J2/J1=1, J5/J6=5, J4/J3=9.
@@ -243,7 +201,7 @@ CREATE INDEX IF NOT EXISTS idx_ingest_queue_project
 
 -- feature / document / project 단위 계층 요약. retrieval 라우팅이 질문 해상도에
 -- 맞춰 이 테이블을 검색.
-CREATE TABLE IF NOT EXISTS summaries (
+CREATE TABLE IF NOT EXISTS search_summaries (
   id                    TEXT PRIMARY KEY,
   project_id            TEXT NOT NULL REFERENCES projects(id),
   level                 TEXT NOT NULL,         -- feature | document | project
@@ -262,40 +220,40 @@ CREATE TABLE IF NOT EXISTS summaries (
   UNIQUE (project_id, level, target_key, is_current)
 );
 
-CREATE INDEX IF NOT EXISTS idx_summaries_project_level
-  ON summaries (project_id, level, is_current);
-CREATE INDEX IF NOT EXISTS idx_summaries_target
-  ON summaries (target_key);
+CREATE INDEX IF NOT EXISTS idx_search_summaries_project_level
+  ON search_summaries (project_id, level, is_current);
+CREATE INDEX IF NOT EXISTS idx_search_summaries_target
+  ON search_summaries (target_key);
 
 -- summaries retrieval_text BM25 검색용. trigram tokenizer.
-CREATE VIRTUAL TABLE IF NOT EXISTS summaries_fts USING fts5(
+CREATE VIRTUAL TABLE IF NOT EXISTS search_summaries_fts USING fts5(
   retrieval_text,
-  content='summaries',
+  content='search_summaries',
   content_rowid='rowid',
   tokenize='trigram'
 );
 
-CREATE TRIGGER IF NOT EXISTS summaries_ai AFTER INSERT ON summaries BEGIN
-  INSERT INTO summaries_fts(rowid, retrieval_text)
+CREATE TRIGGER IF NOT EXISTS search_summaries_ai AFTER INSERT ON search_summaries BEGIN
+  INSERT INTO search_summaries_fts(rowid, retrieval_text)
   VALUES (new.rowid, new.retrieval_text);
 END;
 
-CREATE TRIGGER IF NOT EXISTS summaries_ad AFTER DELETE ON summaries BEGIN
-  INSERT INTO summaries_fts(summaries_fts, rowid, retrieval_text)
+CREATE TRIGGER IF NOT EXISTS search_summaries_ad AFTER DELETE ON search_summaries BEGIN
+  INSERT INTO search_summaries_fts(search_summaries_fts, rowid, retrieval_text)
   VALUES ('delete', old.rowid, old.retrieval_text);
 END;
 
-CREATE TRIGGER IF NOT EXISTS summaries_au AFTER UPDATE ON summaries BEGIN
-  INSERT INTO summaries_fts(summaries_fts, rowid, retrieval_text)
+CREATE TRIGGER IF NOT EXISTS search_summaries_au AFTER UPDATE ON search_summaries BEGIN
+  INSERT INTO search_summaries_fts(search_summaries_fts, rowid, retrieval_text)
   VALUES ('delete', old.rowid, old.retrieval_text);
-  INSERT INTO summaries_fts(rowid, retrieval_text)
+  INSERT INTO search_summaries_fts(rowid, retrieval_text)
   VALUES (new.rowid, new.retrieval_text);
 END;
 
--- summary 가 어떤 하위 summary / chunk 를 대표하는지 연결. drill-down 근거 추적용.
+-- summary 가 어떤 하위 summary / entry 를 대표하는지 연결. drill-down 근거 추적용.
 CREATE TABLE IF NOT EXISTS summary_links (
-  parent_summary_id TEXT NOT NULL REFERENCES summaries(id),
-  child_kind        TEXT NOT NULL,             -- summary | chunk
+  parent_summary_id TEXT NOT NULL REFERENCES search_summaries(id),
+  child_kind        TEXT NOT NULL,             -- summary | entry
   child_id          TEXT NOT NULL,
   rank_order        INTEGER NOT NULL DEFAULT 0,
   weight            REAL NOT NULL DEFAULT 1.0,
@@ -313,15 +271,15 @@ CREATE TABLE IF NOT EXISTS contradictions (
   project_id          TEXT NOT NULL REFERENCES projects(id),
   entity_id           TEXT REFERENCES entities(id),
   scope_key           TEXT,                    -- feature key 또는 section_path
-  chunk_a_id          TEXT NOT NULL REFERENCES chunks_v2(id),
-  chunk_b_id          TEXT NOT NULL REFERENCES chunks_v2(id),
+  entry_a_id          TEXT NOT NULL REFERENCES search_entries(id),
+  entry_b_id          TEXT NOT NULL REFERENCES search_entries(id),
   contradiction_score REAL NOT NULL,
   detector            TEXT NOT NULL,           -- nli | llm | rule
   status              TEXT NOT NULL,           -- candidate | neutral | confirmed | dismissed
   reason              TEXT,
   created_at          TEXT NOT NULL,
   updated_at          TEXT NOT NULL,
-  UNIQUE (chunk_a_id, chunk_b_id, detector)
+  UNIQUE (entry_a_id, entry_b_id, detector)
 );
 
 CREATE INDEX IF NOT EXISTS idx_contradictions_project_status

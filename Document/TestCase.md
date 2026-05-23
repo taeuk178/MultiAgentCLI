@@ -23,7 +23,7 @@ TOTAL  23 PASS / 0 FAIL
 - entity alias, contradiction judge/fallback
 - hook memory loop, redaction, first-turn working overlay
 - `/memory` search/list/show/inject/status/profile
-- `memory_chunks → chunks_v2` bridge/backfill
+- `search_entries` migration/backfill
 - `/search`, `/remember`, `setup vector` dispatcher
 - legacy DB migration
 - source status, noise flag, profile, dedup/provenance trace

@@ -58,10 +58,10 @@ export IMPRINT_CLAUDE_MODEL=haiku
 
 | 영역 | 설명 |
 |---|---|
-| Memory | prompt, assistant response, `/remember`, Slack/Notion fetch 결과를 redaction 후 `memory_chunks` 에 저장하고, persistent memory 는 `chunks_v2` 후보로 bridge 합니다. |
+| Memory | prompt/assistant response 는 `events` 에 archive 하고, `/remember`, assistant extract, Slack/Notion fetch 결과는 redaction 후 `search_entries` 에 저장합니다. |
 | Prefill | 매 prompt 전에 query context, session memory, retrieved memory, external source context 를 `[Project memory context]` 로 자동 prepend 합니다. |
 | `/memory` | 저장된 memory 를 검색, 확인, 주입, pin, 삭제, refresh 합니다. |
-| `/search` | 문서 RAG(`chunks_v2`/`summaries`)를 우선 검색하고, 결과가 약하면 `memory_chunks` 를 read-only fallback 으로 조회합니다. |
+| `/search` | `search_entries` 와 `search_summaries` 를 검색합니다. 저신뢰 raw events 자동 fallback 은 열지 않습니다. |
 | Setup | 선택 벡터 검색 의존성 설치, 모델 warmup, memory embedding backfill 을 한 명령으로 처리합니다. |
 | Routing | `<project>/.imprint/UserPromptSubmit.md` 의 키워드 룰을 보고 routing advisory 를 prepend 합니다. |
 | Guardrail | `<project>/.imprint/Guardrail.md` 를 세션 시작·압축 후 자동 prepend 합니다. |
@@ -73,7 +73,7 @@ export IMPRINT_CLAUDE_MODEL=haiku
 사용자 prompt
   -> UserPromptSubmit hook
        events.user_message 저장
-       현재 질문 working mini-chunk 저장
+       현재 질문 working surface 를 events.metadata_json 에 저장
        routing rule 평가
        need-retrieval gate
        context section별 memory prefill

@@ -232,11 +232,11 @@ fi
 # benefits from prior chunks.
 if [[ -z "${PREFILL_OUT// }" && -n "$PID" ]] && command -v sqlite3 >/dev/null 2>&1; then
   INJECTED=$(db_exec "
-    SELECT '- [' || chunk_type || '] ' || REPLACE(text, char(10), ' ')
-    FROM memory_chunks
+    SELECT '- [' || raw_type || '] ' || REPLACE(text, char(10), ' ')
+    FROM search_entries
     WHERE project_id = '$PID'
-      AND chunk_type IN ('decision', 'fix', 'todo', 'note')
-      AND coalesce(json_extract(metadata_json, '$.memory_tier'), '') != 'working'
+      AND raw_type IN ('decision', 'fix', 'todo', 'note')
+      AND is_current = 1
     ORDER BY pinned DESC, created_at DESC
     LIMIT 5;
   " 2>>"$IMPRINT_LOG" || true)

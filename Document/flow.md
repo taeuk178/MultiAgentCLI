@@ -6,10 +6,10 @@
 
 - hook 은 사용자 세션을 끊지 않습니다. 실패는 silent skip + `plugin.log` 로 처리합니다.
 - 동기 경로는 가볍게 유지합니다. LLM 호출, Slack/Notion fetch, response extract 는 background 로 분리합니다.
-- hook foreground 경로는 현재 turn 을 working mini-chunk 로 저장하고, 동기 경로의 context 보강은 가볍게 유지합니다.
-- `/search` 는 사용자가 명시 호출했을 때 `chunks_v2`/`summaries` retrieval 을 수행하는 공개 진입점입니다.
-- `/search` 는 현재 세션 working chunk 를 query context 로 soft union 하고, 문서 후보가 없거나 저신뢰이면 `memory_chunks` 를 read-only fallback 으로 조회합니다.
-- `/remember`, Stop extract, external lazy-fetch 로 남은 persistent memory 는 `memory_chunks → chunks_v2` bridge 로 검색 후보에 복제됩니다. 기본 bridge 는 embedding 을 만들지 않으므로 vector 검색은 `--embed` backfill 또는 `IMPRINT_MEMORY_BRIDGE_EMBEDDING=1` 이후에 참여합니다.
+- hook foreground 경로는 현재 turn 의 working surface 를 `events.metadata_json` 에 남기고, 동기 경로의 context 보강은 가볍게 유지합니다.
+- `/search` 는 사용자가 명시 호출했을 때 `search_entries`/`search_summaries` retrieval 을 수행하는 공개 진입점입니다.
+- `/search` 는 현재 세션 working surface 를 query context 로 soft union 합니다. raw events 전체 자동 fallback 은 열지 않습니다.
+- `/remember`, Stop extract, external lazy-fetch, source document ingest 로 남은 persistent memory 는 `search_entries` 단일 인덱스에 직접 저장됩니다. vector 검색은 optional ML 설치 후 `imprint setup vector --backfill` 로 `search_entries.embedding` 을 채우면 참여합니다.
 
 ## 전체 플로우
 
@@ -18,7 +18,7 @@
 
 [자동 hook 동기 경로]
   1. UserPromptSubmit: user_message event 저장
-  2. noise=0 이면 현재 질문을 working mini-chunk 로 memory_chunks 에 즉시 저장
+  2. noise=0 이면 현재 질문의 working surface 를 events.metadata_json 에 저장
      - metadata_json.memory_tier=working
      - metadata_json.memory_kind=raw_turn
      - metadata_json.session_visible=true
@@ -40,28 +40,25 @@
   A. UserPromptSubmit lazy-fetch
      - background model 이 prompt 키워드/URL 분석
      - prompt URL 또는 sources.json 기반 Slack/Notion read-only fetch
-     - section chunk 를 memory_chunks 에 직접 INSERT
-     - persistent external chunk 는 bridge 로 chunks_v2 후보에도 복제
-     - source_status marker 는 bridge 대상에서 제외
+     - section chunk 를 search_entries(origin=source_document 또는 assistant_extract) 에 직접 INSERT
+     - fetch_failed/fetch_empty/skipped_by_cap marker 는 search_entries(raw_type=source_status) 로 관찰 가능하게 남김
 
   B. Stop response extract
      - background model 이 응답에서 persistent memory chunk 분류
-     - decision/error/fix/command/test_result/summary/todo/code_context/note 를 memory_chunks 에 직접 INSERT
-     - persistent extracted chunk 는 bridge 로 chunks_v2 후보에도 복제
-     - 기본 bridge 는 embedding 을 생성하지 않음
+     - decision/error/fix/command/test_result/summary/todo/code_context/note 를 search_entries(origin=assistant_extract) 에 직접 INSERT
 
 다음 turn:
-  새로 저장된 memory_chunks 가 다시 prefill 후보가 됩니다.
+  새로 저장된 search_entries 와 현재 세션 working surface 가 다시 prefill/search 후보가 됩니다.
 
 사용자: /search "A 버튼 클릭 동작 알려줘"
 
 [/search 명시 호출 경로]
   1. entity resolve 선행 → scope classifier(local/feature/global)
   2. local: chunk retrieval 경로 호출
-     - QN → RES → multi-rewrite → QEMB → HYB(chunks_v2 FTS5 + vector, 미가용 시 FTS/짧은 토큰 fallback) → RRF(+working overlay) → BOOST(+contradiction penalty) → low-confidence MEMFB → RG/RR → CTX
-     - working overlay: 현재 세션 memory_tier=working, session_visible=true 후보를 query context 로 soft union
-     - MEMFB: 후보가 0개이거나 저신뢰이면 memory_chunks read-only fallback(FTS/LIKE, vector 아님)
-  3. feature/global: summaries 검색 + chunk retrieval(동일 working overlay/low-confidence MEMFB 포함) + summary_links grounding
+     - QN → RES → multi-rewrite → QEMB → HYB(search_entries FTS5 + vector, 미가용 시 FTS/짧은 토큰 fallback) → RRF(+working overlay) → BOOST(+contradiction penalty) → RG/RR → CTX
+     - working overlay: 현재 세션 events.metadata_json 의 query_surfaces 를 query context 로 soft union
+     - low-confidence 는 trace 에만 남기고 raw events/memory fallback 은 자동으로 열지 않음
+  3. feature/global: search_summaries 검색 + entry retrieval(동일 working overlay 포함) + summary_links grounding
   4. resolved entity 의 confirmed contradiction 조회
   5. 구조화 context block 또는 JSON 반환
 ```
@@ -107,8 +104,8 @@ flowchart LR
     subgraph STORE["SQLite memory store"]
       direction TB
       EVENTS[("events<br/>user_message / llm_response<br/>noise flag")]
-      MEM[("memory_chunks<br/>working / retrieved / external<br/>FTS5 / LIKE")]
-      DOCS[("documents + chunks_v2<br/>summaries / entities<br/>embeddings / contradictions")]
+      ENTRIES[("search_entries<br/>remember / extract / source chunks<br/>FTS5 / optional vector")]
+      DOCS[("source_documents<br/>search_summaries / entities<br/>embeddings / contradictions")]
       PROF[("plugin.log<br/>profile.jsonl<br/>status / trace")]
     end
 
@@ -116,10 +113,10 @@ flowchart LR
       direction TB
       QN["Normalize + multi-rewrite<br/>original / action / code"]
       RES["Entity resolve<br/>scope classifier"]
-      HYB["Hybrid search<br/>chunks_v2/summaries<br/>FTS5 + optional vector"]
+      HYB["Hybrid search<br/>search_entries/search_summaries<br/>FTS5 + optional vector"]
       RRF["RRF + working overlay"]
       BOOST["Boost / penalty<br/>recency, entity,<br/>contradiction"]
-      MEMFB{"Low confidence?"}
+      CONF["Confidence trace<br/>no automatic raw fallback"]
       RR["optional rerank"]
       JSON["Context block<br/>or JSON trace"]
     end
@@ -146,10 +143,10 @@ flowchart LR
     SS --> PREPEND
     UPS --> EVENTS
     UPS --> MINI
-    MINI --> MEM
+    MINI --> EVENTS
     UPS --> GATE
     GATE --> PREFILL
-    MEM --> PREFILL
+    ENTRIES --> PREFILL
     PREFILL --> PREPEND
     PREPEND --> HOSTMODEL
     HOSTMODEL --> OUT
@@ -161,33 +158,32 @@ flowchart LR
     E --> LF
     LF --> FETCH
     FETCH --> EXTCHUNK
-    EXTCHUNK --> MEM
+    EXTCHUNK --> ENTRIES
 
     STOP -.spawn.-> EXTRACT
     EXTRACT --> DURABLE
-    DURABLE --> MEM
-    M --> MEM
+    DURABLE --> ENTRIES
+    M --> ENTRIES
 
     D --> DOCS
     DOCS --> RES
-    MEM --> QN
+    EVENTS --> QN
     DOCS --> HYB
+    ENTRIES --> HYB
     QN --> RES
     RES --> HYB
     HYB --> RRF
-    MEM --> RRF
+    EVENTS --> RRF
     RRF --> BOOST
-    BOOST --> MEMFB
-    MEMFB -->|yes| MEM
-    MEMFB -->|no| RR
-    MEM --> RR
+    BOOST --> CONF
+    CONF --> RR
     RR --> JSON
     JSON --> HOSTMODEL
 
     EVENTS -.health.-> PROF
-    MEM -.profile/status.-> PROF
+    ENTRIES -.profile/status.-> PROF
     DOCS -.trace.-> PROF
-    MEM -.metadata.-> FORMAT
+    ENTRIES -.metadata.-> FORMAT
     JSON -.explainability.-> FORMAT
 
     classDef input fill:#f7f7f7,stroke:#777,stroke-width:1px,color:#111;
@@ -201,8 +197,8 @@ flowchart LR
     class U,A,E,M,D input;
     class SS,UPS,MINI,GATE,PREFILL,PREPEND,STOP sync;
     class LF,FETCH,EXTCHUNK,EXTRACT,DURABLE async;
-    class EVENTS,MEM,DOCS,PROF store;
-    class QN,RES,HYB,RRF,BOOST,MEMFB,RR,JSON retrieve;
+    class EVENTS,ENTRIES,DOCS,PROF store;
+    class QN,RES,HYB,RRF,BOOST,CONF,RR,JSON retrieve;
     class HOSTMODEL,OUT gen;
     class F1,F2,F3,F4,F5 format;
 ```
@@ -214,8 +210,8 @@ flowchart LR
 | Input signals | hook 과 retrieval 로 들어오는 원천 입력 | `U` · `A` · `E` · `M` · `D` |
 | Foreground hook path | 사용자 turn 을 막지 않는 동기 경량 경로 | `SS` · `UPS` · `MINI` · `GATE` · `PREFILL` · `PREPEND` · `STOP` |
 | Background model workers | background model CLI 를 쓰는 비동기 정리/추출/fetch 보조 경로 | `LF` · `FETCH` · `EXTCHUNK` · `EXTRACT` · `DURABLE` |
-| SQLite memory store | 실제 저장소와 운영 관측 파일 | `EVENTS` · `MEM` · `DOCS` · `PROF` |
-| Explicit /search path | 사용자가 명시 호출할 때만 도는 검색 파이프라인 | `QN` · `RES` · `HYB` · `RRF` · `BOOST` · `MEMFB` · `RR` · `JSON` |
+| SQLite memory store | 실제 저장소와 운영 관측 파일 | `EVENTS` · `ENTRIES` · `DOCS` · `PROF` |
+| Explicit /search path | 사용자가 명시 호출할 때만 도는 검색 파이프라인 | `QN` · `RES` · `HYB` · `RRF` · `BOOST` · `CONF` · `RR` · `JSON` |
 | Generation | prepend 된 context 를 참고해 응답을 만드는 host 모델 경로 | `HOSTMODEL` · `OUT` |
 | Memory / retrieval format | 후보의 의미와 디버깅 trace 를 설명하는 context/provenance metadata | `F1` · `F2` · `F3` · `F4` · `F5` |
 
@@ -275,44 +271,44 @@ flowchart LR
 | feature | feature summaries 검색 + feature chunk retrieval + summary_links grounding + contradiction 조회 |
 | global | project/document/feature summaries 검색 + key chunk retrieval + grounding + contradiction 조회 |
 
-`chunk_retrieve` 는 `chunks_v2` 후보가 있어도 현재 세션 working mini-chunk 를 query context 로 soft union 합니다. `chunks_v2` 후보가 없거나 top1 score 가 낮거나 working-only/entity-mismatch 로 저신뢰이면 `memory_chunks` fallback 을 탑니다. fallback 은 `source_status` marker 와 working chunk 를 제외합니다.
+`chunk_retrieve` 는 `search_entries` 후보와 현재 세션 `events.metadata_json` 의 working surface 를 query context 로 soft union 합니다. 후보가 없거나 top1 score 가 낮으면 trace 에 저신뢰 이유를 남기지만, raw events 자동 fallback 은 열지 않습니다. `source_status` marker 는 primary retrieved context 후보에서 제외합니다.
 
-현재 vector 검색 범위는 `chunks_v2` 와 `summaries` 입니다. persistent `memory_chunks` 는 bridge 로 `chunks_v2` 에 복제되지만, embedding BLOB 이 없는 bridge row 는 FTS5 후보로만 동작합니다. `sentence-transformers` 설치 후 `bridge-memory <project_id> --all --embed` 로 기존 bridge row 를 채우거나, 새 저장 시 `IMPRINT_MEMORY_BRIDGE_EMBEDDING=1` 을 켜야 persistent memory 도 vector path 에 참여합니다.
+현재 vector 검색 범위는 `search_entries` 와 `search_summaries` 입니다. 선택 ML 의존성 설치 전에는 FTS5 중심으로 동작하고, `imprint setup vector --backfill` 을 실행하면 기존 `search_entries.embedding` 을 채워 vector path 에 참여시킵니다.
 
-confirmed contradiction 에 연결된 chunk 는 BOOST 단계에서 강하게 감점합니다. candidate contradiction 은 약하게 감점하고, routed output 의 conflict 섹션은 기존처럼 유지합니다.
+confirmed contradiction 에 연결된 entry 는 BOOST 단계에서 강하게 감점합니다. candidate contradiction 은 약하게 감점하고, routed output 의 conflict 섹션은 기존처럼 유지합니다.
 
 ## SQLite 테이블 역할
 
 스키마는 `scripts/imprint/lib/schema.sql` 이 기준입니다. `SessionStart` 때 idempotent 하게 적용되며, 기본 DB 는 `~/.imprint/app.sqlite` 입니다.
 
-### Core archive / memory
+### Core archive / search memory
 
 | 테이블 | 담당 역할 | 주요 writer | 주요 reader |
 |---|---|---|---|
 | `projects` | project root 를 안정적인 `project_id` 로 묶는 최상위 scope | `session-start.sh`, `common.sh` | 모든 hook/검색 경로 |
 | `conversations` | host 대화 단위 메타데이터. 현재 핵심 경로에서는 보조적입니다. | 향후 conversation 연동 | `events.conversation_id` 참조 |
-| `events` | user prompt 와 assistant response 의 redacted raw archive. `noise` flag 로 짧은 backchannel 을 구분합니다. | `user-prompt-submit.sh`, `stop.sh` | observability, provenance, 향후 raw audit |
-| `memory_chunks` | 기본 사용자 기억 저장소. working raw turn, `/remember`, Stop extract, Slack/Notion lazy-fetch chunk, `source_status` marker 가 들어갑니다. | `ingestion.py`, `memory.sh`, `remember.sh` | prefill, `/memory`, `/search` fallback, bridge |
+| `events` | user prompt 와 assistant response 의 redacted raw archive. working overlay surface 도 `metadata_json` 에 저장합니다. | `user-prompt-submit.sh`, `stop.sh`, `ingestion.py` | observability, provenance, `/search` working overlay |
+| `source_documents` | Slack/Notion/PRD/Plan/ADR/file 같은 진짜 원본 문서입니다. synthetic memory 문서는 넣지 않습니다. | `retrieval.ingest`, lazy-fetch | source document provenance, stale 판단 |
+| `search_entries` | 검색 가능한 영구 단위의 단일 인덱스입니다. `/remember`, assistant extract, source document chunk 가 모두 여기에 들어갑니다. | `memory.sh`, `ingestion.py`, `retrieval.ingest`, migration | `/memory`, `/search`, prefill |
 
-`events` 는 원문 archive 이고, `memory_chunks` 는 재사용 가능한 기억입니다. `/search` 의 의미 검색 대상은 raw events 전체가 아니라 `memory_chunks` 에서 선별·추출된 persistent memory 를 bridge 한 `chunks_v2` 입니다.
+`events` 는 raw archive 이고, `search_entries` 는 재사용 가능한 기억/문서 chunk 인덱스입니다. `/search` 는 raw events 전체를 자동 fallback 으로 훑지 않고, `search_entries` 와 현재 세션 working surface 만 사용합니다.
 
 ### FTS mirror
 
 | 테이블 | 담당 역할 | 동기화 방식 |
 |---|---|---|
-| `events_fts` | `events.text_clean` 의 FTS5 trigram 인덱스. 현재 사용자-facing 검색 경로에는 직접 노출하지 않습니다. | `events_ai`, `events_ad` trigger |
-| `memory_chunks_fts` | `memory_chunks.text` 의 FTS5 trigram 인덱스. `/memory search`, prefill, `/search` fallback 에 사용합니다. | `chunks_ai`, `chunks_ad`, `chunks_au` trigger |
-| `chunks_v2_fts` | `chunks_v2.retrieval_text` 의 FTS5 trigram 인덱스. `/search` 의 chunk BM25 lane 입니다. | `chunks_v2_ai`, `chunks_v2_ad`, `chunks_v2_au` trigger |
-| `summaries_fts` | `summaries.retrieval_text` 의 FTS5 trigram 인덱스. feature/global routed search 에 사용합니다. | `summaries_ai`, `summaries_ad`, `summaries_au` trigger |
+| `search_entries_fts` | `search_entries.retrieval_text` 의 FTS5 trigram 인덱스. `/search` 와 `/memory search` 의 BM25 lane 입니다. | `search_entries_ai`, `search_entries_ad`, `search_entries_au` trigger |
+| `search_summaries_fts` | `search_summaries.retrieval_text` 의 FTS5 trigram 인덱스. feature/global routed search 에 사용합니다. | `search_summaries_ai`, `search_summaries_ad`, `search_summaries_au` trigger |
 
-### Retrieval v2
+`events_fts`, `memory_chunks_fts`, `chunks_v2_fts`, legacy `summaries_fts` 는 새 스키마에서 만들지 않습니다.
+
+### Retrieval
 
 | 테이블 | 담당 역할 | 비고 |
 |---|---|---|
-| `documents` | 외부/명시 문서 원문과 synthetic memory document 를 저장합니다. `source_ref='memory_chunks:<id>'` 이면 bridge row 입니다. | Notion/Slack/PRD/file, memory bridge 의 원천 문서 |
-| `chunks_v2` | `/search` 의 주 검색 단위. `retrieval_text`, optional `embedding`, type, validity, provenance metadata 를 가집니다. | vector + FTS hybrid 대상 |
-| `summaries` | feature/document/project 단위 요약 검색 대상입니다. routed search 가 질문 범위에 맞춰 먼저 훑습니다. | optional embedding 포함 |
-| `summary_links` | summary 가 대표하는 하위 summary/chunk 연결입니다. global/feature 결과에서 근거 chunk 로 drill-down 할 때 씁니다. | parent summary → child summary/chunk |
+| `search_entries` | `/search` 의 주 검색 단위. `retrieval_text`, optional `embedding`, type 2층, validity, provenance metadata 를 가집니다. | vector + FTS hybrid 대상 |
+| `search_summaries` | feature/document/project 단위 요약 검색 대상입니다. routed search 가 질문 범위에 맞춰 먼저 훑습니다. | optional embedding 포함 |
+| `summary_links` | summary 가 대표하는 하위 summary/entry 연결입니다. global/feature 결과에서 근거 entry 로 drill-down 할 때 씁니다. | parent summary → child summary/entry |
 
 ### Entity / conflict / queue
 
@@ -320,55 +316,29 @@ confirmed contradiction 에 연결된 chunk 는 BOOST 단계에서 강하게 감
 |---|---|---|
 | `entities` | feature, screen, UI element 같은 canonical entity 를 저장합니다. | entity resolve 의 기준점 |
 | `entity_aliases` | 같은 entity 를 부르는 alias 와 confidence/status 를 저장합니다. | query resolve 와 review queue 성격 |
-| `chunk_entities` | `chunks_v2` 와 entity mention 의 다대다 연결입니다. | entity boost, contradiction scope 에 사용 |
-| `contradictions` | 같은 entity/scope 에서 충돌 가능성이 있는 chunk pair 판정 캐시입니다. | candidate 는 약한 감점, confirmed 는 강한 감점 |
-| `ingest_queue` | summary/NER/contradiction 같은 후속 작업 queue 입니다. 현재 `memory_chunks` 직접 저장 경로는 queue 를 거치지 않고 bridge 까지만 수행합니다. | priority 낮을수록 먼저 처리 |
+| `entry_entities` | `search_entries` 와 entity mention 의 다대다 연결입니다. | entity boost, contradiction scope 에 사용 |
+| `contradictions` | 같은 entity/scope 에서 충돌 가능성이 있는 entry pair 판정 캐시입니다. | candidate 는 약한 감점, confirmed 는 강한 감점 |
+| `ingest_queue` | summary/NER/contradiction 같은 후속 작업 queue 입니다. | priority 낮을수록 먼저 처리 |
 
-## 제안: `search_entries` 통합 스키마 초안
-
-> **상태: 구현 전 설계 초안.** 위 "SQLite 테이블 역할"이 현재 실제 코드/DB 기준이고, 이 섹션은 **구현 예정 구조**다. 구현이 들어가기 전까지 두 섹션은 공존하며, 구현 완료 후 위 현재-스키마 서술을 이 구조로 교체한다. 결정 사유와 폐기된 대안은 `HISTORY.md` 2026-05-24 항목 참조.
-
-### 동기
-
-현재 `memory_chunks → documents → chunks_v2` bridge 는 memory 1건을 synthetic `documents` 1건 + `chunks_v2` 1건으로 승격해, 같은 텍스트를 최대 5벌(`memory_chunks.text`, `documents.raw_text`, `chunks_v2.chunk_text`/`retrieval_text`, FTS 2벌)로 저장한다. `documents` 에 `memory_chunks:<id>` synthetic 문서가 섞여 "원본 문서" 의미가 깨지고, `/search` 는 chunks_v2 primary + memory_chunks fallback 으로 같은 내용을 두 경로로 찾는다. 통합하면 bridge·synthetic document·이중 FTS·fallback 이 사라진다.
-
-### 현재 → 제안 매핑
-
-| 현재 | 제안 | 변화 |
-|---|---|---|
-| `events` | `events` | 유지. raw 대화 로그, 검색 제외, working overlay 소스. `events_fts`/트리거는 제거 |
-| `memory_chunks` | (제거 → `search_entries` 흡수) | working raw turn 은 저장 안 함, persistent memory 는 search_entries 로 |
-| `documents` | `source_documents` | 진짜 원본만(Slack/Notion/PRD/Plan/ADR/file). synthetic 문서 금지 |
-| `chunks_v2` | `search_entries` | 검색 가능한 모든 단위의 단일 인덱스 |
-| `summaries` | `search_summaries` | 이름만 |
-| `chunk_entities` | `entry_entities` | `chunk_id → entry_id` |
-| `contradictions` | `contradictions` | `chunk_a_id`/`chunk_b_id → entry_a_id`/`entry_b_id` (이름만) |
-| `summary_links` | `summary_links` | `child_kind` 의 `chunk → entry` |
-
-`projects`, `conversations`, `entities`, `entity_aliases`, `ingest_queue` 는 유지.
-
-### `search_entries` DDL 초안
+### `search_entries` 핵심 구조
 
 ```sql
--- chunks_v2 + memory_chunks 흡수. 검색 가능한 모든 단위의 단일 인덱스.
--- working overlay 정보는 search_entries에 저장하지 않고,
--- events.metadata_json의 query_surfaces / need_retrieval / retrieval_reason을 사용한다.
 CREATE TABLE search_entries (
   id                  TEXT PRIMARY KEY,
   project_id          TEXT NOT NULL REFERENCES projects(id),
-  source_document_id  TEXT REFERENCES source_documents(id),  -- nullable
-  source_event_id     TEXT REFERENCES events(id),            -- nullable
-  origin              TEXT NOT NULL,   -- manual_remember | assistant_extract | source_document
-  raw_type            TEXT,            -- 아래 raw_type 목록
-  normalized_type     TEXT,            -- requirement | decision | discussion | code_note (2층)
-  chunk_index         INTEGER,         -- source_document child일 때만 의미, 단건은 0
+  source_document_id  TEXT REFERENCES source_documents(id),
+  source_event_id     TEXT REFERENCES events(id),
+  origin              TEXT NOT NULL DEFAULT 'manual_remember',
+  raw_type            TEXT,
+  normalized_type     TEXT,
+  chunk_index         INTEGER,
   section_path        TEXT,
-  text                TEXT NOT NULL,   -- 원문
+  text                TEXT NOT NULL,
   context_prefix      TEXT,
-  retrieval_text      TEXT NOT NULL,   -- 임베딩·FTS 기준 (context_prefix + text)
+  retrieval_text      TEXT,
   embedding           BLOB,
-  plan_key            TEXT,            -- nullable, day-1 대부분 NULL
-  feature_key         TEXT,            -- nullable, entities와 통합 정책 미정
+  plan_key            TEXT,
+  feature_key         TEXT,
   source_created_at   TEXT,
   source_updated_at   TEXT,
   valid_from          TEXT,
@@ -376,55 +346,24 @@ CREATE TABLE search_entries (
   is_current          INTEGER NOT NULL DEFAULT 1,
   supersedes_entry_id TEXT REFERENCES search_entries(id),
   pinned              INTEGER NOT NULL DEFAULT 0,
-  metadata_json       TEXT NOT NULL DEFAULT '{}',  -- importance 등
+  metadata_json       TEXT NOT NULL DEFAULT '{}',
   created_at          TEXT NOT NULL
 );
--- source_document child 중복 방지: source_document_id 가 있을 때만
---   (source_document_id, chunk_index) UNIQUE (partial index).
-
-CREATE VIRTUAL TABLE search_entries_fts USING fts5(  -- chunks_v2_fts + memory_chunks_fts 대체
-  retrieval_text, content='search_entries', content_rowid='rowid', tokenize='trigram');
 ```
 
-### type 2층
-
-retrieval routing/boost 가 `normalized_type` 을 쓰므로 2층을 유지한다.
-
-- `raw_type`: `decision | fix | todo | code_context | note | plan_step | requirement | message | thread | command | error | test_result | summary`
+- `origin`: `manual_remember | assistant_extract | source_document`
+- `raw_type`: `decision | fix | todo | code_context | note | plan_step | requirement | message | thread | command | error | test_result | summary | source_status`
 - `normalized_type`: `decision | requirement | discussion | code_note`
+- `raw_type=summary` 는 assistant extract 의 요약 메모이고, `search_summaries` 의 feature/global 요약과는 다른 개념입니다.
+- `plan_key` / `feature_key` 는 자리만 있습니다. day-1 대부분 `NULL` 이며, 값을 채우는 추출/ingest 경로와 entity 통합 정책은 별도 과제입니다.
 
-`raw_type=summary` 는 assistant extract 의 "요약 메모"이고, `search_summaries` 테이블의 feature/global 요약과는 다른 개념이다. 이름이 겹치므로 문서·코드에서 구분을 명확히 한다.
+### Legacy migration
 
-### `origin` 별 저장 경로
-
-```
-대화 전체             → events (검색 제외)
-세션 working overlay   → 검색 시점에 events에서 session_id로 읽어 soft union (search_entries에 저장 안 함)
-/remember             → search_entries(origin=manual_remember, source_event_id=…)
-assistant 추출         → search_entries(origin=assistant_extract, source_event_id=…)
-Slack/Notion/PRD/Plan  → source_documents → search_entries(origin=source_document, source_document_id=…)
-/search               → search_entries primary → search_summaries optional → events 자동 fallback 없음 (raw events는 explicit debug에서만)
-```
-
-### `plan_key` / `feature_key` 기대치
-
-- 컬럼 자리만 둔다. **day-1 대부분 NULL** 이다.
-- 값을 채우는 추출/ingest 경로는 **별도 과제**다.
-- `feature_key` 는 `entities`/`entity_aliases` 와 중복될 수 있어, 통합 정책은 나중에 정한다.
-
-### 미결 (구현 전 확정 필요)
-
-1. **working overlay** — events 에서 뽑으면 기존 working mini-chunk 의 가공 정보(query_surfaces / need_retrieval / retrieval_reason)를 잃는다. 결정: working mini-chunk 테이블을 없애되, 이 surface metadata 를 `events.metadata_json` 에 저장하고 overlay 는 검색 시점에 현재 session_id 의 최근 user_message 에서 읽는다.
-2. **plan_key / feature_key 채우는 경로** — entity/NER 통합 여부 포함 미정.
-3. **`source_documents` 재수집(checksum 변경)** 시 child `search_entries` 의 validity(`valid_from/valid_to/is_current/supersedes_entry_id`) 캐리오버 정책.
-
-### migration 방향
-
-drop/recreate 가 아니라, 현재 도그푸딩 DB 를 새 스키마로 옮기는 **one-shot migration** 으로 진행한다. `chunks_v2` 의 비-bridge row 와 `memory_chunks` 의 persistent row 를 `search_entries` 로 합치고, `memory_chunks:<id>` synthetic `documents` 는 버린다.
+기존 사용자 DB는 자동 drop/recreate 하지 않습니다. 명시 명령 `imprint migrate search-entries` 가 백업을 만든 뒤 legacy `memory_chunks`, `documents`, `chunks_v2`, `summaries`, `chunk_entities`, `contradictions` 를 새 테이블로 옮깁니다. `memory_chunks:<id>` synthetic document 는 버리고, persistent memory row 는 `search_entries(origin=manual_remember|assistant_extract)` 로 흡수합니다. working raw turn 은 새 영구 entry 로 만들지 않고, 이후 turn 부터 `events.metadata_json` surface 로만 남깁니다.
 
 ## 운영 정책 수치
 
-UserPromptSubmit gate 는 결정적 rule 기반입니다. `noise=1`, 짧은 backchannel, 단순 확인/감사/커밋 요청은 retrieved-memory search 를 생략하고, `어떻게/왜/어디/동작/정리/찾아줘` 계열 표현이나 UI/code/source 키워드가 있으면 retrieved/external context 검색을 엽니다. gate 결과는 working chunk metadata 의 `need_retrieval`, `retrieval_reason` 과 `IMPRINT_PROFILE=1` 의 `cmd_prefill` record 에 남습니다.
+UserPromptSubmit gate 는 결정적 rule 기반입니다. `noise=1`, 짧은 backchannel, 단순 확인/감사/커밋 요청은 retrieved-memory search 를 생략하고, `어떻게/왜/어디/동작/정리/찾아줘` 계열 표현이나 UI/code/source 키워드가 있으면 retrieved/external context 검색을 엽니다. gate 결과는 `events.metadata_json` 의 `need_retrieval`, `retrieval_reason`, `query_surfaces` 와 `IMPRINT_PROFILE=1` 의 `cmd_prefill` record 에 남습니다.
 
 ### Foreground prefill / working memory
 
@@ -468,7 +407,7 @@ UserPromptSubmit gate 는 결정적 rule 기반입니다. `noise=1`, 짧은 back
 | `BOOST_RECENT` | `0.05` | `retrieve.py` | 최근 source_updated_at 가산점 |
 | `WORKING_OVERLAY_LIMIT` | `4` | `retrieve.py` | `/search` 에 soft union 할 query context 수 |
 | `WORKING_OVERLAY_SCORE` | `0.12` | `retrieve.py` | query context 의 고정 점수 |
-| `LOW_CONFIDENCE_TOP1` | `0.13` | `retrieve.py` | top1 이 낮을 때 `memory_chunks` fallback open |
+| `LOW_CONFIDENCE_TOP1` | `0.13` | `retrieve.py` | top1 이 낮을 때 저신뢰 trace 기록. 자동 raw fallback 은 열지 않음 |
 
 ### Rerank
 
@@ -521,11 +460,11 @@ UserPromptSubmit gate 는 결정적 rule 기반입니다. `noise=1`, 짧은 back
 | `IMPRINT_DISABLE_EXTRACT` | `0` | env | `1`이면 Stop extract 비활성 |
 | `IMPRINT_NO_SEED` | `0` | env | `1`이면 `.imprint/` 기본 파일 seed 비활성 |
 | `IMPRINT_MODEL_CACHE_DIR` | HuggingFace 기본 cache | env | optional ML 모델 cache 위치 |
-| `IMPRINT_DISABLE_EMBEDDING` | `0` | env | `1`이면 `chunks_v2`/`summaries` embedding/vector search 비활성 |
+| `IMPRINT_DISABLE_EMBEDDING` | `0` | env | `1`이면 `search_entries`/`search_summaries` embedding/vector search 비활성 |
 | `IMPRINT_DISABLE_NLI` | `0` | env | `1`이면 NLI contradiction judge 비활성 |
 | `IMPRINT_DISABLE_MODEL_JUDGE` | `0` | env | `1`이면 model judge fallback 비활성 |
 
-`retrieve_json` / `routed_json` 은 `trace.query_surfaces`, `fallback_reasons`, `rerank_gate_reason` 과 candidate 별 `context_section`, `lane`, `evidence_level`, `grounded`, `source_uri`, `text_hash`, `penalties` 를 노출합니다. `context_section`/`lane` 은 `query_context`, `retrieved_memory`, `external_source_context` 를 사용하며, `lane` 은 이전 JSON 소비자를 위한 호환 필드입니다. `evidence_level` 은 기존 DB 호환을 위한 provenance field 입니다. 이 값은 context 품질 회고와 gate/MEMFB/rerank threshold 튜닝에 사용합니다.
+`retrieve_json` / `routed_json` 은 `trace.query_surfaces`, `fallback_reasons`, `rerank_gate_reason` 과 candidate 별 `context_section`, `lane`, `evidence_level`, `grounded`, `source_uri`, `text_hash`, `penalties` 를 노출합니다. `context_section`/`lane` 은 `query_context`, `retrieved_memory`, `external_source_context` 를 사용하며, `lane` 은 이전 JSON 소비자를 위한 호환 필드입니다. `evidence_level` 은 기존 DB 호환을 위한 provenance field 입니다. 이 값은 context 품질 회고와 gate/rerank threshold 튜닝에 사용합니다.
 
 튜닝할 때는 env 로 조정 가능한 값부터 바꾸고, `retrieve.py`/`routing.py` 의 코드 상수는 테스트와 함께 PR 로 변경합니다. 변경 후에는 내부 JSON trace 와 `IMPRINT_PROFILE=1` 의 `retrieve_done`, `cmd_prefill` record 를 같이 확인합니다.
 
@@ -535,7 +474,7 @@ UPS hook 자동 경로는 `LOG → ROUTE → PREFILL → CTX0` 만 실행해 < 5
 
 | 케이스 | budget | 구성 |
 |---|---|---|
-| local + rerank skip | < 130 ms | QN + RES + QEMB + HYB + RRF + BOOST + MEMFB + CTX |
+| local + rerank skip | < 130 ms | QN + RES + QEMB + HYB + RRF + BOOST + CTX |
 | feature/global + rerank skip | < 200 ms | RES/SC + summary 검색 + chunk retrieval + GROUND + CCHECK |
 | any scope + rerank 발동 | < 330 ms | 위 경로 + RR, timeout 시 fall-through |
 
@@ -543,7 +482,7 @@ UPS hook 자동 경로는 `LOG → ROUTE → PREFILL → CTX0` 만 실행해 < 5
 
 ## ingest_queue 우선순위
 
-`ingest_queue` 는 retrieval v2 문서 ingestion 뒤 후속 작업을 `priority ASC, created_at ASC` 로 drain 합니다. 자동 UPS/Stop hook 의 `memory_chunks` 저장 경로에는 끼지 않습니다.
+`ingest_queue` 는 source document ingestion 뒤 후속 작업을 `priority ASC, created_at ASC` 로 drain 합니다. `/remember` 와 assistant extract 의 직접 `search_entries` 저장 경로에는 끼지 않습니다.
 
 | Job | priority | 이유 |
 |---|---|---|
@@ -582,7 +521,7 @@ UPS hook 자동 경로는 `LOG → ROUTE → PREFILL → CTX0` 만 실행해 < 5
 | `<project>/.imprint/Guardrail.md` | 세션 시작·압축 후 prepend 되는 project Guardrail |
 | `<project>/.imprint/UserPromptSubmit.md` | keyword 기반 routing advisory rule |
 | `<project>/.imprint/sources.json` | Slack/Notion lazy-fetch 대상 |
-| `~/.imprint/app.sqlite` | events, memory_chunks, retrieval v2 tables |
+| `~/.imprint/app.sqlite` | events, source_documents, search_entries, search_summaries |
 | `~/.imprint/plugin.log` | hook, dispatcher, ingestion log |
 | `~/.imprint/profile.jsonl` | `IMPRINT_PROFILE=1` 일 때 stage 측정값 |
 
@@ -594,7 +533,7 @@ UPS hook 자동 경로는 `LOG → ROUTE → PREFILL → CTX0` 만 실행해 < 5
 | `python3` 없음 | primary prefill/lazy-fetch/extract 누락 |
 | background model CLI 없음 | background model 경로 누락 |
 | Slack/Notion MCP 없음 | 외부 fetch 0건, 기존 memory 는 유지 |
-| 선택 ML 의존성 없음 | `chunks_v2`/`summaries` vector/rerank/NLI 비활성, FTS-only / rule fallback |
+| 선택 ML 의존성 없음 | `search_entries`/`search_summaries` vector/rerank/NLI 비활성, FTS-only / rule fallback |
 | malformed LLM JSON | relaxed parse 실패 후 skip |
 
 `.imprint/` 폴더는 SessionStart hook 이 처음 실행될 때 자동 생성되며 기존 파일은 덮어쓰지 않습니다.
@@ -616,8 +555,8 @@ flowchart TB
       direction TB
       UPS["1. UserPromptSubmit<br/>redact prompt"]
       EV["2. events<br/>save user_message"]
-      RAW["3. memory_chunks<br/>insert raw_turn<br/>as Query context"]
-      PF["4. Prefill<br/>read Query context<br/>search Session memory<br/>search Retrieved memory"]
+      RAW["3. events.metadata_json<br/>store working surfaces<br/>as Query context"]
+      PF["4. Prefill<br/>read Query context<br/>search search_entries"]
       PRE["5. Prepend<br/>[Project memory context]"]
       MODEL["6. Claude / Codex<br/>generate answer"]
       STOP["7. Stop<br/>save llm_response"]
@@ -627,9 +566,9 @@ flowchart TB
       direction TB
       LF["Lazy fetch<br/>analyze prompt"]
       SRC["Slack / Notion<br/>read-only fetch"]
-      EXT["memory_chunks<br/>External source context"]
+      EXT["search_entries<br/>External source context"]
       EX["Response extract<br/>classify persistent memory"]
-      PM["memory_chunks<br/>persistent memory chunks"]
+      PM["search_entries<br/>persistent memory entries"]
     end
 
     U --> UPS --> EV --> RAW --> PF --> PRE --> MODEL --> STOP
@@ -650,26 +589,18 @@ flowchart TB
 
     subgraph PRIMARY["Primary retrieval"]
       direction TB
-      DOCS["chunks_v2 + summaries<br/>FTS5 BM25<br/>optional vector"]
+      DOCS["search_entries + search_summaries<br/>FTS5 BM25<br/>optional vector"]
       RRF["RRF<br/>merge primary candidates"]
-      OVER["Soft union<br/>Query context from memory_chunks"]
+      OVER["Soft union<br/>Query context from events metadata"]
     end
 
-    LOW{"Low confidence<br/>or no candidates?"}
-
-    subgraph FALLBACK["Fallback retrieval"]
-      direction TB
-      MEMFB["memory_chunks<br/>read-only fallback<br/>FTS5 / LIKE"]
-      FILTER["exclude source_status<br/>exclude working chunks"]
-    end
+    CONF["Confidence trace<br/>record low-confidence reasons"]
 
     RANK["Boost / penalty<br/>recency, entity,<br/>contradiction"]
     RR["Optional rerank"]
     OUT["Context block<br/>or JSON trace"]
 
-    Q --> RES --> SURF --> DOCS --> RRF --> OVER --> LOW
-    LOW -- yes --> MEMFB --> FILTER --> RANK
-    LOW -- no --> RANK
+    Q --> RES --> SURF --> DOCS --> RRF --> OVER --> CONF --> RANK
     RANK --> RR --> OUT
 ```
 
@@ -678,14 +609,14 @@ flowchart TB
 ```mermaid
 erDiagram
     PROJECTS ||--o{ EVENTS : has
-    PROJECTS ||--o{ MEMORY_CHUNKS : has
-    PROJECTS ||--o{ DOCUMENTS : has
-    DOCUMENTS ||--o{ CHUNKS_V2 : split_into
-    PROJECTS ||--o{ SUMMARIES : has
+    PROJECTS ||--o{ SOURCE_DOCUMENTS : has
+    SOURCE_DOCUMENTS ||--o{ SEARCH_ENTRIES : split_into
+    PROJECTS ||--o{ SEARCH_ENTRIES : has
+    PROJECTS ||--o{ SEARCH_SUMMARIES : has
     PROJECTS ||--o{ ENTITIES : has
     PROJECTS ||--o{ CONTRADICTIONS : has
-    EVENTS ||--o{ MEMORY_CHUNKS : extracted_into
-    CHUNKS_V2 ||--o{ SUMMARIES : grounds
+    EVENTS ||--o{ SEARCH_ENTRIES : extracted_into
+    SEARCH_ENTRIES ||--o{ SEARCH_SUMMARIES : grounds
     ENTITIES ||--o{ CONTRADICTIONS : involved_in
 
     PROJECTS {
@@ -702,33 +633,29 @@ erDiagram
         integer noise
     }
 
-    MEMORY_CHUNKS {
-        text id
-        text project_id
-        text source_event_id
-        text chunk_type
-        text text
-        text metadata_json
-        integer pinned
-    }
-
-    DOCUMENTS {
+    SOURCE_DOCUMENTS {
         text id
         text project_id
         text source_type
         text source_ref
+        text raw_text
     }
 
-    CHUNKS_V2 {
+    SEARCH_ENTRIES {
         text id
         text project_id
-        text document_id
+        text source_document_id
+        text source_event_id
+        text origin
+        text raw_type
+        text normalized_type
+        text text
         text retrieval_text
         blob embedding
         integer is_current
     }
 
-    SUMMARIES {
+    SEARCH_SUMMARIES {
         text id
         text project_id
         text level
@@ -737,4 +664,4 @@ erDiagram
     }
 ```
 
-`MEMORY_CHUNKS` 에는 현재 embedding 컬럼이 없습니다. 위 ER diagram 에서 embedding 은 `CHUNKS_V2` 에만 표시됩니다.
+`SEARCH_ENTRIES` 는 `/remember`, assistant extract, source document chunk 를 함께 담는 단일 검색 인덱스입니다. working overlay 는 영구 entry 로 만들지 않고 `EVENTS.metadata_json` 에 surface 만 저장합니다.

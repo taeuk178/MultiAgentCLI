@@ -183,7 +183,7 @@ imprint search "테스트 모드 진입 UX 시나리오"
 
 ```text
 ~/.imprint/
-  app.sqlite        # events, memory_chunks, retrieval 데이터
+  app.sqlite        # events, source_documents, search_entries, search_summaries
   plugin.log        # hook/skill/debug 로그
   profile.jsonl     # IMPRINT_PROFILE=1 활성 시 latency/payload 측정
 ```
@@ -219,9 +219,7 @@ imprint setup vector --status
 - `transformers`: contradiction NLI 판정에 사용합니다. 없으면 Claude/LLM judge 또는 rule fallback 으로 내려갑니다.
 - `sqlite-vec`: SQLite vector extension 로드 후보입니다. 없으면 현재 `/search` 는 embedding BLOB 을 Python cosine 으로 순회하는 fallback 구현을 사용합니다.
 
-`memory_chunks` 자체에는 embedding 컬럼이 없지만, persistent memory 는 `memory_chunks → chunks_v2` bridge 로 검색 후보에 복제됩니다. 기존 memory 의 벡터 검색까지 켜려면 선택 ML 설치 후 setup dispatcher 의 `--backfill` 을 사용하세요.
-
-새 memory 저장 시점부터 embedding 도 함께 만들고 싶다면 `IMPRINT_MEMORY_BRIDGE_EMBEDDING=1` 을 설정할 수 있습니다. 이 옵션은 모델 cold-load 로 느려질 수 있어, 기본값은 꺼져 있습니다.
+`search_entries` 에는 embedding 컬럼이 있습니다. 기존 entry 의 벡터 검색까지 켜려면 선택 ML 설치 후 setup dispatcher 의 `--backfill` 을 사용하세요. hook 동기 경로에서는 모델 cold-load 를 피하기 위해 새 entry 저장 시점의 embedding 생성을 기본으로 켜지 않습니다.
 
 설치하면 import 가능 여부를 보고 해당 경로에서 자동 활성화됩니다.
 
@@ -260,18 +258,18 @@ export IMPRINT_DISABLE_SQLITE_VEC=1
 ### 자동 hook 경로
 
 - `SessionStart`: SQLite 스키마 적용, 프로젝트 등록, `.imprint/Guardrail.md` prepend.
-- `UserPromptSubmit`: user prompt redaction, `events.user_message` 저장, working mini-chunk 저장, routing rule 평가, need-retrieval gate, context section prefill, lazy-fetch worker spawn.
+- `UserPromptSubmit`: user prompt redaction, `events.user_message` 저장, working surface metadata 저장, routing rule 평가, need-retrieval gate, context section prefill, lazy-fetch worker spawn.
 - `Stop`: 마지막 assistant 응답 redaction, `events.llm_response` 저장, persistent response extract worker spawn.
 
-자동 hook 경로는 full `/search` 를 호출하지 않습니다. 사용자 turn 을 막지 않기 위해 동기 경로는 lightweight prefill 만 수행합니다. 이 경로가 직접 읽는 `memory_chunks` 는 현재 FTS5/LIKE 기반입니다.
+자동 hook 경로는 full `/search` 를 호출하지 않습니다. 사용자 turn 을 막지 않기 위해 동기 경로는 lightweight prefill 만 수행합니다. 이 경로는 `events.metadata_json` 의 working surface 와 `search_entries` 를 가볍게 읽습니다.
 
 ### 명시 search 경로
 
 `/search` 는 사용자가 명시 호출할 때만 실행됩니다.
 
-- `chunks_v2` / `summaries` 문서 RAG 우선.
-- 현재 세션 working memory 를 query context 로 soft union.
-- 후보가 없거나 저신뢰이면 `memory_chunks` read-only fallback(FTS5/LIKE).
+- `search_entries` / `search_summaries` 검색.
+- 현재 세션 working surface 를 query context 로 soft union.
+- 후보가 없거나 저신뢰이면 trace 에 이유를 남기고, raw events 자동 fallback 은 열지 않습니다.
 - confirmed contradiction 은 scoring 단계에서 강하게 감점.
 - JSON mode 는 trace 와 provenance 를 노출.
 
@@ -279,9 +277,9 @@ export IMPRINT_DISABLE_SQLITE_VEC=1
 
 - lazy-fetch: background model이 prompt 키워드/URL을 분석하고 Slack/Notion MCP를 read-only fetch.
 - response extract: background model이 assistant 응답에서 decision/fix/todo/code_context 등 persistent memory chunk를 추출.
-- retrieval v2 ingest queue: 명시 문서 ingestion 뒤 `summary_regen`, `contradiction_scan`, `ner_extract` 를 처리.
+- retrieval ingest queue: 명시 문서 ingestion 뒤 `summary_regen`, `contradiction_scan`, `ner_extract` 를 처리.
 
-자동 hook 의 `memory_chunks` 저장 경로는 현재 ingest queue 를 거치지 않습니다.
+`/remember` 와 assistant extract 의 직접 `search_entries` 저장 경로는 현재 ingest queue 를 거치지 않습니다.
 
 ## 검증
 

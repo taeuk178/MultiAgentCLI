@@ -15,6 +15,14 @@
 
 기록 순서는 **최신이 위**. 항목당 한 단락 안에 변경/사유/대안 폐기 근거를 묶는다.
 
+## 2026-05-24 — `search_entries` 통합 스키마 구현
+
+**무엇:** 2026-05-24 결정 로그의 `search_entries` 통합 설계를 실제 코드에 반영했다. 새 스키마는 `source_documents`, `search_entries`, `search_summaries`, `entry_entities` 를 만들고, 신규 DB에서는 `memory_chunks`, `documents`, `chunks_v2`, `events_fts` 를 더 이상 만들지 않는다. `/remember`, assistant response extract, Slack/Notion lazy-fetch, source document ingest 는 모두 `search_entries` 에 직접 저장한다. working overlay 는 영구 entry 로 만들지 않고 `events.metadata_json.query_surfaces`/`need_retrieval`/`retrieval_reason` 을 검색 시점에 읽는다. 기존 사용자 DB는 자동 파괴하지 않고 `imprint migrate search-entries` 명시 명령으로 백업 후 one-shot migration 한다.
+
+**왜:** bridge 구조는 memory 한 건을 synthetic document 와 chunk 로 복제해 저장 의미와 검색 경로를 동시에 흐렸다. 구현을 단일 entry 인덱스로 수렴시키면 `/remember` 와 `/search` 의 사용자 모델이 단순해지고, optional vector backfill 도 `search_entries.embedding` 하나만 채우면 된다. raw events 전체 자동 fallback 은 정확도와 민감정보 노출 리스크가 있어 열지 않고, 사용자가 확인 가능한 `/search` trace 와 명시 저장을 중심으로 둔다.
+
+**남은 점:** `plan_key`/`feature_key` 는 컬럼만 있고 자동 채움 경로는 아직 없다. `confidence`/`evidence_strength` 표현은 실제 eval 결과를 본 뒤 정한다. 기존 실사용 DB는 사용자가 `imprint migrate search-entries` 를 실행해야 새 구조로 옮겨진다. source document 재수집 시 validity 캐리오버 정책과 직접 저장 entry 를 summary/entity/contradiction queue 에 어디까지 연결할지는 후속 측정 뒤 결정한다.
+
 ## 2026-05-24 — `memory_chunks + chunks_v2` bridge 구조 폐기, `search_entries` 통합 결정
 
 **무엇:** 저장 스키마를 다음 4개 축으로 재정의하기로 결정했다 (배포 전이므로 스키마 직접 변경 허용). `events` = raw 대화 로그(검색 제외, working overlay 소스로만 사용), `source_documents` = 진짜 원본 문서만(Slack/Notion/PRD/Plan/ADR/file), `search_entries` = 영구·큐레이션된 검색 단위(`/remember`, assistant 추출 결정/요약/todo/fix, source_documents 에서 chunking 된 항목), `search_summaries` = feature/global 요약 검색. 기존 대응은 `documents → source_documents`, `chunks_v2 → search_entries`, `summaries → search_summaries`, `chunk_entities → entry_entities` 이고 `memory_chunks` 는 제거(search_entries 로 흡수), `events_fts` 는 제거한다. `search_entries` 에는 nullable provenance 컬럼 `source_document_id`, `source_event_id`, `plan_key`, `feature_key` 와 `origin`(`manual_remember | assistant_extract | source_document`) 을 둔다. type 은 `raw_type` / `normalized_type` 2층을 유지하고, `importance` 는 별도 컬럼으로 승격하지 않고 `pinned` 와 `metadata_json.importance` 로 보존한다. drop/recreate 가 아니라 현재 도그푸딩 DB 를 새 스키마로 옮기는 one-shot migration 으로 진행한다.

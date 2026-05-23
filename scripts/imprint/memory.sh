@@ -2,7 +2,7 @@
 # Memory CLI dispatcher.
 # Usage:
 #   memory.sh search <query>
-#   memory.sh remember <text> [--type <chunk_type>] [--require|--high|--middle|--low] [--pin]
+#   memory.sh remember <text> [--type <raw_type>] [--require|--high|--middle|--low] [--pin]
 #   memory.sh inject <chunk-id>
 #   memory.sh pin <chunk-id>
 #   memory.sh unpin <chunk-id>
@@ -78,10 +78,10 @@ try:
         try:
             rows = conn.execute(
                 """
-                SELECT m.id, m.chunk_type, substr(m.text, 1, 200), m.pinned, m.created_at
-                FROM memory_chunks_fts f
-                JOIN memory_chunks m ON m.rowid = f.rowid
-                WHERE f.text MATCH ? AND m.project_id = ?
+                SELECT m.id, m.raw_type, substr(m.text, 1, 200), m.pinned, m.created_at
+                FROM search_entries_fts f
+                JOIN search_entries m ON m.rowid = f.rowid
+                WHERE f.retrieval_text MATCH ? AND m.project_id = ?
                   AND coalesce(json_extract(m.metadata_json, '$.memory_tier'), '') != 'working'
                 ORDER BY m.pinned DESC, m.created_at DESC
                 LIMIT 20;
@@ -107,8 +107,8 @@ try:
                 params.append(f"%{tok}%")
             rows = conn.execute(
                 f"""
-                SELECT id, chunk_type, substr(text, 1, 200), pinned, created_at
-                FROM memory_chunks
+                SELECT id, raw_type, substr(text, 1, 200), pinned, created_at
+                FROM search_entries
                 WHERE project_id = ?
                   AND coalesce(json_extract(metadata_json, '$.memory_tier'), '') != 'working'
                   AND ({' OR '.join(clauses)})
@@ -127,13 +127,13 @@ PY
 
 cmd_remember() {
   local text=""
-  local chunk_type="note"
+  local raw_type="note"
   local importance="middle"
   local pinned=0
   local redact=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --type)   chunk_type="${2:-note}"; shift 2 ;;
+      --type)   raw_type="${2:-note}"; shift 2 ;;
       --require) importance="require"; pinned=1; shift ;;
       --high)   importance="high"; pinned=1; shift ;;
       --middle) importance="middle"; shift ;;
@@ -161,17 +161,17 @@ cmd_remember() {
   local id; id=$(new_id)
   local now; now=$(now_iso)
   local esc_text; esc_text=$(sql_escape "$text")
-  local esc_type; esc_type=$(sql_escape "$chunk_type")
+  local esc_type; esc_type=$(sql_escape "$raw_type")
   local esc_md; esc_md=$(sql_escape "$metadata")
   db_exec "
-    INSERT INTO memory_chunks (id, project_id, chunk_type, text, metadata_json, created_at, pinned)
-    VALUES ('$id', '$pid', '$esc_type', '$esc_text', '$esc_md', '$now', $pinned);
+    INSERT INTO search_entries
+      (id, project_id, origin, raw_type, normalized_type, chunk_index, text,
+       retrieval_text, metadata_json, valid_from, is_current, created_at, pinned)
+    VALUES
+      ('$id', '$pid', 'manual_remember', '$esc_type', NULL, 0, '$esc_text',
+       '$esc_text', '$esc_md', '$now', 1, '$now', $pinned);
   "
-  if command -v python3 >/dev/null 2>&1; then
-    (cd "$SCRIPT_DIR/lib" && python3 -m retrieval.cli bridge-memory "$pid" "$id" >/dev/null) \
-      2>>"$IMPRINT_LOG" || log_error "memory bridge failed id=$id"
-  fi
-  echo "remembered $id ($chunk_type, importance=$importance, pinned=$pinned, redacted=$redact)"
+  echo "remembered $id ($raw_type, importance=$importance, pinned=$pinned, redacted=$redact)"
 }
 
 cmd_inject() {
@@ -181,7 +181,7 @@ cmd_inject() {
     exit 1
   fi
   local esc; esc=$(sql_escape "$id")
-  db_exec "SELECT text FROM memory_chunks WHERE id = '$esc';"
+  db_exec "SELECT text FROM search_entries WHERE id = '$esc';"
 }
 
 cmd_pin() {
@@ -192,7 +192,7 @@ cmd_pin() {
     exit 1
   fi
   local esc; esc=$(sql_escape "$id")
-  db_exec "UPDATE memory_chunks SET pinned = $val WHERE id = '$esc';"
+  db_exec "UPDATE search_entries SET pinned = $val WHERE id = '$esc';"
   echo "ok"
 }
 
@@ -249,7 +249,7 @@ cmd_list() {
   fi
   if [[ -n "$type_filter" ]]; then
     local esc_t; esc_t=$(sql_escape "$type_filter")
-    where+=" AND chunk_type = '$esc_t'"
+    where+=" AND raw_type = '$esc_t'"
   fi
   if [[ -n "$source_filter" ]]; then
     local esc_s; esc_s=$(sql_escape "$source_filter")
@@ -269,7 +269,7 @@ cmd_list() {
     where+=" AND coalesce(json_extract(metadata_json, '\$.memory_tier'), '') != 'working'"
   fi
   db_exec "
-    SELECT id, chunk_type, pinned,
+    SELECT id, raw_type, pinned,
            CASE
              WHEN json_extract(metadata_json, '\$.memory_tier') = 'working'
                THEN 'working'
@@ -285,7 +285,7 @@ cmd_list() {
              ELSE 'ok'
            END AS status,
            substr(text, 1, 100)
-    FROM memory_chunks
+    FROM search_entries
     WHERE $where
     ORDER BY pinned DESC, created_at DESC
     LIMIT $limit;
@@ -325,9 +325,9 @@ except sqlite3.Error as exc:
 
 # Allow exact match OR unique prefix match (UUIDs are long).
 cur = conn.execute(
-    "SELECT id, project_id, source_event_id, chunk_type, text, "
+    "SELECT id, project_id, source_event_id, raw_type, text, "
     "       metadata_json, created_at, pinned "
-    "FROM memory_chunks WHERE id = ? OR id LIKE ? LIMIT 2;",
+    "FROM search_entries WHERE id = ? OR id LIKE ? LIMIT 2;",
     (chunk_id, chunk_id + "%"),
 )
 rows = cur.fetchall()
@@ -339,7 +339,7 @@ if len(rows) > 1 and rows[0][0] != chunk_id:
     sys.exit(3)
 
 row = rows[0]
-(rid, project_id, source_event_id, chunk_type, text,
+(rid, project_id, source_event_id, raw_type, text,
  metadata_json, created_at, pinned) = row
 
 try:
@@ -369,7 +369,7 @@ status = source_status(metadata)
 if fmt == "json":
     sys.stdout.write(json.dumps({
         "id": rid, "project_id": project_id,
-        "source_event_id": source_event_id, "chunk_type": chunk_type,
+        "source_event_id": source_event_id, "raw_type": raw_type,
         "pinned": bool(pinned), "created_at": created_at,
         "source_status": status, "metadata": metadata, "text": text,
     }, ensure_ascii=False, indent=2))
@@ -382,7 +382,7 @@ def line(label, value):
 
 print(f"ID:            {rid}")
 print(f"Project:       {project_id}")
-print(f"Chunk type:    {chunk_type}")
+print(f"Chunk type:    {raw_type}")
 print(f"Pinned:        {'yes' if pinned else 'no'}")
 print(f"Created at:    {created_at}")
 print(f"Source status: {status}")
@@ -453,7 +453,7 @@ except sqlite3.Error as exc:
 def project_summary(pid):
     cur = conn.execute(
         "SELECT COUNT(*), SUM(pinned), MIN(created_at), MAX(created_at) "
-        "FROM memory_chunks WHERE project_id = ?;",
+        "FROM search_entries WHERE project_id = ?;",
         (pid,),
     )
     total, pinned, oldest, newest = cur.fetchone()
@@ -461,28 +461,28 @@ def project_summary(pid):
     pinned = pinned or 0
 
     type_dist = conn.execute(
-        "SELECT chunk_type, COUNT(*) FROM memory_chunks "
-        "WHERE project_id = ? GROUP BY chunk_type ORDER BY 2 DESC;",
+        "SELECT raw_type, COUNT(*) FROM search_entries "
+        "WHERE project_id = ? GROUP BY raw_type ORDER BY 2 DESC;",
         (pid,),
     ).fetchall()
 
     source_dist = conn.execute(
         "SELECT COALESCE(json_extract(metadata_json,'$.source'),'internal'), COUNT(*) "
-        "FROM memory_chunks WHERE project_id = ? "
+        "FROM search_entries WHERE project_id = ? "
         "GROUP BY 1 ORDER BY 2 DESC;",
         (pid,),
     ).fetchall()
 
     notion_urls = conn.execute(
         "SELECT COUNT(DISTINCT json_extract(metadata_json,'$.page_id')) "
-        "FROM memory_chunks WHERE project_id = ? "
+        "FROM search_entries WHERE project_id = ? "
         "  AND json_extract(metadata_json,'$.source') = 'notion';",
         (pid,),
     ).fetchone()[0] or 0
 
     slack_urls = conn.execute(
         "SELECT COUNT(DISTINCT json_extract(metadata_json,'$.url')) "
-        "FROM memory_chunks WHERE project_id = ? "
+        "FROM search_entries WHERE project_id = ? "
         "  AND json_extract(metadata_json,'$.source') = 'slack';",
         (pid,),
     ).fetchone()[0] or 0
@@ -491,7 +491,7 @@ def project_summary(pid):
         "project_id": pid,
         "total": total, "pinned": pinned,
         "oldest": oldest, "newest": newest,
-        "chunk_type": dict(type_dist),
+        "raw_type": dict(type_dist),
         "source": dict(source_dist),
         "external_urls": {"notion_pages": notion_urls, "slack_messages": slack_urls},
     }
@@ -499,7 +499,7 @@ def project_summary(pid):
 def all_projects():
     rows = conn.execute(
         "SELECT p.id, p.root_path, COUNT(m.id), SUM(m.pinned), MAX(m.created_at) "
-        "FROM projects p LEFT JOIN memory_chunks m ON m.project_id = p.id "
+        "FROM projects p LEFT JOIN search_entries m ON m.project_id = p.id "
         "GROUP BY p.id, p.root_path "
         "ORDER BY 3 DESC;"
     ).fetchall()
@@ -537,9 +537,9 @@ print(f"pinned:        {s['pinned']}")
 print(f"oldest:        {s['oldest'] or '-'}")
 print(f"newest:        {s['newest'] or '-'}")
 print()
-print("chunk_type:")
-if s["chunk_type"]:
-    for k, v in sorted(s["chunk_type"].items(), key=lambda x: (-x[1], x[0])):
+print("raw_type:")
+if s["raw_type"]:
+    for k, v in sorted(s["raw_type"].items(), key=lambda x: (-x[1], x[0])):
         print(f"  {k:<14} {v}")
 else:
     print("  <empty>")
@@ -712,20 +712,20 @@ profile_path = home / "profile.jsonl"
 
 db_ok = False
 db_error = None
-memory_chunks = 0
-working_chunks = 0
+search_entries = 0
+working_surfaces = 0
 try:
     conn = sqlite3.connect(str(db_path), timeout=2.0)
     try:
         conn.execute("SELECT 1").fetchone()
         db_ok = True
-        memory_chunks = conn.execute(
-            "SELECT COUNT(*) FROM memory_chunks WHERE project_id = ?",
+        search_entries = conn.execute(
+            "SELECT COUNT(*) FROM search_entries WHERE project_id = ?",
             (project_id,),
         ).fetchone()[0] or 0
-        working_chunks = conn.execute(
+        working_surfaces = conn.execute(
             """
-            SELECT COUNT(*) FROM memory_chunks
+            SELECT COUNT(*) FROM events
             WHERE project_id = ?
               AND json_extract(metadata_json, '$.memory_tier') = 'working'
             """,
@@ -764,8 +764,8 @@ out = {
     "home": str(home),
     "db": {"path": str(db_path), "ok": db_ok, "error": db_error},
     "project_id": project_id,
-    "memory_chunks": memory_chunks,
-    "working_chunks": working_chunks,
+    "search_entries": search_entries,
+    "working_surfaces": working_surfaces,
     "working_policy": {
         "ttl_hours": int(os.environ.get("IMPRINT_WORKING_TTL_HOURS", "24")),
         "max_per_session": int(os.environ.get("IMPRINT_WORKING_MAX_PER_SESSION", "20")),
@@ -793,8 +793,9 @@ print(f"db:            {'ok' if db_ok else 'error'} ({db_path})")
 if db_error:
     print(f"db error:      {db_error}")
 print(f"project:       {project_id}")
-print(f"chunks:        {memory_chunks} total, {working_chunks} working")
-print(f"working:       ttl={out['working_policy']['ttl_hours']}h max/session={out['working_policy']['max_per_session']}")
+print(f"entries:       {search_entries} total")
+print(f"working:       {working_surfaces} event surfaces")
+print(f"policy:        ttl={out['working_policy']['ttl_hours']}h max/session={out['working_policy']['max_per_session']}")
 print(f"log:           {'yes' if log_path.exists() else 'no'} warn/error_recent={warn_error}")
 if last_log:
     print(f"last log:      {last_log[:160]}")
@@ -815,14 +816,7 @@ cmd_forget() {
     exit 1
   fi
   local esc; esc=$(sql_escape "$id")
-  db_exec "
-    DELETE FROM chunks_v2
-    WHERE document_id IN (
-      SELECT id FROM documents WHERE source_ref = 'memory_chunks:$esc'
-    );
-    DELETE FROM documents WHERE source_ref = 'memory_chunks:$esc';
-  " >/dev/null 2>>"$IMPRINT_LOG" || true
-  db_exec "DELETE FROM memory_chunks WHERE id = '$esc';"
+  db_exec "DELETE FROM search_entries WHERE id = '$esc';"
   echo "deleted $id"
 }
 
