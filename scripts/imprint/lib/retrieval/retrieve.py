@@ -35,10 +35,18 @@ RRF_VECTOR_WEIGHT = 0.8
 RRF_BM25_WEIGHT = 0.2
 
 # Candidate boost/penalty weights.
-# RRF 뒤에 현재성, entity coverage, recency, query context, contradiction 신호를 더한다.
+# RRF 뒤에 현재성, entity coverage, recency, pin/기억 역할, query context,
+# contradiction 신호를 더한다.
 BOOST_CURRENT = 0.15
 BOOST_ENTITY = 0.10
 BOOST_RECENT = 0.05
+# pin/manual 기억과 rollup 근거의 역할 분리 가중치.
+# 0.08 묶음(pinned·manual·manual×broad)은 current(0.15)/entity(0.10)를 뒤집지 않는
+# 약한 tie-breaker 수준으로 둔다 — "비슷한 후보면 기억을 살짝 위로".
+# ROLLUP_IMPLEMENTATION 만 0.20 으로 큰 이유: 구현 질문("왜/어떻게/파일")에서는
+# canonical 기억보다 reason/files/symbols 를 가진 rollup 근거가 답에 직접 쓰이므로,
+# current+entity 합산도 의도적으로 추월할 수 있게 시스템 내 최대 양수 boost 로 둔다.
+# 값 자체는 경험적 튜닝치 — 변경 시 tests/run_tests.py TC-32 의 순서 단정을 함께 확인.
 BOOST_PINNED = 0.08
 BOOST_MANUAL_MEMORY = 0.08
 BOOST_MANUAL_BROAD_QUERY = 0.08
@@ -134,6 +142,10 @@ _LIKE_STOPWORDS = {
     "어떻게", "뭐야", "무엇", "동작",
 }
 
+# 질문 의도 분류용 키워드 집합. 형태소 분석 없이 substring/token 매칭(_query_has_any).
+# 두 집합은 의도적으로 배타가 아니다 — "왜 이 결정을 했어?" 처럼 한 질문이 양쪽에
+# 모두 걸릴 수 있다. 겹쳤을 때의 우선순위는 BOOST 단계에서 rollup 쪽으로 기울도록
+# 고정한다(아래 BOOST 적용부 주석 참고). 즉 "애매하면 근거 우선" 이 설계 기본값이다.
 _IMPLEMENTATION_QUERY_TERMS = {
     "왜", "이유", "근거", "어떻게", "구현", "코드", "로직", "파일", "심볼",
     "테스트", "검증", "수정", "변경", "추가", "삭제", "연결", "적용",
@@ -650,6 +662,11 @@ def retrieve(
                         boost += BOOST_PINNED
                     if cand.source_type == "manual_remember":
                         boost += BOOST_MANUAL_MEMORY
+                        # broad 보너스는 "순수하게 넓은 질문"에만 — 구현 신호가 섞이면
+                        # 제외한다. 반면 rollup 보너스(아래)는 broad 여부와 무관하게
+                        # implementation 신호만으로 붙으므로, 양쪽에 걸친 애매한 질문은
+                        # manual 의 broad 보너스가 빠지고 rollup 이 +0.20 을 받아 근거 쪽으로
+                        # 기운다. 이 비대칭이 "애매하면 근거 우선" 정책의 구현부다.
                         if broad_memory_query and not implementation_query:
                             boost += BOOST_MANUAL_BROAD_QUERY
                     if implementation_query and _is_rollup_candidate(cand):
