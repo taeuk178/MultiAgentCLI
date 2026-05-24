@@ -182,10 +182,14 @@ erDiagram
 
 - `text`: 사용자에게 보여줄 본문
 - `retrieval_text`: FTS/vector 검색용 surface
+- `role=canonical_memory`: 사용자가 `/remember` 로 명시 저장한 큰 틀 기억
+- `role=rollup_evidence`: rollup 이 대화에서 추출한 구현 근거
 - `metadata.reason`: 왜 그렇게 결정했는지
 - `metadata.files`, `metadata.symbols`: 관련 파일/심볼
 - `metadata.tests`: 검증 근거
 - `metadata.event_range`, `source_event_id`: 원래 대화 provenance
+
+큰 틀/정책/요약 계열 질문에서는 `canonical_memory` 를 더 앞에 두고, 왜/어떻게/구현/파일/테스트 계열 질문에서는 `rollup_evidence` 를 더 앞에 둡니다. 같은 주제의 `/remember` 와 rollup row 를 저장 단계에서 합치지 않는 이유는, manual memory 는 사용자가 직접 남긴 canonical note 이고 rollup 은 원문 대화 provenance 를 가진 evidence 이기 때문입니다.
 
 저신뢰 상황은 trace 에 남기지만 raw `events` 전체를 자동 검색하지 않습니다. raw 대화 전체 검색이 필요하면 별도 explicit debug 경로로 다루는 것이 원칙입니다.
 

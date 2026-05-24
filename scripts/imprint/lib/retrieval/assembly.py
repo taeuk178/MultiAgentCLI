@@ -48,6 +48,14 @@ def _metadata_detail_lines(metadata: dict[str, Any] | None, *, source_event_id: 
     return lines
 
 
+def _role_label(source_type: str | None, metadata: dict[str, Any] | None) -> str | None:
+    if source_type == "manual_remember":
+        return "canonical_memory"
+    if isinstance(metadata, dict) and (metadata.get("rolled") or metadata.get("rollup")):
+        return "rollup_evidence"
+    return None
+
+
 def _format_chunk_block(idx: int, *, source_type: str | None, section_path: str | None,
                        is_current: Any, source_updated_at: str | None, chunk_text: str,
                        metadata: dict[str, Any] | None = None,
@@ -55,6 +63,9 @@ def _format_chunk_block(idx: int, *, source_type: str | None, section_path: str 
     meta_bits: list[str] = []
     if source_type:
         meta_bits.append(f"source={source_type}")
+    role = _role_label(source_type, metadata)
+    if role:
+        meta_bits.append(f"role={role}")
     if section_path:
         meta_bits.append(f"section={section_path}")
     meta_bits.append(f"current={'true' if is_current else 'false'}")

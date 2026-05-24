@@ -1743,6 +1743,104 @@ print(json.dumps({"entry_id": entry_id}, ensure_ascii=False))
         case.detail += f" err={(err_seed or err_text)[:120]}"
 
 
+def tc_32_search_manual_memory_and_rollup_roles(env: dict, home: str, case: CaseResult) -> None:
+    """Broad queries prefer manual memory; implementation queries prefer rollup evidence."""
+    code = """
+import json, sys
+sys.path.insert(0, %r)
+from retrieval._common import db_connect
+from retrieval.entries import build_retrieval_surface, insert_search_entry
+
+conn = db_connect()
+try:
+    conn.execute(
+        "INSERT INTO events (id, project_id, source, kind, text_clean, metadata_json, noise, created_at) "
+        "VALUES ('tc32-04', ?, 'eval', 'llm_response', ?, ?, 0, '2026-05-24T05:03:00Z')",
+        (%r, "로그인 Firebase event는 API 성공 이후 추가했다.", json.dumps({"session_id": "tc32-session"}, ensure_ascii=False)),
+    )
+    manual_id = insert_search_entry(
+        conn,
+        project_id=%r,
+        origin="manual_remember",
+        raw_type="decision",
+        text="로그인 Firebase event 정책은 Kakao 로그인 API 성공과 비즈니스 로직 통과 이후 적재한다.",
+        metadata={"importance": "high"},
+        pinned=1,
+    )
+    metadata = {
+        "evidence_level": "assistant_extracted",
+        "reason": "Kakao 인증 직후가 아니라 API 성공과 비즈니스 로직 통과 이후가 실제 로그인 성공 시점이기 때문이다.",
+        "files": ["Sources/Login/LoginViewModel.swift", "Sources/Auth/AuthRepository.swift"],
+        "symbols": ["trackFirebaseLoginEvent", "signInWithKakao"],
+        "tests": ["로그인 성공 이벤트 적재 확인"],
+        "event_range": ["tc32-01", "tc32-04"],
+        "session_id": "tc32-session",
+        "rolled": True,
+        "rollup": True,
+    }
+    surface = build_retrieval_surface(
+        text="로그인 기능에서 Firebase event 추가는 Kakao 로그인 API와 비즈니스 로직 이후 성공 경로에 연결했다.",
+        reason=metadata["reason"],
+        files=metadata["files"],
+        symbols=metadata["symbols"],
+    )
+    rollup_id = insert_search_entry(
+        conn,
+        project_id=%r,
+        source_event_id="tc32-04",
+        origin="assistant_extract",
+        raw_type="decision",
+        text="로그인 기능에서 Firebase event 추가는 Kakao 로그인 API와 비즈니스 로직 이후 성공 경로에 연결했다.",
+        retrieval_text=surface,
+        metadata=metadata,
+    )
+    conn.commit()
+finally:
+    conn.close()
+print(json.dumps({"manual_id": manual_id, "rollup_id": rollup_id}, ensure_ascii=False))
+""" % (str(LIB_DIR), PROJECT_ID, PROJECT_ID, PROJECT_ID)
+    rc_seed, out_seed, err_seed = run_python(env, code)
+    seeded = json.loads(out_seed) if out_seed else {}
+    manual_id = seeded.get("manual_id")
+    rollup_id = seeded.get("rollup_id")
+
+    broad = _retrieve_plain_json(env, "로그인 firebase event 정책")
+    impl = _retrieve_plain_json(env, "로그인 firebase event 왜 구현 파일")
+    broad_candidates = broad.get("candidates") or []
+    impl_candidates = impl.get("candidates") or []
+    broad_ids = [c.get("entry_id") for c in broad_candidates]
+    impl_ids = [c.get("entry_id") for c in impl_candidates]
+
+    rc_text, out_text, err_text = run_cmd(
+        env,
+        [sys.executable, "-m", "retrieval.cli", "retrieve", PROJECT_ID, "로그인 firebase event 왜 구현 파일"],
+    )
+    checks = {
+        "seed_ok": rc_seed == 0 and bool(manual_id) and bool(rollup_id),
+        "broad_manual_first": broad_ids and broad_ids[0] == manual_id,
+        "impl_rollup_first": impl_ids and impl_ids[0] == rollup_id,
+        "impl_has_manual": manual_id in impl_ids,
+        "json_pinned": next((c for c in broad_candidates if c.get("entry_id") == manual_id), {}).get("pinned") is True,
+        "text_manual_role": "source=manual_remember | role=canonical_memory" in out_text,
+        "text_rollup_role": "source=assistant_extract | role=rollup_evidence" in out_text,
+        "text_rollup_reason": "reason: Kakao 인증 직후" in out_text,
+    }
+    case.metrics = checks | {
+        "manual_id": manual_id,
+        "rollup_id": rollup_id,
+        "broad_ids": broad_ids[:4],
+        "impl_ids": impl_ids[:4],
+        "err": (err_seed or err_text)[:160],
+    }
+    case.passed = all(checks.values()) and rc_text == 0
+    case.detail = (
+        f"broad_first={broad_ids[0] if broad_ids else None} "
+        f"impl_first={impl_ids[0] if impl_ids else None} roles={checks['text_manual_role']}/{checks['text_rollup_role']}"
+    )
+    if not case.passed:
+        case.detail += f" err={(err_seed or err_text)[:120]}"
+
+
 def tc_15_first_turn_working_overlay(env: dict, home: str, case: CaseResult) -> None:
     """UserPromptSubmit sync mini-chunk + prefill/search working overlay."""
     env_h = hook_env(env)
@@ -2438,6 +2536,7 @@ CASES: list[tuple[str, str, callable]] = [
     ("TC-29", "Rollup stale/bounded", tc_29_rollup_stale_and_bounded),
     ("TC-30", "Rollup extract without write lock", tc_30_rollup_extract_without_write_lock),
     ("TC-31", "Search rollup detail output", tc_31_search_rollup_detail_output),
+    ("TC-32", "Search manual memory vs rollup roles", tc_32_search_manual_memory_and_rollup_roles),
 ]
 
 

@@ -15,6 +15,12 @@
 
 기록 순서는 **최신이 위**. 항목당 한 단락 안에 변경/사유/대안 폐기 근거를 묶는다.
 
+## 2026-05-24 — `/search` manual memory 와 rollup evidence 역할 분리
+
+**무엇:** `/search` 후보에 `pinned` 값을 보존하고, `manual_remember` 는 `canonical_memory`, rollup extract 는 `rollup_evidence` 역할로 출력되게 했다. 큰 틀/정책/요약 계열 질문에서는 사용자가 명시 저장한 `/remember` row 를 우선하고, 왜/어떻게/구현/파일/테스트 계열 질문에서는 rollup decision evidence 에 boost 를 준다.
+
+**왜:** 같은 주제에 대해 `/remember` 로 남긴 canonical memory 와 rollup 이 자동 추출한 구현 근거가 동시에 존재할 수 있다. 둘을 저장 단계에서 강제로 합치면 사용자가 직접 남긴 의도와 자동 추출 provenance 가 섞인다. 대신 검색 시점에 질문 의도를 보고 큰 틀은 manual memory, 구현 세부는 rollup evidence 를 앞세우면 중복을 지우지 않으면서도 사용자가 기대하는 답의 초점이 맞는다.
+
 ## 2026-05-24 — 0.1.3 release metadata 동기화
 
 **무엇:** `flow.md` 에 현재 RAG 구현 기술 역할표를 추가하고, imprint skill frontmatter 설명을 한국어로 바꿨다. local runtime state 인 `.imprint/` 는 repo 에 섞이지 않도록 `.gitignore` 에 명시했다. `VERSION`, root/Codex/Claude plugin manifest, Claude marketplace, Codex marketplace ref, 설치 문서의 release 예시를 `0.1.3` 으로 맞췄다.
