@@ -154,7 +154,7 @@ _IMPLEMENTATION_QUERY_TERMS = {
 }
 
 _BROAD_MEMORY_QUERY_TERMS = {
-    "목적", "원칙", "정책", "결정", "방향", "큰틀", "큰", "전체", "요약",
+    "목적", "원칙", "정책", "결정", "방향", "큰틀", "전체", "요약",
     "기억", "메모", "remember", "decision", "policy", "summary", "overview",
 }
 
