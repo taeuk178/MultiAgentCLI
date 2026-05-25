@@ -14,6 +14,7 @@ RAG 기본 루프와 1차 운영 관측성은 적용 완료된 상태입니다.
 - 수동 저장/검색: `/remember`, `/search`, `/memory search/list/show/inject/refresh/stats/profile/status`.
 - persistent memory 는 `search_entries` 단일 인덱스에 저장됩니다. legacy `memory_chunks + chunks_v2` bridge 는 제거됐습니다.
 - 구현 중 여러 turn 에 걸친 decision/code_context/summary/note 는 delta/rollup 으로 `search_entries` 에 정제 저장되고, `/search` 는 `reason/files/symbols/tests/event_range` detail 을 출력합니다.
+- `/search` 는 같은 주제의 `/remember` 와 rollup row 가 함께 있을 때 역할을 분리합니다. 큰 틀/정책/요약 질문은 `manual_remember` 를 `canonical_memory` 로 앞세우고, 왜/어떻게/구현/파일/테스트 질문은 rollup row 를 `rollup_evidence` 로 앞세웁니다.
 - vector 검색은 `imprint setup vector --backfill` 로 `search_entries.embedding` 을 채운 뒤 참여합니다.
 - 선택 ML 의존성이 없어도 FTS5/LIKE fallback 으로 동작해야 합니다.
 
@@ -21,7 +22,7 @@ RAG 기본 루프와 1차 운영 관측성은 적용 완료된 상태입니다.
 
 ```text
 python3 scripts/imprint/tests/run_tests.py
-TOTAL  31 PASS / 0 FAIL
+TOTAL  32 PASS / 0 FAIL
 ```
 
 테스트는 임시 `IMPRINT_HOME=/tmp/...` 에서 실행합니다. 사용자 홈 `~/.imprint` 직접 수정은 명시 동의 전까지 하지 않습니다.
@@ -44,6 +45,7 @@ TOTAL  31 PASS / 0 FAIL
 - Stop extract 또는 external lazy-fetch 결과가 다음 turn 의 후보로 보이는지.
 - `/search` 가 `search_entries` 를 primary 로 읽고 `source_status` marker 를 제외하는지.
 - rollup decision 후보가 `/search` 에서 `reason/files/symbols/tests/event_range` 를 함께 보여주는지.
+- 같은 주제의 `/remember` 와 rollup 후보가 공존할 때 큰 틀 질문은 `canonical_memory`, 구현 질문은 `rollup_evidence` 를 먼저 보여주는지.
 - `imprint migrate search-entries` 후 과거 `memory_chunks` 가 `search_entries` 후보로 회수되는지.
 - `imprint setup vector --status/--install/--warmup/--backfill` 이 한국어 진행 로그와 실패 힌트를 화면과 `plugin.log` 양쪽에 남기는지.
 

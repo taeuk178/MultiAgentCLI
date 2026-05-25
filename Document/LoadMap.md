@@ -81,6 +81,7 @@ working overlay 는 영구 entry 로 만들지 않습니다. 현재 세션 query
 - local: multi-rewrite → hybrid search → RRF → working overlay → BOOST/penalty → optional rerank → CTX.
 - feature/global: summary 검색 + chunk retrieval + grounding + contradiction check.
 - rollup 이 저장한 `reason/files/symbols/tests/event_range` metadata 는 `/search` 출력의 세부 근거로 함께 노출합니다.
+- 같은 주제의 `/remember` 와 rollup row 가 함께 검색되면, 큰 틀/정책/요약 질문은 `/remember` 의 `canonical_memory` 를 우선하고 왜/어떻게/구현/파일/테스트 질문은 rollup 의 `rollup_evidence` 를 우선합니다.
 - 저신뢰이면 trace 에 이유를 남기지만 raw events 자동 fallback 은 열지 않습니다.
 - `source_status` marker 는 primary retrieved context 후보에서 제외합니다.
 - JSON mode 는 trace, context section, provenance, penalty, fallback/rerank 이유를 노출합니다.
@@ -118,9 +119,10 @@ retrieval v2 ingestion 은 `ingest_queue` 를 통해 후속 작업을 순차 처
 - events noise soft flag.
 - 명시 검색 JSON trace.
 - delta/rollup 기반 구현 결정 arc 저장과 `/search` 세부 근거 출력.
+- `/search` 의 manual memory(`canonical_memory`) 와 rollup 근거(`rollup_evidence`) 역할 분리.
 - `search_entries` migration/backfill.
 - text_hash 기반 dedup.
-- 테스트 기준선: `31 PASS / 0 FAIL`.
+- 테스트 기준선: `32 PASS / 0 FAIL`.
 
 완료된 결정과 이유는 `HISTORY.md` 에 남깁니다.
 
@@ -141,7 +143,7 @@ persistent memory 와 의미(벡터) 검색이 연결돼 있지 않았던 문제
 |---|---|---|
 | 세션 종료 후 문맥 저장 | 상당 부분 일치. raw event archive, flat extract, delta/rollup rich extract, `/remember` 가 모두 `search_entries` 로 모입니다. | 실제 프로젝트 eval 로 추출 품질과 stale rollup 운영성을 측정합니다. |
 | Codex / Claude Code 간 동일 문맥 | 방향 일치. 기본 저장소는 `~/.imprint` 로 통합됐습니다. | 설치/manifest/hook 검증을 양 host 회귀 테스트로 고정합니다. |
-| 큰 틀·개념 질문으로 맥락 상기 | 부분 개선. `/remember`, source document, rollup decision entry 는 `/search` 후보가 되고 세부 근거도 출력됩니다. embedding/backfill 과 eval 은 아직 남았습니다. | `imprint setup vector --backfill` 기반 의미 검색 검증 후 feature/project summary 로 끌어올립니다. |
+| 큰 틀·개념 질문으로 맥락 상기 | 부분 개선. `/remember` 는 canonical memory 로, rollup decision entry 는 구현 evidence 로 역할을 나눠 `/search` 에 노출됩니다. embedding/backfill 과 eval 은 아직 남았습니다. | `imprint setup vector --backfill` 기반 의미 검색 검증 후 feature/project summary 로 끌어올립니다. |
 | 다른 개발자도 참고하는 공유 기록 | 장기 미구현. 로컬 SQLite 는 개인 기억에 적합하지만 팀 지식 공유에는 부적합합니다. | decision/summary chunk 를 ADR/Markdown 으로 export 해 git/PR review 에 얹습니다. |
 
 ## 로드맵
@@ -155,6 +157,7 @@ persistent memory 와 의미(벡터) 검색이 연결돼 있지 않았던 문제
 - `imprint setup vector --backfill` 은 현재 프로젝트의 `search_entries.embedding` 을 채웁니다.
 - 신규/기존 memory 가 명시 검색 경로에서 `search_entries` 후보로 보이는 것은 테스트로 고정했습니다. 다음은 embedding 가용 시 vector path 품질 검증입니다.
 - rollup decision entry 의 `reason/files/symbols/tests/event_range` 가 `/search` 출력에 보이는 것은 테스트로 고정했습니다.
+- 같은 주제의 `/remember` 와 rollup row 가 공존할 때 질문 의도별로 canonical/evidence 우선순위가 바뀌는 것은 테스트로 고정했습니다.
 - 확장 가능성: `/search` 유사도 품질과 latency 가 충분히 검증되면, 명시 검색 결과를 prefill 자동 주입으로 연결할 수 있습니다. 현재 로드맵에서는 가능성만 남기고 기본 동작으로 두지 않습니다.
 
 ### 2. RAG 사용성 검증과 confidence 표현
