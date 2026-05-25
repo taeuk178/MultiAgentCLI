@@ -144,9 +144,6 @@ joined="$*"
 stdin="$(cat)"
 joined="$joined $stdin"
 case "$joined" in
-  *"Extract low-cost flat memory chunks"*)
-    printf '%s\\n' '[{{"chunk_type":"fix","text":"A 버튼 클릭 테스트 명령을 수정했습니다. {raw_token}","keywords":["A 버튼","{raw_token}"]}}]'
-    ;;
   *"Extract cross-turn implementation memory"*)
     printf '%s\\n' '[{{"chunk_type":"summary","text":"A 버튼 구현 흐름을 세션 rollup으로 요약했습니다.","keywords":["A 버튼","rollup"]}}]'
     ;;
@@ -187,9 +184,6 @@ joined="$*"
 stdin="$(cat)"
 joined="$joined $stdin"
 case "$joined" in
-  *"Extract low-cost flat memory chunks"*)
-    result='[{{"chunk_type":"fix","text":"A 버튼 클릭 테스트 명령을 수정했습니다. {raw_token}","keywords":["A 버튼","{raw_token}"]}}]'
-    ;;
   *"Extract cross-turn implementation memory"*)
     result='[{{"chunk_type":"summary","text":"A 버튼 구현 흐름을 세션 rollup으로 요약했습니다.","keywords":["A 버튼","rollup"]}}]'
     ;;
@@ -1231,7 +1225,7 @@ print(json.dumps({
 
 
 def tc_26_decision_rich_extract(env: dict, home: str, case: CaseResult) -> None:
-    """Decision extract keeps reason/file/symbol metadata, redacts, and preserves flat chunks."""
+    """Decision extract keeps reason/file/symbol metadata, redacts, and caps retrieval surface."""
     code = """
 import json, sys
 sys.path.insert(0, %r)
@@ -1334,8 +1328,8 @@ print(json.dumps({
         case.detail += f" err={err[:120]}"
 
 
-def tc_27_stop_session_and_flat_extract(env: dict, home: str, case: CaseResult) -> None:
-    """Stop stores session_id metadata and flat extract excludes rich decision types."""
+def tc_27_stop_session_archive_only(env: dict, home: str, case: CaseResult) -> None:
+    """Stop stores session_id metadata but does not create per-turn search entries."""
     env_h = codex_hook_env(env)
     stop_input = json.dumps(
         {
@@ -1349,7 +1343,7 @@ def tc_27_stop_session_and_flat_extract(env: dict, home: str, case: CaseResult) 
     rows = db_query(
         home,
         """
-        SELECT json_extract(metadata_json, '$.session_id'), text_clean
+        SELECT id, json_extract(metadata_json, '$.session_id'), text_clean
         FROM events
         WHERE kind = 'llm_response'
           AND text_clean LIKE '%A 대신 B%'
@@ -1357,6 +1351,12 @@ def tc_27_stop_session_and_flat_extract(env: dict, home: str, case: CaseResult) 
         LIMIT 1
         """,
     )
+    event_id = rows[0][0] if rows else ""
+    search_rows = db_query(
+        home,
+        "SELECT id FROM search_entries WHERE source_event_id = ?",
+        (event_id,),
+    ) if event_id else []
     code = """
 import json, sys
 sys.path.insert(0, %r)
@@ -1370,24 +1370,22 @@ def fake_model(_prompt, **_kwargs):
 
 ingestion.run_background_model = fake_model
 print(json.dumps({
-    "flat": ingestion.extract_chunks_from_response("결정과 수정이 함께 있음", mode="flat"),
     "rich": ingestion.extract_chunks_from_response("결정과 수정이 함께 있음", mode="rich"),
 }, ensure_ascii=False))
 """ % (str(LIB_DIR),)
     rc_py, out, err_py = run_python(env, code)
     parsed = json.loads(out) if out else {}
-    flat_types = [c.get("chunk_type") for c in parsed.get("flat") or []]
     rich_types = [c.get("chunk_type") for c in parsed.get("rich") or []]
     checks = {
         "stop_ok": rc == 0,
-        "session_metadata": bool(rows and rows[0][0] == "tc27-session"),
-        "flat_excludes_decision": flat_types == ["fix"],
+        "session_metadata": bool(rows and rows[0][1] == "tc27-session"),
+        "stop_no_search_entry": len(search_rows) == 0,
         "rich_excludes_fix": rich_types == ["decision"],
         "py_ok": rc_py == 0,
     }
-    case.metrics = checks | {"flat": flat_types, "rich": rich_types, "err": (err or err_py)[:120]}
+    case.metrics = checks | {"search_rows": len(search_rows), "rich": rich_types, "err": (err or err_py)[:120]}
     case.passed = all(checks.values())
-    case.detail = f"session={rows[0][0] if rows else None} flat={flat_types} rich={rich_types}"
+    case.detail = f"session={rows[0][1] if rows else None} search_rows={len(search_rows)} rich={rich_types}"
 
 
 def tc_28_rollup_session_cursor(env: dict, home: str, case: CaseResult) -> None:
@@ -1741,6 +1739,164 @@ print(json.dumps({"entry_id": entry_id}, ensure_ascii=False))
     )
     if not case.passed:
         case.detail += f" err={(err_seed or err_text)[:120]}"
+
+
+def tc_32_search_manual_memory_and_rollup_roles(env: dict, home: str, case: CaseResult) -> None:
+    """Broad queries prefer manual memory; implementation queries prefer rollup evidence."""
+    code = """
+import json, sys
+sys.path.insert(0, %r)
+from retrieval._common import db_connect
+from retrieval.entries import build_retrieval_surface, insert_search_entry
+
+conn = db_connect()
+try:
+    conn.execute(
+        "INSERT INTO events (id, project_id, source, kind, text_clean, metadata_json, noise, created_at) "
+        "VALUES ('tc32-04', ?, 'eval', 'llm_response', ?, ?, 0, '2026-05-24T05:03:00Z')",
+        (%r, "로그인 Firebase event는 API 성공 이후 추가했다.", json.dumps({"session_id": "tc32-session"}, ensure_ascii=False)),
+    )
+    manual_id = insert_search_entry(
+        conn,
+        project_id=%r,
+        origin="manual_remember",
+        raw_type="decision",
+        text="로그인 Firebase event 정책은 Kakao 로그인 API 성공과 비즈니스 로직 통과 이후 적재한다.",
+        metadata={"importance": "high"},
+        pinned=1,
+    )
+    metadata = {
+        "evidence_level": "assistant_extracted",
+        "reason": "Kakao 인증 직후가 아니라 API 성공과 비즈니스 로직 통과 이후가 실제 로그인 성공 시점이기 때문이다.",
+        "files": ["Sources/Login/LoginViewModel.swift", "Sources/Auth/AuthRepository.swift"],
+        "symbols": ["trackFirebaseLoginEvent", "signInWithKakao"],
+        "tests": ["로그인 성공 이벤트 적재 확인"],
+        "event_range": ["tc32-01", "tc32-04"],
+        "session_id": "tc32-session",
+        "rolled": True,
+        "rollup": True,
+    }
+    surface = build_retrieval_surface(
+        text="로그인 기능에서 Firebase event 추가는 Kakao 로그인 API와 비즈니스 로직 이후 성공 경로에 연결했다.",
+        reason=metadata["reason"],
+        files=metadata["files"],
+        symbols=metadata["symbols"],
+    )
+    rollup_id = insert_search_entry(
+        conn,
+        project_id=%r,
+        source_event_id="tc32-04",
+        origin="assistant_extract",
+        raw_type="decision",
+        text="로그인 기능에서 Firebase event 추가는 Kakao 로그인 API와 비즈니스 로직 이후 성공 경로에 연결했다.",
+        retrieval_text=surface,
+        metadata=metadata,
+    )
+    conn.commit()
+finally:
+    conn.close()
+print(json.dumps({"manual_id": manual_id, "rollup_id": rollup_id}, ensure_ascii=False))
+""" % (str(LIB_DIR), PROJECT_ID, PROJECT_ID, PROJECT_ID)
+    rc_seed, out_seed, err_seed = run_python(env, code)
+    seeded = json.loads(out_seed) if out_seed else {}
+    manual_id = seeded.get("manual_id")
+    rollup_id = seeded.get("rollup_id")
+
+    broad = _retrieve_plain_json(env, "로그인 firebase event 정책")
+    impl = _retrieve_plain_json(env, "로그인 firebase event 왜 구현 파일")
+    broad_candidates = broad.get("candidates") or []
+    impl_candidates = impl.get("candidates") or []
+    broad_ids = [c.get("entry_id") for c in broad_candidates]
+    impl_ids = [c.get("entry_id") for c in impl_candidates]
+
+    rc_text, out_text, err_text = run_cmd(
+        env,
+        [sys.executable, "-m", "retrieval.cli", "retrieve", PROJECT_ID, "로그인 firebase event 왜 구현 파일"],
+    )
+    checks = {
+        "seed_ok": rc_seed == 0 and bool(manual_id) and bool(rollup_id),
+        "broad_manual_first": broad_ids and broad_ids[0] == manual_id,
+        "impl_rollup_first": impl_ids and impl_ids[0] == rollup_id,
+        "impl_has_manual": manual_id in impl_ids,
+        "json_pinned": next((c for c in broad_candidates if c.get("entry_id") == manual_id), {}).get("pinned") is True,
+        "text_manual_role": "source=manual_remember | role=canonical_memory" in out_text,
+        "text_rollup_role": "source=assistant_extract | role=rollup_evidence" in out_text,
+        "text_rollup_reason": "reason: Kakao 인증 직후" in out_text,
+    }
+    case.metrics = checks | {
+        "manual_id": manual_id,
+        "rollup_id": rollup_id,
+        "broad_ids": broad_ids[:4],
+        "impl_ids": impl_ids[:4],
+        "err": (err_seed or err_text)[:160],
+    }
+    case.passed = all(checks.values()) and rc_text == 0
+    case.detail = (
+        f"broad_first={broad_ids[0] if broad_ids else None} "
+        f"impl_first={impl_ids[0] if impl_ids else None} roles={checks['text_manual_role']}/{checks['text_rollup_role']}"
+    )
+    if not case.passed:
+        case.detail += f" err={(err_seed or err_text)[:120]}"
+
+
+def tc_33_lazy_fetch_opt_in(env: dict, home: str, case: CaseResult) -> None:
+    """Slack/Notion lazy fetch is opt-in, not part of the default RAG loop."""
+    env_h = hook_env(env)
+    env_h["IMPRINT_CLAUDE_BIN"] = make_fake_claude(home)
+    rc, _, err = run_cmd(env_h, ["bash", "scripts/imprint/session-start.sh"])
+    if rc != 0:
+        case.passed = False
+        case.detail = f"session-start rc={rc} err={err[:120]}"
+        return
+
+    url_default = "https://workspace.slack.com/archives/C123/p3333000000000000"
+    ups_input = json.dumps(
+        {"prompt": f"이 Slack 링크 확인해줘 {url_default}", "session_id": "tc33-default"},
+        ensure_ascii=False,
+    )
+    rc_default, _, err_default = run_cmd(
+        env_h, ["bash", "scripts/imprint/user-prompt-submit.sh"], input_text=ups_input,
+    )
+    time.sleep(0.2)
+    rows_default = db_query(
+        home,
+        "SELECT id FROM search_entries WHERE project_id = ? AND json_extract(metadata_json, '$.url') = ?",
+        (ROOT_PROJECT_ID, url_default),
+    )
+
+    env_enabled = dict(env_h)
+    env_enabled["IMPRINT_ENABLE_LAZY_FETCH"] = "1"
+    url_enabled = "https://workspace.slack.com/archives/C123/p3333000000000001"
+    ups_enabled = json.dumps(
+        {"prompt": f"이 Slack 링크 확인해줘 {url_enabled}", "session_id": "tc33-enabled"},
+        ensure_ascii=False,
+    )
+    rc_enabled, _, err_enabled = run_cmd(
+        env_enabled, ["bash", "scripts/imprint/user-prompt-submit.sh"], input_text=ups_enabled,
+    )
+    deadline = time.time() + 2.0
+    rows_enabled: list[tuple] = []
+    while time.time() < deadline:
+        rows_enabled = db_query(
+            home,
+            "SELECT raw_type FROM search_entries WHERE project_id = ? AND json_extract(metadata_json, '$.url') = ?",
+            (ROOT_PROJECT_ID, url_enabled),
+        )
+        if rows_enabled:
+            break
+        time.sleep(0.1)
+
+    checks = {
+        "default_rc": rc_default == 0,
+        "enabled_rc": rc_enabled == 0,
+        "default_no_external_row": not rows_default,
+        "enabled_external_row": bool(rows_enabled),
+    }
+    case.metrics = checks
+    case.passed = all(checks.values())
+    case.detail = f"default_rows={len(rows_default)} enabled_rows={len(rows_enabled)}"
+    if not case.passed:
+        case.detail += f" err={(err_default or err_enabled)[:120]}"
 
 
 def tc_15_first_turn_working_overlay(env: dict, home: str, case: CaseResult) -> None:
@@ -2433,11 +2589,13 @@ CASES: list[tuple[str, str, callable]] = [
     ("TC-24", "Extract eval harness", tc_24_extract_eval_harness),
     ("TC-25", "Retrieval text override", tc_25_retrieval_text_override),
     ("TC-26", "Decision-rich extract", tc_26_decision_rich_extract),
-    ("TC-27", "Stop session + flat extract", tc_27_stop_session_and_flat_extract),
+    ("TC-27", "Stop archive only", tc_27_stop_session_archive_only),
     ("TC-28", "Rollup session cursor", tc_28_rollup_session_cursor),
     ("TC-29", "Rollup stale/bounded", tc_29_rollup_stale_and_bounded),
     ("TC-30", "Rollup extract without write lock", tc_30_rollup_extract_without_write_lock),
     ("TC-31", "Search rollup detail output", tc_31_search_rollup_detail_output),
+    ("TC-32", "Search manual memory vs rollup roles", tc_32_search_manual_memory_and_rollup_roles),
+    ("TC-33", "Lazy fetch opt-in", tc_33_lazy_fetch_opt_in),
 ]
 
 

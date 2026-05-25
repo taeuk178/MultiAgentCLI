@@ -54,6 +54,7 @@ def _candidate_json(c):
         "rrf_score": round(c.rrf_score, 6),
         "boost_score": round(c.boost_score, 6),
         "final_score": round(c.final_score, 6),
+        "pinned": bool(c.pinned),
         "matched_entities": c.matched_entities,
         "context_section": c.lane,
         "lane": c.lane,

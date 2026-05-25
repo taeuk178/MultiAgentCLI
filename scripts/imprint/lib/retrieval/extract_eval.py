@@ -1,8 +1,8 @@
 """Offline extraction eval harness.
 
 The harness is intentionally extractor-agnostic: callers pass a function that
-turns assistant text into chunk dictionaries. This lets us compare the current
-flat extractor with future decision-rich extractors against the same fixtures.
+turns transcript or assistant text into chunk dictionaries. This lets us compare
+rollup prompt variants against the same fixtures.
 """
 from __future__ import annotations
 

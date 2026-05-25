@@ -58,13 +58,7 @@ MODEL_TIMEOUT_EXTRACT = int(
     or "30"
 )
 
-# LLM이 응답에서 추출하도록 허용된 chunk_type. 외부 source 전용 타입
-# (spec/message/thread)은 ingestion 경로에서만 직접 INSERT한다.
-CHUNK_TYPES = (
-    "decision", "error", "fix", "command", "test_result",
-    "summary", "todo", "code_context", "note",
-)
-FLAT_CHUNK_TYPES = ("fix", "todo", "command", "error", "test_result")
+# Rollup 이 검색 가능한 implementation memory 로 추출하도록 허용된 타입.
 RICH_CHUNK_TYPES = ("decision", "code_context", "summary", "note")
 EXTERNAL_CHUNK_TYPES = ("spec", "message", "thread")
 
@@ -847,37 +841,6 @@ def insert_source_status_chunk(
     return cid
 
 
-# ---------------------------------------------------------------------------
-# Stop-hook chunk extraction (AC3, AC11, D8, D12)
-# ---------------------------------------------------------------------------
-
-FLAT_EXTRACT_PROMPT = """\
-Extract low-cost flat memory chunks from this assistant response. Return STRICT JSON array.
-
-Each item:
-{
-  "chunk_type": one of ["fix","todo","command","error","test_result"],
-  "text": "<<=400 chars, captures the chunk in plain prose>",
-  "keywords": [<3-8 short search terms, Korean+English synonyms when natural>]
-}
-
-Skip decisions, architecture rationale, code_context, summary, and generic note items.
-Those cross-turn rich memories are handled by session rollup, not per-turn Stop extract.
-Skip greetings, small talk, repeated content, narration of what you did.
-ONLY save concrete facts useful in a future session as a fix, todo, command, error, or test result.
-Preserve the original language of the assistant response in "text". Do not translate
-Korean facts into English or English facts into Korean.
-If nothing worth saving: return [].
-
-Output ONLY the JSON array. No markdown fence, no prose.
-
-Assistant response:
-<<<
-{RESPONSE}
->>>
-"""
-
-
 RICH_EXTRACT_PROMPT = """\
 Extract cross-turn implementation memory chunks from this transcript. Return STRICT JSON array.
 
@@ -947,18 +910,14 @@ def _safe_optional_list(
     return out
 
 
-def _extract_prompt_for_mode(mode: str) -> tuple[str, set[str]]:
-    if mode == "flat":
-        return FLAT_EXTRACT_PROMPT, set(FLAT_CHUNK_TYPES)
-    return RICH_EXTRACT_PROMPT, set(RICH_CHUNK_TYPES)
-
-
 def extract_chunks_from_response(response: str, *, mode: str = "rich") -> list[dict]:
     if not response.strip():
         return []
-    prompt, allowed_types = _extract_prompt_for_mode(mode)
+    if mode != "rich":
+        return []
+    allowed_types = set(RICH_CHUNK_TYPES)
     out = run_background_model(
-        prompt.replace("{RESPONSE}", response[:8000]),
+        RICH_EXTRACT_PROMPT.replace("{RESPONSE}", response[:8000]),
         timeout=MODEL_TIMEOUT_EXTRACT,
         needs_tools=False,
     )
@@ -1373,7 +1332,7 @@ def search_memory(
             except sqlite3.OperationalError as exc:
                 log("WARN", f"like fallback search failed: {exc}")
 
-    # 3. fallback: 최근 retrieved memory (decision/fix/todo/note + 외부 source)
+    # 3. fallback: 최근 retrieved memory (decision/code_context/summary/note + 외부 source)
     # 외부 source chunk를 'note'에서 spec/message/thread로 분리한 뒤
     # fallback이 빈 결과를 내지 않도록 신규 타입도 포함시킨다.
     if not seen:
@@ -1706,7 +1665,7 @@ def cmd_mini_ingest(argv: list[str]) -> int:
     """UserPromptSubmit 동기 경량 저장.
 
     현재 turn 의 raw query surface 를 events.metadata_json 에 붙인다.
-    LLM 기반 persistent memory 분류는 기존처럼 Stop/lazy-fetch background 에 남긴다.
+    LLM 기반 persistent memory 분류는 rollup background 에 남긴다.
     """
     if len(argv) < 2:
         return 1
@@ -1764,49 +1723,6 @@ def cmd_lazy_fetch(argv: list[str]) -> int:
     return 0
 
 
-def cmd_extract(argv: list[str]) -> int:
-    if not argv:
-        return 1
-    project_id = argv[0]
-    source_event_id = argv[1] if len(argv) > 1 else None
-    response = sys.stdin.read()
-    if not response.strip():
-        return 0
-    _profile_emit("cmd_extract.enter",
-                  project_id=project_id, response_bytes=len(response))
-    t0 = time.monotonic()
-    chunks_count = 0
-    try:
-        chunks = extract_chunks_from_response(response, mode="flat")
-        chunks_count = len(chunks)
-        if not chunks:
-            return 0
-        try:
-            with db() as conn:
-                inserted_count = 0
-                for c in chunks:
-                    if insert_extracted_chunk(
-                        conn, project_id, source_event_id,
-                        c["chunk_type"], c["text"], c["keywords"],
-                        reason=c.get("reason"),
-                        files=c.get("files"),
-                        symbols=c.get("symbols"),
-                        alternatives=c.get("alternatives"),
-                        tests=c.get("tests"),
-                    ):
-                        inserted_count += 1
-                conn.commit()
-            log("INFO", f"extracted {inserted_count}/{len(chunks)} chunks for project={project_id}")
-        except sqlite3.Error as exc:
-            log("WARN", f"extract insert: {exc}")
-        return 0
-    finally:
-        _profile_emit("cmd_extract.exit",
-                      project_id=project_id,
-                      dur_ms=int((time.monotonic() - t0) * 1000),
-                      chunks=chunks_count)
-
-
 def cmd_refresh(argv: list[str]) -> int:
     """`refresh <project_id> <spec>` — DELETE matching external chunks then re-fetch.
 
@@ -1858,8 +1774,8 @@ def cmd_refresh(argv: list[str]) -> int:
                 )
                 deleted = cur.rowcount
                 conn.commit()
-                # No automatic re-fetch for bulk delete — next prefill will repopulate
-                # via keyword lazy fetch. This matches D24 (DELETE → 다음 prompt에서 자연 fetch).
+                # No automatic bulk re-fetch. Keyword lazy fetch can refill only when
+                # IMPRINT_ENABLE_LAZY_FETCH=1 is set for a later prompt.
             elif spec == "project":
                 cur = conn.execute(
                     "DELETE FROM search_entries "
@@ -1884,7 +1800,6 @@ COMMANDS = {
     "mini-ingest": cmd_mini_ingest,
     "prefill": cmd_prefill,
     "lazy-fetch": cmd_lazy_fetch,
-    "extract": cmd_extract,
     "refresh": cmd_refresh,
 }
 

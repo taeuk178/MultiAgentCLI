@@ -73,7 +73,7 @@ CREATE INDEX IF NOT EXISTS idx_source_documents_project_source
   ON source_documents (project_id, source_type, source_updated_at DESC);
 
 -- 검색 가능한 영구 단위의 단일 인덱스.
--- /remember, assistant extract, source_documents chunking 결과가 모두 여기에 들어온다.
+-- /remember, rollup extract, source_documents chunking 결과가 모두 여기에 들어온다.
 -- working overlay는 이 테이블에 저장하지 않고 events.metadata_json에서 검색 시점에 읽는다.
 CREATE TABLE IF NOT EXISTS search_entries (
   id                  TEXT PRIMARY KEY,

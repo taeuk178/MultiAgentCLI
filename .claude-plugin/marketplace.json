@@ -1,14 +1,14 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "imprint",
-  "description": "Per-project context memory plugin for Claude Code with Slack/Notion lazy fetch",
+  "description": "Per-project context memory plugin for Claude Code with rollup-backed search",
   "owner": {
     "name": "Imprint"
   },
   "plugins": [
     {
       "name": "imprint",
-      "description": "Per-project context memory for Claude Code: persistent memory chunks, prefill context injection, lazy fetch from Slack/Notion. OAuth subscription based.",
+      "description": "Per-project context memory for Claude Code: persistent memory chunks, prefill context injection, and rollup-backed search. OAuth subscription based.",
       "version": "0.1.3",
       "source": "./",
       "category": "productivity",
@@ -16,8 +16,7 @@
         "memory",
         "remember",
         "context",
-        "slack",
-        "notion"
+        "search"
       ]
     }
   ],

@@ -35,10 +35,22 @@ RRF_VECTOR_WEIGHT = 0.8
 RRF_BM25_WEIGHT = 0.2
 
 # Candidate boost/penalty weights.
-# RRF 뒤에 현재성, entity coverage, recency, query context, contradiction 신호를 더한다.
+# RRF 뒤에 현재성, entity coverage, recency, pin/기억 역할, query context,
+# contradiction 신호를 더한다.
 BOOST_CURRENT = 0.15
 BOOST_ENTITY = 0.10
 BOOST_RECENT = 0.05
+# pin/manual 기억과 rollup 근거의 역할 분리 가중치.
+# 0.08 묶음(pinned·manual·manual×broad)은 current(0.15)/entity(0.10)를 뒤집지 않는
+# 약한 tie-breaker 수준으로 둔다 — "비슷한 후보면 기억을 살짝 위로".
+# ROLLUP_IMPLEMENTATION 만 0.20 으로 큰 이유: 구현 질문("왜/어떻게/파일")에서는
+# canonical 기억보다 reason/files/symbols 를 가진 rollup 근거가 답에 직접 쓰이므로,
+# current+entity 합산도 의도적으로 추월할 수 있게 시스템 내 최대 양수 boost 로 둔다.
+# 값 자체는 경험적 튜닝치 — 변경 시 tests/run_tests.py TC-32 의 순서 단정을 함께 확인.
+BOOST_PINNED = 0.08
+BOOST_MANUAL_MEMORY = 0.08
+BOOST_MANUAL_BROAD_QUERY = 0.08
+BOOST_ROLLUP_IMPLEMENTATION_QUERY = 0.20
 
 # Working memory 는 retrieved context 가 아니라 query context 이므로 낮은 고정 점수로 soft union.
 WORKING_OVERLAY_SCORE = 0.12
@@ -83,6 +95,7 @@ class RetrievalCandidate:
     penalties: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
     source_event_id: str | None = None
+    pinned: int = 0
 
     @property
     def entry_id(self) -> str:
@@ -127,6 +140,22 @@ _TOKEN_RE = re.compile(r"[가-힣A-Za-z0-9]+")
 _LIKE_STOPWORDS = {
     "알려줘", "알려주세요", "설명해줘", "설명해주세요",
     "어떻게", "뭐야", "무엇", "동작",
+}
+
+# 질문 의도 분류용 키워드 집합. 형태소 분석 없이 substring/token 매칭(_query_has_any).
+# 두 집합은 의도적으로 배타가 아니다 — "왜 이 결정을 했어?" 처럼 한 질문이 양쪽에
+# 모두 걸릴 수 있다. 겹쳤을 때의 우선순위는 BOOST 단계에서 rollup 쪽으로 기울도록
+# 고정한다(아래 BOOST 적용부 주석 참고). 즉 "애매하면 근거 우선" 이 설계 기본값이다.
+_IMPLEMENTATION_QUERY_TERMS = {
+    "왜", "이유", "근거", "어떻게", "구현", "코드", "로직", "파일", "심볼",
+    "테스트", "검증", "수정", "변경", "추가", "삭제", "연결", "적용",
+    "why", "how", "implement", "implementation", "code", "logic", "file",
+    "symbol", "test", "reason", "because", "change", "fix",
+}
+
+_BROAD_MEMORY_QUERY_TERMS = {
+    "목적", "원칙", "정책", "결정", "방향", "큰틀", "전체", "요약",
+    "기억", "메모", "remember", "decision", "policy", "summary", "overview",
 }
 
 
@@ -221,6 +250,20 @@ def _candidate_context_section(cand: RetrievalCandidate) -> str:
     return "retrieved_memory"
 
 
+def _query_has_any(query: str, terms: set[str]) -> bool:
+    normalized = normalize_alias(query)
+    tokens = {t.lower() for t in _TOKEN_RE.findall(query)}
+    for term in terms:
+        t = term.lower()
+        if t in tokens or t in normalized:
+            return True
+    return False
+
+
+def _is_rollup_candidate(cand: RetrievalCandidate) -> bool:
+    return bool(cand.metadata.get("rolled") or cand.metadata.get("rollup"))
+
+
 def _dedupe_candidates(candidates: list[RetrievalCandidate]) -> list[RetrievalCandidate]:
     """동일 source_uri/text_hash 후보가 반복되면 가장 높은 점수 후보만 남긴다."""
     by_key: dict[tuple[str, str], RetrievalCandidate] = {}
@@ -267,6 +310,7 @@ def _fts_search(conn: sqlite3.Connection, project_id: str, query: str, top_n: in
                c.section_path, c.source_updated_at, c.is_current,
                c.raw_type AS raw_chunk_type, c.normalized_type AS normalized_chunk_type,
                c.metadata_json, coalesce(d.source_type, c.origin) AS source_type,
+               c.pinned,
                bm25(search_entries_fts) AS bm25_score
         FROM search_entries_fts
         JOIN search_entries c ON c.rowid = search_entries_fts.rowid
@@ -322,7 +366,8 @@ def _like_fallback_search(
                c.text AS chunk_text,
                c.section_path, c.source_updated_at, c.is_current,
                c.raw_type AS raw_chunk_type, c.normalized_type AS normalized_chunk_type,
-               c.metadata_json, coalesce(d.source_type, c.origin) AS source_type
+               c.metadata_json, coalesce(d.source_type, c.origin) AS source_type,
+               c.pinned
         FROM search_entries c
         LEFT JOIN source_documents d ON d.id = c.source_document_id
         WHERE c.project_id = ?
@@ -446,7 +491,8 @@ def _vector_search(
                c.text AS chunk_text,
                c.section_path, c.source_updated_at, c.is_current,
                c.raw_type AS raw_chunk_type, c.normalized_type AS normalized_chunk_type,
-               c.embedding, c.metadata_json, coalesce(d.source_type, c.origin) AS source_type
+               c.embedding, c.metadata_json, coalesce(d.source_type, c.origin) AS source_type,
+               c.pinned
         FROM search_entries c
         LEFT JOIN source_documents d ON d.id = c.source_document_id
         WHERE c.project_id = ?
@@ -488,6 +534,10 @@ def _row_to_candidate(row: sqlite3.Row) -> RetrievalCandidate:
         cand.source_event_id = row["source_event_id"]
     except (IndexError, KeyError):
         cand.source_event_id = None
+    try:
+        cand.pinned = int(row["pinned"] or 0)
+    except (IndexError, KeyError, TypeError, ValueError):
+        cand.pinned = 0
     cand.evidence_level = metadata.get("evidence_level")
     if cand.evidence_level is None and cand.source_type in {"slack", "notion"}:
         cand.evidence_level = "raw_source"
@@ -599,6 +649,8 @@ def retrieve(
                     for term in (hit.get("canonical_name"), hit.get("matched_alias"))
                     if term
                 }
+                implementation_query = _query_has_any(query, _IMPLEMENTATION_QUERY_TERMS)
+                broad_memory_query = _query_has_any(query, _BROAD_MEMORY_QUERY_TERMS)
                 confirmed_penalty, candidate_penalty = _contradiction_penalty_ids(
                     conn, project_id, resolved,
                 )
@@ -606,6 +658,19 @@ def retrieve(
                     boost = 0.0
                     if cand.is_current:
                         boost += BOOST_CURRENT
+                    if cand.pinned:
+                        boost += BOOST_PINNED
+                    if cand.source_type == "manual_remember":
+                        boost += BOOST_MANUAL_MEMORY
+                        # broad 보너스는 "순수하게 넓은 질문"에만 — 구현 신호가 섞이면
+                        # 제외한다. 반면 rollup 보너스(아래)는 broad 여부와 무관하게
+                        # implementation 신호만으로 붙으므로, 양쪽에 걸친 애매한 질문은
+                        # manual 의 broad 보너스가 빠지고 rollup 이 +0.20 을 받아 근거 쪽으로
+                        # 기운다. 이 비대칭이 "애매하면 근거 우선" 정책의 구현부다.
+                        if broad_memory_query and not implementation_query:
+                            boost += BOOST_MANUAL_BROAD_QUERY
+                    if implementation_query and _is_rollup_candidate(cand):
+                        boost += BOOST_ROLLUP_IMPLEMENTATION_QUERY
                     if cand.normalized_chunk_type and resolved_terms:
                         normalized_text = normalize_alias(cand.retrieval_text)
                         # Phase 7a v1 은 entry_entities 자동 채움 전 단계라 alias/canonical

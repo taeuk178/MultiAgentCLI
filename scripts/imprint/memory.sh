@@ -32,10 +32,10 @@ imprint memory <subcommand> [args]
        [--since <YYYY-MM-DD>] [--limit <n>] [--project <path|id-prefix>]
   forget <id>                Delete a chunk
   refresh <spec>             Drop cached external chunks matching spec
-                             and re-fetch on next prefill (D24, AC16):
+                             and re-fetch only when explicitly possible:
                                <url>          single URL — DELETE + immediate re-fetch
-                               source slack   all slack chunks (re-fetch on next prefill)
-                               source notion  all notion chunks (re-fetch on next prefill)
+                               source slack   all slack chunks (DELETE only; opt-in lazy-fetch may refill)
+                               source notion  all notion chunks (DELETE only; opt-in lazy-fetch may refill)
                                project        all external (slack+notion) chunks
 USAGE
 }

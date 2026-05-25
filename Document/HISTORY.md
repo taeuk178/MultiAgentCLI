@@ -15,6 +15,24 @@
 
 기록 순서는 **최신이 위**. 항목당 한 단락 안에 변경/사유/대안 폐기 근거를 묶는다.
 
+## 2026-05-25 — 최소 RAG 기준으로 Stop flat extract 제거
+
+**무엇:** `Stop` hook 의 per-turn flat extract spawn 을 제거하고, `ingestion.py extract` 명령과 flat prompt 를 삭제했다. 이제 Stop 은 assistant 응답을 redaction 후 `events(kind=llm_response)` 에 archive 하는 역할만 맡는다. 검색 가능한 구현 기억은 `/remember`, source ingest, opt-in external fetch, 그리고 delta/rollup rich extract 가 `search_entries` 에 저장한다. 문서와 테스트는 "Stop archive only + rollup-backed implementation memory" 기준으로 갱신했다.
+
+**왜:** imprint 의 핵심 목적은 "나중에 왜 이렇게 구현했는지"를 회수하는 것이다. `fix/todo/command/error/test_result` 를 매 turn 즉시 저장하는 flat extract 는 유용할 수 있지만 최소 RAG 검증 단계에서는 검색 노이즈와 개념 혼란을 만든다. 특히 single assistant response 는 구현 결정 arc 를 담지 못하므로, 기본 경로를 `events → delta/rollup → search_entries` 로 좁히고 rollup 품질과 eval 에 집중하는 쪽이 더 단순하다.
+
+## 2026-05-25 — Slack/Notion lazy fetch 를 opt-in 보조 경로로 강등
+
+**무엇:** `UserPromptSubmit` 의 Slack/Notion lazy fetch 자동 spawn 을 기본 비활성으로 바꾸고, `IMPRINT_ENABLE_LAZY_FETCH=1` 일 때만 동작하게 했다. `/memory refresh <url>` 과 기존 external fetch 저장 경로(`origin=external_fetch`, `source_status`)는 유지한다. 문서와 skill 설명에서는 기본 RAG 루프를 `/remember`, delta/rollup rich extract, `/search`, 선택 vector backfill 중심으로 설명하고, Slack/Notion 은 opt-in external source cache 로 분리했다.
+
+**왜:** 현재 목표는 기본 RAG 의 정확도와 테스트 가능성을 먼저 고정하는 것이다. lazy fetch 는 다음 turn 부터 후보가 되는 opportunistic cache 라 현재 turn 답변 근거로 오해되기 쉽고, Slack/Notion MCP 상태에 따라 결과가 달라져 기본 RAG 검증을 흐릴 수 있다. 필요해지면 env opt-in 또는 명시 refresh 로 되살릴 수 있으므로, 핵심 경로를 단순하게 유지하는 쪽을 택했다.
+
+## 2026-05-24 — `/search` manual memory 와 rollup evidence 역할 분리
+
+**무엇:** `/search` 후보에 `pinned` 값을 보존하고, `manual_remember` 는 `canonical_memory`, rollup extract 는 `rollup_evidence` 역할로 출력되게 했다. 큰 틀/정책/요약 계열 질문에서는 사용자가 명시 저장한 `/remember` row 를 우선하고, 왜/어떻게/구현/파일/테스트 계열 질문에서는 rollup decision evidence 에 boost 를 준다.
+
+**왜:** 같은 주제에 대해 `/remember` 로 남긴 canonical memory 와 rollup 이 자동 추출한 구현 근거가 동시에 존재할 수 있다. 둘을 저장 단계에서 강제로 합치면 사용자가 직접 남긴 의도와 자동 추출 provenance 가 섞인다. 대신 검색 시점에 질문 의도를 보고 큰 틀은 manual memory, 구현 세부는 rollup evidence 를 앞세우면 중복을 지우지 않으면서도 사용자가 기대하는 답의 초점이 맞는다.
+
 ## 2026-05-24 — 0.1.3 release metadata 동기화
 
 **무엇:** `flow.md` 에 현재 RAG 구현 기술 역할표를 추가하고, imprint skill frontmatter 설명을 한국어로 바꿨다. local runtime state 인 `.imprint/` 는 repo 에 섞이지 않도록 `.gitignore` 에 명시했다. `VERSION`, root/Codex/Claude plugin manifest, Claude marketplace, Codex marketplace ref, 설치 문서의 release 예시를 `0.1.3` 으로 맞췄다.

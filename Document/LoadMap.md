@@ -20,14 +20,14 @@ imprint 는 Claude Code/Codex hook·skill 시스템 위에서 동작하는 로�
        event archive, working surface metadata, gate, context section prefill
   -> Claude Code / Codex 응답
   -> Stop hook
-       response archive, flat search_entries extract
+       response archive
   -> delta/rollup
        stale 또는 명시 session 단위로 decision-rich search_entries extract
   -> 다음 turn
        저장된 기억이 다시 prefill/search 후보가 됨
 ```
 
-API key 없이 host 의 OAuth 구독을 그대로 사용합니다. 무거운 LLM 작업(prompt 분석, Slack/Notion fetch, response extract)은 background 에서 host CLI(`claude` 또는 `codex`)로 분리합니다.
+API key 없이 host 의 OAuth 구독을 그대로 사용합니다. 무거운 LLM 작업(rollup extract, summary/contradiction judge)은 background 에서 host CLI(`claude` 또는 `codex`)로 분리합니다. Slack/Notion fetch 는 opt-in 보조 경로입니다.
 
 ## 해결하려는 문제
 
@@ -57,16 +57,16 @@ API key 없이 host 의 OAuth 구독을 그대로 사용합니다. 무거운 LLM
 ### Hook 계층
 
 - `SessionStart`: 스키마 적용, 프로젝트 row upsert, `.imprint/Guardrail.md` prepend. `startup|resume|clear|compact` matcher 로 세션 시작과 compact 이후 모두 Guardrail 을 다시 주입합니다. 현재 session_id 를 알면 현재 세션을 제외한 stale session rollup 을 background 로 보완합니다.
-- `UserPromptSubmit`: prompt redaction, `events.user_message` 저장, working surface metadata 저장, routing rule 평가, need-retrieval gate, context section prefill, lazy-fetch worker spawn.
-- `Stop`: assistant 응답 redaction, `events.llm_response` archive 및 session_id metadata 저장, flat response extract worker spawn.
+- `UserPromptSubmit`: prompt redaction, `events.user_message` 저장, working surface metadata 저장, routing rule 평가, need-retrieval gate, context section prefill. `IMPRINT_ENABLE_LAZY_FETCH=1` 일 때만 external lazy-fetch worker 를 spawn 합니다.
+- `Stop`: assistant 응답 redaction, `events.llm_response` archive 및 session_id metadata 저장. 검색용 구현 기억은 rollup 이 `events` 에서 추출합니다.
 
-동기 hook 은 사용자 turn 을 막지 않는 경량 작업만 수행합니다. 외부 fetch 와 Haiku 기반 추출은 background 로 분리합니다.
+동기 hook 은 사용자 turn 을 막지 않는 경량 작업만 수행합니다. Haiku 기반 추출은 background 로 분리합니다. 외부 fetch 는 opt-in 보조 경로로만 둡니다.
 
 ### Memory 계층
 
 `events` 는 raw I/O archive 입니다. redaction 후 저장하고, 짧은 backchannel turn 은 `noise=1` 로 soft flag 만 붙입니다.
 
-`search_entries` 는 기본 사용자 RAG 기억이자 명시 검색 단일 인덱스입니다. Stop hook flat 추출, delta/rollup rich 추출, external lazy-fetch, `/remember`, source document chunk 가 여기에 저장됩니다. 다음 turn prefill, `/memory search/list/show/inject`, `/search` 가 이 테이블을 읽습니다.
+`search_entries` 는 기본 사용자 RAG 기억이자 명시 검색 단일 인덱스입니다. delta/rollup rich 추출, `/remember`, source document chunk 가 여기에 저장됩니다. opt-in external fetch 도 같은 테이블을 쓰지만 기본 RAG 루프에는 포함하지 않습니다. 다음 turn prefill, `/memory search/list/show/inject`, `/search` 가 이 테이블을 읽습니다.
 
 `source_documents` / `search_entries` / `search_summaries` 는 retrieval 문서 RAG 계층입니다. 명시 ingestion 된 원본 문서는 `source_documents` 에 저장되고, chunking 된 검색 단위는 `search_entries(origin=source_document)` 로 들어가며, feature/document/project 요약은 `search_summaries` 로 관리합니다.
 
@@ -81,18 +81,20 @@ working overlay 는 영구 entry 로 만들지 않습니다. 현재 세션 query
 - local: multi-rewrite → hybrid search → RRF → working overlay → BOOST/penalty → optional rerank → CTX.
 - feature/global: summary 검색 + chunk retrieval + grounding + contradiction check.
 - rollup 이 저장한 `reason/files/symbols/tests/event_range` metadata 는 `/search` 출력의 세부 근거로 함께 노출합니다.
+- 같은 주제의 `/remember` 와 rollup row 가 함께 검색되면, 큰 틀/정책/요약 질문은 `/remember` 의 `canonical_memory` 를 우선하고 왜/어떻게/구현/파일/테스트 질문은 rollup 의 `rollup_evidence` 를 우선합니다.
 - 저신뢰이면 trace 에 이유를 남기지만 raw events 자동 fallback 은 열지 않습니다.
 - `source_status` marker 는 primary retrieved context 후보에서 제외합니다.
 - JSON mode 는 trace, context section, provenance, penalty, fallback/rerank 이유를 노출합니다.
 
 ### External Source 계층
 
-Slack/Notion lazy-fetch 는 사용자 prompt URL 또는 `<project>/.imprint/sources.json` 을 기반으로 background 에서 동작합니다.
+Slack/Notion fetch 는 기본 RAG 루프가 아니라 opt-in external source cache 입니다. `IMPRINT_ENABLE_LAZY_FETCH=1` 일 때 사용자 prompt URL 또는 `<project>/.imprint/sources.json` 을 기반으로 background 에서 동작하고, 명시 `/memory refresh <url>` 로도 갱신할 수 있습니다.
 
 - 성공 chunk: `spec`, `message`, `thread`.
 - 실패/관찰 marker: `source_status` (`fetch_failed`, `fetch_empty`, `skipped_by_cap`, stale 계산).
 - dedup: `source_uri/url + provenance(evidence_level) + text_hash` 기준.
 - 자동 refresh 는 하지 않고, `/memory refresh` 로 명시 갱신합니다.
+- 현재 turn 답변의 근거로 즉시 보장하지 않습니다. 다음 turn prefill 또는 명시 `/search` 후보로만 봅니다.
 
 ### Queue 계층
 
@@ -102,7 +104,7 @@ retrieval v2 ingestion 은 `ingest_queue` 를 통해 후속 작업을 순차 처
 - `contradiction_scan`: priority 5.
 - `ner_extract`: priority 9.
 
-`/remember` 와 assistant extract 의 직접 `search_entries` 저장 경로는 현재 queue 를 거치지 않습니다. WAL + busy_timeout 으로 일반 동시성은 흡수하고, summary/entity/contradiction queue 통합은 필요해질 때만 검토합니다.
+`/remember` 와 rollup 의 직접 `search_entries` 저장 경로는 현재 queue 를 거치지 않습니다. WAL + busy_timeout 으로 일반 동시성은 흡수하고, summary/entity/contradiction queue 통합은 필요해질 때만 검토합니다.
 
 ## 현재 기준선
 
@@ -118,15 +120,16 @@ retrieval v2 ingestion 은 `ingest_queue` 를 통해 후속 작업을 순차 처
 - events noise soft flag.
 - 명시 검색 JSON trace.
 - delta/rollup 기반 구현 결정 arc 저장과 `/search` 세부 근거 출력.
+- `/search` 의 manual memory(`canonical_memory`) 와 rollup 근거(`rollup_evidence`) 역할 분리.
 - `search_entries` migration/backfill.
 - text_hash 기반 dedup.
-- 테스트 기준선: `31 PASS / 0 FAIL`.
+- 테스트 기준선: `32 PASS / 0 FAIL`.
 
 완료된 결정과 이유는 `HISTORY.md` 에 남깁니다.
 
 ## 알려진 핵심 갭 (2026-05-21 발견, 2026-05-24 구조 정리)
 
-persistent memory 와 의미(벡터) 검색이 연결돼 있지 않았던 문제가 제품 핵심 목적의 직접 병목이었습니다. 2026-05-24 에 bridge 를 폐기하고 persistent memory, assistant extract, source document chunk 를 `search_entries` 단일 인덱스로 통합했습니다.
+persistent memory 와 의미(벡터) 검색이 연결돼 있지 않았던 문제가 제품 핵심 목적의 직접 병목이었습니다. 2026-05-24 에 bridge 를 폐기하고 persistent memory, rollup extract, source document chunk 를 `search_entries` 단일 인덱스로 통합했습니다.
 
 - `search_entries` 에 embedding 컬럼이 있으므로 bridge 복제 없이 같은 row 가 FTS/vector 양쪽에 참여할 수 있습니다.
 - hook 동기 경로에서는 embedding 을 만들지 않습니다. 선택 ML cold-load 가 사용자 turn 을 느리게 만들 수 있기 때문입니다.
@@ -139,9 +142,9 @@ persistent memory 와 의미(벡터) 검색이 연결돼 있지 않았던 문제
 
 | 목표 | 현재 일치도 | 장기 방향 |
 |---|---|---|
-| 세션 종료 후 문맥 저장 | 상당 부분 일치. raw event archive, flat extract, delta/rollup rich extract, `/remember` 가 모두 `search_entries` 로 모입니다. | 실제 프로젝트 eval 로 추출 품질과 stale rollup 운영성을 측정합니다. |
+| 세션 종료 후 문맥 저장 | 상당 부분 일치. raw event archive 는 `events`, 정제 기억은 delta/rollup rich extract 와 `/remember` 를 통해 `search_entries` 로 모입니다. | 실제 프로젝트 eval 로 추출 품질과 stale rollup 운영성을 측정합니다. |
 | Codex / Claude Code 간 동일 문맥 | 방향 일치. 기본 저장소는 `~/.imprint` 로 통합됐습니다. | 설치/manifest/hook 검증을 양 host 회귀 테스트로 고정합니다. |
-| 큰 틀·개념 질문으로 맥락 상기 | 부분 개선. `/remember`, source document, rollup decision entry 는 `/search` 후보가 되고 세부 근거도 출력됩니다. embedding/backfill 과 eval 은 아직 남았습니다. | `imprint setup vector --backfill` 기반 의미 검색 검증 후 feature/project summary 로 끌어올립니다. |
+| 큰 틀·개념 질문으로 맥락 상기 | 부분 개선. `/remember` 는 canonical memory 로, rollup decision entry 는 구현 evidence 로 역할을 나눠 `/search` 에 노출됩니다. embedding/backfill 과 eval 은 아직 남았습니다. | `imprint setup vector --backfill` 기반 의미 검색 검증 후 feature/project summary 로 끌어올립니다. |
 | 다른 개발자도 참고하는 공유 기록 | 장기 미구현. 로컬 SQLite 는 개인 기억에 적합하지만 팀 지식 공유에는 부적합합니다. | decision/summary chunk 를 ADR/Markdown 으로 export 해 git/PR review 에 얹습니다. |
 
 ## 로드맵
@@ -150,11 +153,12 @@ persistent memory 와 의미(벡터) 검색이 연결돼 있지 않았던 문제
 
 `search_entries` 통합과 `/search` UX 1차 개선은 완료됐습니다. 남은 작업은 embedding 채움과 검색 품질 검증입니다.
 
-- Stop extract, external lazy-fetch, `/remember`, source document ingest 는 `search_entries` 에 직접 저장됩니다.
+- Rollup extract, `/remember`, source document ingest 는 `search_entries` 에 직접 저장됩니다. opt-in external fetch 도 같은 저장 경로를 재사용합니다.
 - 기존 사용자 DB는 `imprint migrate search-entries` 로 명시 migration 합니다.
 - `imprint setup vector --backfill` 은 현재 프로젝트의 `search_entries.embedding` 을 채웁니다.
 - 신규/기존 memory 가 명시 검색 경로에서 `search_entries` 후보로 보이는 것은 테스트로 고정했습니다. 다음은 embedding 가용 시 vector path 품질 검증입니다.
 - rollup decision entry 의 `reason/files/symbols/tests/event_range` 가 `/search` 출력에 보이는 것은 테스트로 고정했습니다.
+- 같은 주제의 `/remember` 와 rollup row 가 공존할 때 질문 의도별로 canonical/evidence 우선순위가 바뀌는 것은 테스트로 고정했습니다.
 - 확장 가능성: `/search` 유사도 품질과 latency 가 충분히 검증되면, 명시 검색 결과를 prefill 자동 주입으로 연결할 수 있습니다. 현재 로드맵에서는 가능성만 남기고 기본 동작으로 두지 않습니다.
 
 ### 2. RAG 사용성 검증과 confidence 표현
@@ -245,7 +249,7 @@ prompt, terminal output, external source 에 secret 이 섞일 수 있습니다.
 
 ### 외부 source 신뢰성
 
-Slack/Notion fetch 실패, stale, URL cap 초과를 사용자가 모르면 RAG 신뢰가 떨어집니다.
+opt-in Slack/Notion fetch 를 켠 경우, fetch 실패, stale, URL cap 초과를 사용자가 모르면 RAG 신뢰가 떨어집니다.
 
 대응:
 - `source_status` marker.

@@ -206,12 +206,11 @@ if [[ -n "${ROUTING// }" ]]; then
 fi
 
 # --- 3. Prefill pipeline ----------------------------------------------------
-# 백그라운드: 무거운 작업(analyze_prompt + Slack/Notion fetch + chunk insert)을
-#   nohup으로 분리한다. 새 chunk는 다음 turn의 prefill에서 노출된다.
-# 포어그라운드: SQLite에 이미 저장된 chunk만 검색해서 즉시 emit (sub-second).
-# 어느 쪽도 사용자 turn을 막지 않는다.
+# 포어그라운드: SQLite에 이미 저장된 entry만 검색해서 즉시 emit (sub-second).
+# 외부 Slack/Notion lazy-fetch는 기본 RAG 루프를 혼란스럽게 만들 수 있어 opt-in
+# 보조 경로로 둔다. 필요할 때만 IMPRINT_ENABLE_LAZY_FETCH=1 로 켠다.
 
-if [[ -n "$PID" && -x "$(command -v python3)" ]]; then
+if [[ "${IMPRINT_ENABLE_LAZY_FETCH:-0}" == "1" && -n "$PID" && -x "$(command -v python3)" ]]; then
   TMP_BG=$(mktemp 2>/dev/null || echo "/tmp/imprint-ups-$$.tmp")
   printf '%s' "$SAFE_PROMPT" > "$TMP_BG"
   profile_emit "ups.spawn" "project=$PID prompt_bytes=${#SAFE_PROMPT}"
