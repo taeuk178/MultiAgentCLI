@@ -1,7 +1,7 @@
 #!/bin/bash
 # Stop hook: log final assistant response of the turn for memory accumulation.
-# Phase 2 minimum: persists the response as a `llm_response` event.
-# Chunk extraction (decision/error/fix/etc.) lands in Phase 3.
+# Minimal RAG keeps Stop synchronous work to event archive only; searchable
+# implementation memory is produced later by delta/rollup.
 #
 # stdin: JSON with session info; Codex can provide last_assistant_message,
 # Claude-style fallback uses transcript_path.
@@ -171,18 +171,6 @@ db_exec "
   INSERT INTO events (id, project_id, source, kind, text_clean, metadata_json, created_at)
   VALUES ('$EVENT_ID', '$PID', '$ESC_SOURCE', 'llm_response', '$ESC_TEXT', '$ESC_METADATA', '$NOW');
 " 2>>"$IMPRINT_LOG" || true
-
-# Chunk extraction을 백그라운드로 분리한다. assistant 응답은 이미 사용자에게 표시된
-# 상태이고, chunk 저장은 다음 turn의 prefill에서 활용되면 충분하다.
-if [[ "${IMPRINT_DISABLE_EXTRACT:-0}" != "1" ]] && command -v python3 >/dev/null 2>&1; then
-  TMP_BG=$(mktemp 2>/dev/null || echo "/tmp/imprint-stop-$$.tmp")
-  printf '%s' "$SAFE_LAST_TEXT" > "$TMP_BG"
-  profile_emit "stop.spawn" "project=$PID event=$EVENT_ID resp_bytes=${#SAFE_LAST_TEXT}"
-  ( python3 "$SCRIPT_DIR/lib/ingestion.py" extract "$PID" "$EVENT_ID" < "$TMP_BG" 2>>"$IMPRINT_LOG"
-    rm -f "$TMP_BG"
-  ) </dev/null >/dev/null 2>&1 &
-  disown 2>/dev/null || true
-fi
 
 log_info "stop logged event=$EVENT_ID project=$PID bytes=${#SAFE_LAST_TEXT}"
 imprint_emit_stop_ok

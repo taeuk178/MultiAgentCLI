@@ -46,7 +46,7 @@ behavior explicit and records `redacted: true` metadata even when no pattern
 matched.
 
 ```bash
-imprint remember "Quick 모드는 one-shot 실행, lazy fetch 즉시 트리거" --high
+imprint remember "Quick 모드는 one-shot 실행, 외부 fetch는 opt-in으로만 사용" --high
 imprint remember "key sk-ant-XXX 작동 확인" --redact     # secrets masked before INSERT
 ```
 
@@ -161,13 +161,13 @@ Project is identified by git root (`git rev-parse --show-toplevel`) or current w
 
 ## External Source Ingestion
 
-`UserPromptSubmit` hook은 prefill 시점에 사내 컨텍스트(Slack 메시지, Notion 페이지)를 lazy fetch로 흡수해 memory에 누적하고, FTS5 + keywords 배열 union ranking으로 관련 chunk를 prepend합니다.
+Slack/Notion ingestion은 기본 RAG 루프가 아니라 opt-in external source cache입니다. `IMPRINT_ENABLE_LAZY_FETCH=1`을 설정한 경우에만 `UserPromptSubmit` hook이 prompt URL 또는 `sources.json`을 바탕으로 background fetch를 시도합니다. 결과는 다음 turn/search 후보가 되며 현재 turn 답변 근거로 즉시 보장하지 않습니다.
 
 - 정의 위치: `<project>/.imprint/sources.json` (git-share 가능)
   - `slack.channels`: 키워드 매칭 모드에서 검색할 채널 목록
   - `notion.pages`: 키워드 매칭 모드에서 fetch할 페이지 URL/ID 목록
-- 자동 트리거:
-  - prompt에 Slack permalink가 들어 있으면 즉시 fetch (thread는 reply selection + 요약, single은 단건)
+- opt-in 자동 트리거 (`IMPRINT_ENABLE_LAZY_FETCH=1`):
+  - prompt에 Slack permalink가 들어 있으면 background fetch (thread는 reply selection + 요약, single은 단건)
   - prompt에 Notion URL이 들어 있으면 페이지 전체를 섹션 단위로 분해해 chunk화
   - 모호한 prompt에서는 sources.json 채널·페이지를 키워드로 검색
 - 캐시: `metadata_json.url` 기반 dedup, TTL 무한. 갱신은 `/memory refresh` 명시 명령으로만.

@@ -5,10 +5,11 @@
 ## 핵심 원칙
 
 - 일반 대화는 가볍게 기록합니다. hook 은 사용자 세션을 끊지 않고, 실패하면 `plugin.log` 에만 남깁니다.
-- 무거운 작업은 background 로 보냅니다. Slack/Notion fetch, assistant response extract, rollup extract 는 동기 응답 경로를 막지 않습니다.
+- 무거운 작업은 background 로 보냅니다. rollup extract 는 동기 응답 경로를 막지 않습니다.
 - raw 대화 전체를 `/search` 에 자동 fallback 하지 않습니다. `/search` 는 정제된 `search_entries`, `search_summaries`, 현재 세션 working surface 만 사용합니다.
-- 영구 기억은 `search_entries` 로 모읍니다. `/remember`, Stop extract, rollup extract, external fetch, source document ingest 가 모두 같은 검색 인덱스를 씁니다.
+- 영구 기억은 `search_entries` 로 모읍니다. `/remember`, rollup extract, source document ingest 가 같은 검색 인덱스를 씁니다.
 - vector 검색은 선택 기능입니다. `imprint setup vector --backfill` 로 `search_entries.embedding` 을 채운 뒤에만 semantic lane 이 참여합니다.
+- Slack/Notion fetch 는 기본 RAG 루프가 아니라 opt-in external source cache 입니다. 자동 lazy fetch 는 `IMPRINT_ENABLE_LAZY_FETCH=1` 일 때만 켭니다.
 
 ## 사용 기술과 역할
 
@@ -21,7 +22,8 @@
 | SQLite FTS5 trigram | `search_entries_fts`, `search_summaries_fts` | 기본 lexical 검색입니다. 파일명, 함수명, 에러 문자열, 명령어처럼 정확한 토큰 회수에 필요합니다. |
 | Optional vector embedding | `search_entries.embedding`, `search_summaries.embedding` | `sentence-transformers` 의 BGE-M3 로 의미 유사도 lane 을 추가합니다. 설치하지 않으면 FTS-only 로 동작합니다. |
 | Optional rerank / NLI | `rerank.py`, `contradiction.py` | cross-encoder rerank 와 contradiction 판정 품질을 올립니다. 없으면 rule/LLM fallback 으로 내려갑니다. |
-| Background LLM call | Claude/Codex CLI | Slack/Notion lazy fetch 정리, Stop flat extract, rollup rich extract, summary/contradiction judge 를 세션 밖에서 수행합니다. |
+| Background LLM call | Claude/Codex CLI | Rollup rich extract, summary/contradiction judge 를 세션 밖에서 수행합니다. |
+| Optional external fetch | Slack/Notion MCP | `IMPRINT_ENABLE_LAZY_FETCH=1` 또는 `/memory refresh <url>` 로 외부 source 를 캐시합니다. 현재 turn 답변 근거로 보장하지 않고 다음 검색 후보로만 봅니다. |
 | Redaction rule | `redact-rules.default.json`, `redact_text` | event, extract text, rollup metadata, retrieval surface 에 민감정보가 남지 않도록 저장 전 정리합니다. |
 | RRF + boost/penalty | `retrieve.py`, `routing.py` | FTS/vector/summary/working 후보를 합치고 entity, recency, contradiction 신호로 정렬합니다. |
 
@@ -31,7 +33,7 @@
 
 ### 일반 LLM 사용 Sequence
 
-평소처럼 LLM 과 대화하거나 코딩 작업을 맡길 때의 경로입니다. 이 경로는 기록과 가벼운 prefill 을 수행하고, 다음 turn 에 쓸 후보를 background 로 축적합니다.
+평소처럼 LLM 과 대화하거나 코딩 작업을 맡길 때의 경로입니다. 이 경로는 기록과 가벼운 prefill 을 수행하고, 다음 turn prefill 또는 명시 `/search` 에 쓸 구현 기억을 background 로 축적합니다.
 
 ```mermaid
 %%{init: {'flowchart': {'useMaxWidth': true, 'rankSpacing': 44, 'nodeSpacing': 34}, 'theme': 'default'}}%%
@@ -49,19 +51,16 @@ flowchart TB
 
     subgraph ASYNC["Background workers"]
       direction TB
-      LF["Lazy fetch<br/>Slack / Notion"]
-      FLAT["Flat extract<br/>fix / todo / command / error / test_result"]
       ROLL["Delta rollup<br/>decision / code_context / summary / note"]
     end
 
+    SEARCH_ENTRIES["search_entries<br/>persistent retrieval index"]
+
     U --> UPS --> SURF --> PREFILL --> MODEL --> STOP
-    UPS -.spawn.-> LF
-    STOP -.spawn.-> FLAT
     SURF -.stale or explicit.-> ROLL
-    LF --> SE["search_entries"]
-    FLAT --> SE
-    ROLL --> SE
-    SE -.next turn candidate.-> PREFILL
+    ROLL --> SEARCH_ENTRIES
+    SEARCH_ENTRIES -.prefill candidate<br/>next turn.-> PREFILL
+    SEARCH_ENTRIES -.explicit search candidate.-> SEARCH["/search"]
 ```
 
 ### 명시 `/search` Retrieve Sequence
@@ -147,12 +146,12 @@ erDiagram
 | `events` | redacted user/assistant raw archive | working surface 와 session_id 도 `metadata_json` 에 저장합니다. |
 | `extract_state` | rollup cursor | session 별로 어디까지 rich extract 했는지 기록합니다. |
 | `source_documents` | Slack/Notion/PRD/ADR/file 원본 | synthetic memory 문서는 넣지 않습니다. |
-| `search_entries` | 단일 검색 entry 인덱스 | `/remember`, extract, external fetch, source chunk 가 모두 들어옵니다. |
+| `search_entries` | 단일 검색 entry 인덱스 | `/remember`, rollup extract, source chunk 가 들어옵니다. opt-in external fetch 도 같은 인덱스를 사용합니다. |
 | `search_summaries` | feature/document/project 요약 | routed `/search` 에서 큰 범위 질문을 받쳐줍니다. |
 | `summary_links` | summary 와 근거 entry 연결 | feature/global 결과의 grounding 에 사용합니다. |
 | `entities`, `entity_aliases`, `entry_entities` | entity resolve 와 mention 연결 | boost, contradiction scope 에 사용합니다. |
 | `contradictions` | entry 간 충돌 판정 cache | confirmed 는 검색 점수에서 강하게 감점합니다. |
-| `ingest_queue` | summary/NER/contradiction 후속 작업 queue | `/remember` 와 assistant extract 직접 저장 경로에는 끼지 않습니다. |
+| `ingest_queue` | summary/NER/contradiction 후속 작업 queue | `/remember` 와 rollup 직접 저장 경로에는 끼지 않습니다. |
 | `search_entries_fts`, `search_summaries_fts` | FTS5 mirror | SQLite trigger 로 원본 테이블과 동기화됩니다. |
 
 ## 주요 저장 경로
@@ -160,12 +159,11 @@ erDiagram
 | 입력 | 저장 위치 | 다음에 쓰이는 곳 |
 |---|---|---|
 | user prompt | `events(kind=user_message)` | working overlay, observability |
-| assistant response | `events(kind=llm_response)` | flat extract, rollup provenance |
+| assistant response | `events(kind=llm_response)` | rollup provenance |
 | 현재 turn query surface | `events.metadata_json` | 다음 prefill, `/search` working overlay |
 | `/remember` | `search_entries(origin=manual_remember)` | `/search`, `/memory`, prefill |
-| Stop flat extract | `search_entries(origin=assistant_extract)` | fix/todo/command/error/test_result 검색 |
-| delta/rollup rich extract | `search_entries(origin=assistant_extract)` | decision/code_context/summary/note 검색 |
-| Slack/Notion lazy fetch | `search_entries(origin=external_fetch)` | external source context |
+| delta/rollup rich extract | `search_entries(origin=assistant_extract)` | 다음 turn prefill 후보, `/search` decision/code_context/summary/note 검색 |
+| opt-in Slack/Notion fetch | `search_entries(origin=external_fetch)` | external source context |
 | PRD/ADR/file ingest | `source_documents` + `search_entries(origin=source_document)` | source-grounded retrieval |
 
 ## `/search` 동작
@@ -220,8 +218,8 @@ imprint migrate search-entries
 |---|---|---|
 | `IMPRINT_HOME` | `~/.imprint` | DB, log, profile 저장 위치 |
 | `IMPRINT_PROFILE` | `0` | `1`이면 profile JSONL 기록 |
-| `IMPRINT_DISABLE_EXTRACT` | `0` | `1`이면 Stop extract 비활성 |
 | `IMPRINT_DISABLE_ROLLUP` | `0` | `1`이면 SessionStart stale rollup 비활성 |
+| `IMPRINT_ENABLE_LAZY_FETCH` | `0` | `1`이면 UserPromptSubmit 에서 Slack/Notion lazy fetch 활성 |
 | `IMPRINT_ROLLUP_STALE_MINUTES` | `30` | stale session rollup 기준 |
 | `IMPRINT_ROLLUP_BATCH_EVENTS` | `24` | rollup 1회 처리 event 상한 |
 | `IMPRINT_ROLLUP_MAX_CHARS` | `12000` | rollup model 입력 문자 상한 |
@@ -234,7 +232,7 @@ imprint migrate search-entries
 |---|---|
 | `<project>/.imprint/Guardrail.md` | 세션 시작·압축 후 prepend 되는 project Guardrail |
 | `<project>/.imprint/UserPromptSubmit.md` | keyword 기반 routing advisory rule |
-| `<project>/.imprint/sources.json` | Slack/Notion lazy-fetch 대상 |
+| `<project>/.imprint/sources.json` | opt-in Slack/Notion fetch 대상 |
 | `~/.imprint/app.sqlite` | SQLite DB |
 | `~/.imprint/plugin.log` | hook, dispatcher, ingestion log |
 | `~/.imprint/profile.jsonl` | `IMPRINT_PROFILE=1` 측정값 |
@@ -244,8 +242,8 @@ imprint migrate search-entries
 | 실패 | 결과 |
 |---|---|
 | `sqlite3` 없음 | 저장과 검색 누락, hook 은 진행 |
-| `python3` 없음 | primary prefill/lazy-fetch/extract 누락 |
+| `python3` 없음 | primary prefill/extract 누락 |
 | background model CLI 없음 | background model 경로 누락 |
-| Slack/Notion MCP 없음 | 외부 fetch 0건, 기존 memory 는 유지 |
+| Slack/Notion MCP 없음 | opt-in 외부 fetch 0건, 기존 memory 는 유지 |
 | 선택 ML 의존성 없음 | FTS-only / rule fallback |
 | malformed LLM JSON | relaxed parse 실패 후 skip |

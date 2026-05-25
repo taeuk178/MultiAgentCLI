@@ -1,5 +1,5 @@
 {
-  "description": "Imprint memory hooks - prefill memory injection and response extraction",
+  "description": "Imprint memory hooks - prefill memory injection and rollup-backed retrieval",
   "hooks": {
     "UserPromptSubmit": [
       {

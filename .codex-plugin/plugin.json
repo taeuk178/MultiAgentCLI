@@ -1,7 +1,7 @@
 {
   "name": "imprint",
   "version": "0.1.3",
-  "description": "Per-project context memory for Codex/GPT and Claude Code. Local SQLite + FTS5, prefill injection, lazy fetch from Slack/Notion.",
+  "description": "Per-project context memory for Codex/GPT and Claude Code. Local SQLite + FTS5, prefill injection, and rollup-backed search.",
   "author": {
     "name": "Imprint contributors"
   },
@@ -13,8 +13,6 @@
     "memory",
     "remember",
     "context",
-    "slack",
-    "notion",
     "search",
     "setup",
     "vector",
@@ -25,7 +23,7 @@
   "interface": {
     "displayName": "Imprint",
     "shortDescription": "Local project memory for coding sessions",
-    "longDescription": "Stores prompts, responses, manual notes, and optional Slack/Notion context in a local SQLite memory store, then retrieves relevant context for future turns.",
+    "longDescription": "Stores prompts, responses, manual notes, and rollup implementation memory in a local SQLite memory store, then retrieves relevant context for future turns.",
     "developerName": "Imprint contributors",
     "category": "Productivity",
     "capabilities": [

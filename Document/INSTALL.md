@@ -261,7 +261,7 @@ export IMPRINT_DISABLE_SQLITE_VEC=1
 
 ## 외부 source 설정
 
-프로젝트에 `<project>/.imprint/sources.json` 을 두면 prompt 키워드 기반으로 Slack/Notion 을 background fetch 할 수 있습니다.
+외부 source fetch 는 기본 RAG 루프에서 꺼져 있습니다. 필요할 때만 `IMPRINT_ENABLE_LAZY_FETCH=1` 을 설정하고, 프로젝트에 `<project>/.imprint/sources.json` 을 두면 prompt 키워드 기반으로 Slack/Notion 을 background fetch 할 수 있습니다.
 
 ```json
 {
@@ -270,15 +270,15 @@ export IMPRINT_DISABLE_SQLITE_VEC=1
 }
 ```
 
-직접 URL을 prompt에 넣으면 turn 당 source 별 최대 3개까지 시도합니다. 실패, 빈 결과, cap 초과는 `source_status` marker 로 남습니다.
+자동 lazy fetch 를 켠 상태에서 직접 URL을 prompt에 넣으면 turn 당 source 별 최대 3개까지 시도합니다. 실패, 빈 결과, cap 초과는 `source_status` marker 로 남습니다. 현재 turn 답변 근거로 즉시 보장하지 않고 다음 turn/search 후보가 됩니다. 명시 갱신은 `/memory refresh <url>` 로 수행합니다.
 
 ## 동작 원리 요약
 
 ### 자동 hook 경로
 
 - `SessionStart`: SQLite 스키마 적용, 프로젝트 등록, `.imprint/Guardrail.md` prepend.
-- `UserPromptSubmit`: user prompt redaction, `events.user_message` 저장, working surface metadata 저장, routing rule 평가, need-retrieval gate, context section prefill, lazy-fetch worker spawn.
-- `Stop`: 마지막 assistant 응답 redaction, `events.llm_response` 저장, persistent response extract worker spawn.
+- `UserPromptSubmit`: user prompt redaction, `events.user_message` 저장, working surface metadata 저장, routing rule 평가, need-retrieval gate, context section prefill. `IMPRINT_ENABLE_LAZY_FETCH=1` 일 때만 external lazy-fetch worker 를 spawn 합니다.
+- `Stop`: 마지막 assistant 응답 redaction, `events.llm_response` 저장. 검색용 구현 기억은 delta/rollup 이 나중에 `events` 에서 추출합니다.
 
 자동 hook 경로는 full `/search` 를 호출하지 않습니다. 사용자 turn 을 막지 않기 위해 동기 경로는 lightweight prefill 만 수행합니다. 이 경로는 `events.metadata_json` 의 working surface 와 `search_entries` 를 가볍게 읽습니다.
 
@@ -294,11 +294,11 @@ export IMPRINT_DISABLE_SQLITE_VEC=1
 
 ### 비동기 작업
 
-- lazy-fetch: background model이 prompt 키워드/URL을 분석하고 Slack/Notion MCP를 read-only fetch.
-- response extract: background model이 assistant 응답에서 decision/fix/todo/code_context 등 persistent memory chunk를 추출.
+- opt-in lazy-fetch: `IMPRINT_ENABLE_LAZY_FETCH=1` 일 때 background model이 prompt 키워드/URL을 분석하고 Slack/Notion MCP를 read-only fetch.
+- rollup extract: background model이 여러 turn 의 `events` 에서 decision/code_context/summary/note 구현 기억을 추출.
 - retrieval ingest queue: 명시 문서 ingestion 뒤 `summary_regen`, `contradiction_scan`, `ner_extract` 를 처리.
 
-`/remember` 와 assistant extract 의 직접 `search_entries` 저장 경로는 현재 ingest queue 를 거치지 않습니다.
+`/remember` 와 rollup 의 직접 `search_entries` 저장 경로는 현재 ingest queue 를 거치지 않습니다.
 
 ## 검증
 

@@ -4,7 +4,7 @@
 - 다음 세션에서 바로 볼 실행 항목과 운영 체크만 남깁니다.
 - 큰 그림은 `LoadMap.md`, 결정 사유는 `HISTORY.md`, 상세 흐름과 테이블 역할은 `flow.md` 를 봅니다.
 
-최종 업데이트: 2026-05-24.
+최종 업데이트: 2026-05-25.
 
 ## 현재 기준선
 
@@ -13,6 +13,7 @@ RAG 기본 루프와 1차 운영 관측성은 적용 완료된 상태입니다.
 - 자동 hook 루프: `SessionStart → UserPromptSubmit → Stop → 다음 UserPromptSubmit`.
 - 수동 저장/검색: `/remember`, `/search`, `/memory search/list/show/inject/refresh/stats/profile/status`.
 - persistent memory 는 `search_entries` 단일 인덱스에 저장됩니다. legacy `memory_chunks + chunks_v2` bridge 는 제거됐습니다.
+- Stop hook 은 assistant 응답을 `events` 에 archive 만 합니다. per-turn flat extract 는 최소 RAG 검증을 위해 제거했고, 검색용 구현 기억은 delta/rollup 이 담당합니다.
 - 구현 중 여러 turn 에 걸친 decision/code_context/summary/note 는 delta/rollup 으로 `search_entries` 에 정제 저장되고, `/search` 는 `reason/files/symbols/tests/event_range` detail 을 출력합니다.
 - `/search` 는 같은 주제의 `/remember` 와 rollup row 가 함께 있을 때 역할을 분리합니다. 큰 틀/정책/요약 질문은 `manual_remember` 를 `canonical_memory` 로 앞세우고, 왜/어떻게/구현/파일/테스트 질문은 rollup row 를 `rollup_evidence` 로 앞세웁니다.
 - vector 검색은 `imprint setup vector --backfill` 로 `search_entries.embedding` 을 채운 뒤 참여합니다.
@@ -22,27 +23,37 @@ RAG 기본 루프와 1차 운영 관측성은 적용 완료된 상태입니다.
 
 ```text
 python3 scripts/imprint/tests/run_tests.py
-TOTAL  32 PASS / 0 FAIL
+TOTAL  33 PASS / 0 FAIL
 ```
 
 테스트는 임시 `IMPRINT_HOME=/tmp/...` 에서 실행합니다. 사용자 홈 `~/.imprint` 직접 수정은 명시 동의 전까지 하지 않습니다.
 
 ## 다음 우선순위
 
-1. **개념 질의 eval 세트 구성**
+1. **delta/rollup eval 세트 구성**
+   실제 사용 시나리오에 가까운 multi-turn fixture 를 10~20개 고정합니다. 예: "처음 A안 → 사용자 반박 → B안 결정 → 파일 수정 → 테스트 통과" 흐름을 만들고, `/search "왜 B로 바꿨지?"` 가 `decision + reason + files/symbols + tests` 를 회수하는지 봅니다. flat extract 를 제거했으므로 eval 은 반드시 rollup 실행 후의 `search_entries` 를 기준으로 합니다.
+
+2. **rollup freshness 운영 기준**
+   현재 rollup 은 stale session 또는 명시 명령 중심입니다. 구현 직후 바로 검색해야 하는 요구가 반복되면 `rollup.sh --latest --all` 를 UX 상 어디에 노출할지, 또는 긴 세션용 K-turn 안전밸브를 둘지 결정합니다. 단, per-turn extract 를 되살리기보다 rollup trigger/cadence 를 조정하는 방향을 우선합니다.
+
+3. **rollup entry 품질 보강**
+   결정 하나에 `reason/files/symbols/tests/alternatives/event_range` 가 함께 묶이는지 확인합니다. 부족하면 prompt 와 capped `retrieval_text` surface 를 조정하고, 파일/심볼은 환각 방지를 위해 transcript 에 literal 로 등장한 문자열만 허용하는 현재 원칙을 유지합니다.
+
+4. **개념 질의 eval 세트 구성**
    "로그인 feature 의 공유하기는 어떻게 구현됐었지" 같은 자연어 질문 20~30개를 고정합니다. `/remember` 로 선별 저장한 기억이 `/search` 에서 어떻게 회수되는지 보고, 내부 retrieval JSON trace 의 `embedding_used`, `vector_rank`, top1 score, fallback 이유를 같이 기록합니다.
 
-2. **`/search` confidence 표시 기준**
+5. **`/search` confidence 표시 기준**
    현재 confidence 는 확률이 아니라 내부 휴리스틱입니다. `/search` 는 세부 근거 detail 을 이미 출력하므로, eval 결과를 본 뒤 `evidence_strength=strong|medium|weak` 또는 calibrated numeric score 로 표현할지 결정합니다. 출력에는 숫자만 두지 말고 weak/medium 의 이유도 함께 보여줘야 합니다.
 
-3. **운영 피드백 수집**
+6. **운영 피드백 수집**
    vector setup, migration/backfill, FTS fallback, profile 로그에서 반복 실패나 지연 신호가 있는지 확인합니다. 바로 기능을 늘리기보다 trace/profile 데이터로 먼저 판단합니다.
 
 ## 확인 체크리스트
 
 - 새 세션 시작과 compact 직후 `SessionStart` 가 스키마 적용과 `Guardrail.md` prepend 를 조용히 수행하는지.
 - 질문 직후 `[Project memory context]` 가 query/session/retrieved/external section 으로 나뉘는지.
-- Stop extract 또는 external lazy-fetch 결과가 다음 turn 의 후보로 보이는지.
+- Stop 이후 `events.llm_response` 에 session_id metadata 가 저장되고, 별도 flat search entry 가 생기지 않는지.
+- opt-in external fetch 는 `IMPRINT_ENABLE_LAZY_FETCH=1` 또는 `/memory refresh <url>` 일 때만 후보로 보이는지.
 - `/search` 가 `search_entries` 를 primary 로 읽고 `source_status` marker 를 제외하는지.
 - rollup decision 후보가 `/search` 에서 `reason/files/symbols/tests/event_range` 를 함께 보여주는지.
 - 같은 주제의 `/remember` 와 rollup 후보가 공존할 때 큰 틀 질문은 `canonical_memory`, 구현 질문은 `rollup_evidence` 를 먼저 보여주는지.
@@ -57,7 +68,7 @@ TOTAL  32 PASS / 0 FAIL
 - `retrieve_done`: query surface 수, fallback 여부와 이유, rerank gate 사유.
 - `stop.transcript_reparse`: 긴 세션에서 증가하는지.
 - `call_claude`: background 모델 호출 RTT 와 timeout 빈도.
-- `fetch_notion_url.payload`, `fetch_slack_url.payload`: 큰 payload 반복 여부.
+- `fetch_notion_url.payload`, `fetch_slack_url.payload`: opt-in external fetch 를 켠 경우 큰 payload 반복 여부.
 
 DB 관찰:
 

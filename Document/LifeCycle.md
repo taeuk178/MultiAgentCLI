@@ -7,8 +7,8 @@
 | hook | 현재 역할 |
 |---|---|
 | `SessionStart` | 스키마 적용, 프로젝트 등록, `.imprint/Guardrail.md` prepend |
-| `UserPromptSubmit` | prompt 저장, working mini-chunk 저장, context section prefill, lazy-fetch worker spawn |
-| `Stop` | assistant 응답 저장, response extract worker spawn |
+| `UserPromptSubmit` | prompt 저장, working surface 저장, context section prefill, opt-in lazy-fetch worker spawn |
+| `Stop` | assistant 응답을 `events` 에 archive |
 
 ## 구현 원칙
 
