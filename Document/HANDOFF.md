@@ -39,13 +39,16 @@ TOTAL  33 PASS / 0 FAIL
 3. **rollup entry 품질 보강**
    결정 하나에 `reason/files/symbols/tests/alternatives/event_range` 가 함께 묶이는지 확인합니다. 부족하면 prompt 와 capped `retrieval_text` surface 를 조정하고, 파일/심볼은 환각 방지를 위해 transcript 에 literal 로 등장한 문자열만 허용하는 현재 원칙을 유지합니다.
 
-4. **개념 질의 eval 세트 구성**
+4. **rollup origin 명칭 정리 검토**
+   현재 rollup 결과는 기존 schema 호환 때문에 `origin=assistant_extract` 로 저장됩니다. 동작 문제는 없지만 flat extract 를 제거한 뒤에는 `origin=rollup_extract` 가 더 정확합니다. migration 영향이 있으므로 지금은 문서에 legacy origin 으로 명시하고, 다음 schema 변경 때 rename 또는 alias 를 검토합니다.
+
+5. **개념 질의 eval 세트 구성**
    "로그인 feature 의 공유하기는 어떻게 구현됐었지" 같은 자연어 질문 20~30개를 고정합니다. `/remember` 로 선별 저장한 기억이 `/search` 에서 어떻게 회수되는지 보고, 내부 retrieval JSON trace 의 `embedding_used`, `vector_rank`, top1 score, fallback 이유를 같이 기록합니다.
 
-5. **`/search` confidence 표시 기준**
+6. **`/search` confidence 표시 기준**
    현재 confidence 는 확률이 아니라 내부 휴리스틱입니다. `/search` 는 세부 근거 detail 을 이미 출력하므로, eval 결과를 본 뒤 `evidence_strength=strong|medium|weak` 또는 calibrated numeric score 로 표현할지 결정합니다. 출력에는 숫자만 두지 말고 weak/medium 의 이유도 함께 보여줘야 합니다.
 
-6. **운영 피드백 수집**
+7. **운영 피드백 수집**
    vector setup, migration/backfill, FTS fallback, profile 로그에서 반복 실패나 지연 신호가 있는지 확인합니다. 바로 기능을 늘리기보다 trace/profile 데이터로 먼저 판단합니다.
 
 ## 확인 체크리스트

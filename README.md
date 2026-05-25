@@ -1,6 +1,6 @@
 # imprint — Claude/Codex memory plugin
 
-imprint 는 Claude Code 또는 Codex 세션에 **로컬 작업 기억**을 붙이는 plugin 입니다. 프롬프트, 응답, 사용자가 직접 저장한 메모리를 SQLite + FTS5 에 저장하고, 다음 turn 에 관련 기억을 다시 꺼내 쓸 수 있게 합니다. Slack/Notion 외부 소스는 기본 RAG 루프가 아니라 필요할 때 켜는 opt-in cache 입니다.
+imprint 는 Claude Code 또는 Codex 세션에 **로컬 작업 기억**을 붙이는 plugin 입니다. 프롬프트와 응답은 `events` 에 archive 하고, 사용자가 직접 저장한 메모리와 rollup 으로 정리한 구현 기억은 SQLite + FTS5 의 `search_entries` 에 저장합니다. 다음 turn 의 가벼운 prefill 또는 명시 `/search` 에서 관련 기억을 다시 꺼내 쓸 수 있습니다. Slack/Notion 외부 소스는 기본 RAG 루프가 아니라 필요할 때 켜는 opt-in cache 입니다.
 
 ## 설치
 
@@ -59,7 +59,7 @@ export IMPRINT_CLAUDE_MODEL=haiku
 | 영역 | 설명 |
 |---|---|
 | Memory | prompt/assistant response 는 `events` 에 archive 하고, `/remember`, rollup 결과는 redaction 후 `search_entries` 에 저장합니다. opt-in external fetch 결과도 같은 인덱스를 씁니다. |
-| Prefill | 매 prompt 전에 query context, session memory, retrieved memory, external source context 를 `[Project memory context]` 로 자동 prepend 합니다. |
+| Prefill | 매 prompt 전에 query context, session memory, retrieved memory, external source context 후보를 `[Project memory context]` 로 prepend 합니다. `search_entries` 후보는 gate/검색 결과에 따라 들어갈 수도 있고 빠질 수도 있습니다. |
 | `/memory` | 저장된 memory 를 검색, 확인, 주입, pin, 삭제, refresh 합니다. |
 | `/search` | `search_entries` 와 `search_summaries` 를 검색합니다. 저신뢰 raw events 자동 fallback 은 열지 않습니다. |
 | Setup | 선택 벡터 검색 의존성 설치, 모델 warmup, memory embedding backfill 을 한 명령으로 처리합니다. |
@@ -80,11 +80,13 @@ export IMPRINT_CLAUDE_MODEL=haiku
   -> host 모델 응답
   -> Stop hook
        events.llm_response 저장
+  -> stale session 또는 명시 rollup
+       events에서 구현 결정/맥락을 search_entries로 정리
   -> 다음 turn
-       새 persistent memory 가 prefill/search 후보가 됨
+       search_entries가 prefill 후보 또는 /search 후보가 됨
 ```
 
-`/search` 는 hook 이 자동 호출하지 않습니다. 사용자가 명시적으로 `/search` 를 호출했을 때만 풀 검색 경로를 탑니다. 기본적으로 질문을 보고 local/feature/global 범위를 자동 선택합니다.
+`/search` 는 hook 이 자동 호출하지 않습니다. 사용자가 명시적으로 `/search` 를 호출했을 때만 풀 검색 경로를 탑니다. 기본적으로 질문을 보고 local/feature/global 범위를 자동 선택합니다. 방금 끝난 구현 기억이 아직 rollup 되지 않았다면 `/search` 에 바로 보이지 않을 수 있습니다.
 
 전체 Mermaid 다이어그램과 hook 의존성은 [`flow.md`](flow.md)를 봅니다.
 
@@ -143,5 +145,5 @@ working memory 는 기본적으로 24시간 TTL 과 session 당 최신 20개 제
 - secret-shaped text 는 저장 전에 redaction 합니다. 그래도 민감정보를 일부러 memory 에 넣는 사용은 피하세요.
 - hook 은 실패해도 사용자 세션을 끊지 않고 `plugin.log` 에만 남깁니다.
 - `sentence_transformers`, `transformers`, `sqlite-vec` 는 선택 의존성입니다. 미설치 시 검색 품질은 낮아질 수 있지만 기본 동작은 유지됩니다.
-- `claude -p` 또는 `codex exec` 를 쓰는 rollup extract 는 background 로 실행되며 다음 turn 부터 반영됩니다. Slack/Notion lazy fetch 는 `IMPRINT_ENABLE_LAZY_FETCH=1` 일 때만 같은 방식으로 동작합니다.
+- `claude -p` 또는 `codex exec` 를 쓰는 rollup extract 는 background 로 실행되며, stale session 또는 명시 rollup 이후부터 prefill/search 후보가 됩니다. Slack/Notion lazy fetch 는 `IMPRINT_ENABLE_LAZY_FETCH=1` 일 때만 같은 방식으로 동작합니다.
 - 사용자의 실제 DB 는 `~/.imprint/app.sqlite` 에 저장됩니다. 테스트할 때는 `IMPRINT_HOME=/tmp/...` 로 격리하세요.

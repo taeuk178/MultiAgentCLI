@@ -15,6 +15,12 @@
 
 기록 순서는 **최신이 위**. 항목당 한 단락 안에 변경/사유/대안 폐기 근거를 묶는다.
 
+## 2026-05-25 — 0.1.4 release metadata 동기화
+
+**무엇:** 최소 RAG 경로를 rollup 중심으로 단순화한 뒤 `VERSION`, root/Codex/Claude plugin manifest, Claude marketplace, Codex marketplace ref, 설치 문서의 release 예시를 `0.1.4` 로 맞췄다. `flow.md`, `README.md`, `INSTALL.md`, `LoadMap.md`, `TestCase.md`, `HANDOFF.md`, `skills/memory/SKILL.md` 는 현재 구조 기준으로 정리했다. 핵심 설명은 `events` archive, `/remember`/rollup/source ingest 의 `search_entries` 저장, `search_entries` 기반 lightweight prefill 후보와 명시 `/search` 후보를 분리해서 서술한다.
+
+**왜:** `0.1.4` 는 기능을 늘리기보다 RAG 사용 모델을 단순화하는 release 다. Stop hook 은 더 이상 flat extract 를 만들지 않고 raw 대화를 `events` 에 보관하며, 구현 결정/이유/파일/심볼은 stale 또는 명시 rollup 뒤 `search_entries` 에 올라온다. Slack/Notion lazy fetch 는 opt-in 보조 cache 로 남겨 기본 RAG 검증과 사용자 이해를 흐리지 않게 한다.
+
 ## 2026-05-25 — 최소 RAG 기준으로 Stop flat extract 제거
 
 **무엇:** `Stop` hook 의 per-turn flat extract spawn 을 제거하고, `ingestion.py extract` 명령과 flat prompt 를 삭제했다. 이제 Stop 은 assistant 응답을 redaction 후 `events(kind=llm_response)` 에 archive 하는 역할만 맡는다. 검색 가능한 구현 기억은 `/remember`, source ingest, opt-in external fetch, 그리고 delta/rollup rich extract 가 `search_entries` 에 저장한다. 문서와 테스트는 "Stop archive only + rollup-backed implementation memory" 기준으로 갱신했다.

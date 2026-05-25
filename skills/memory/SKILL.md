@@ -130,14 +130,15 @@ List memory chunks for the current project (또는 `--project`로 다른 프로�
 Delete a chunk.
 
 ### `/memory refresh <spec>`
-Drop cached external (Slack/Notion) chunks so the next prefill re-fetches.
-Manual-only — there is no automatic refresh trigger (D24).
+Drop cached external (Slack/Notion) chunks. A single URL refresh re-fetches
+immediately; bulk source/project refresh deletes cached rows and can refill only
+when opt-in lazy fetch is enabled for a later prompt.
 
 ```bash
 # 단일 URL 갱신 (즉시 재 fetch)
 imprint memory refresh https://workspace.slack.com/archives/C123/p1234567890
 
-# 채널 단위 일괄 갱신 — DELETE 후 다음 prefill에서 키워드 매칭으로 자연 재 fetch
+# 채널 단위 일괄 갱신 — DELETE only, opt-in lazy fetch가 켜진 이후 prompt에서만 재적재 가능
 imprint memory refresh source slack
 imprint memory refresh source notion
 

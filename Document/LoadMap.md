@@ -6,7 +6,7 @@
 - 결정 사유와 폐기한 대안은 `HISTORY.md` 를 봅니다.
 - 설치와 사용자 명령은 `README.md`, 상세 hook/retrieval 플로우는 `flow.md` 를 봅니다.
 
-최종 업데이트: 2026-05-24.
+최종 업데이트: 2026-05-25.
 
 ## 방향
 
@@ -22,9 +22,9 @@ imprint 는 Claude Code/Codex hook·skill 시스템 위에서 동작하는 로�
   -> Stop hook
        response archive
   -> delta/rollup
-       stale 또는 명시 session 단위로 decision-rich search_entries extract
+       stale 또는 명시 session 단위 events를 decision-rich search_entries 로 정리
   -> 다음 turn
-       저장된 기억이 다시 prefill/search 후보가 됨
+       search_entries가 prefill/search 후보가 될 수 있음
 ```
 
 API key 없이 host 의 OAuth 구독을 그대로 사용합니다. 무거운 LLM 작업(rollup extract, summary/contradiction judge)은 background 에서 host CLI(`claude` 또는 `codex`)로 분리합니다. Slack/Notion fetch 는 opt-in 보조 경로입니다.
@@ -40,8 +40,8 @@ API key 없이 host 의 OAuth 구독을 그대로 사용합니다. 무거운 LLM
 3. **근거 있는 답변**
    모델이 기억을 느낌상 말하는 것이 아니라, 사용자가 `/memory show`, `/memory inject`, 명시 검색 trace 로 근거 chunk 를 확인할 수 있어야 합니다.
 
-4. **외부 문서 RAG**
-   Slack/Notion 같은 외부 source 를 read-only 로 가져오되, 실패·stale·cap 초과 상태를 사용자가 볼 수 있어야 합니다.
+4. **외부 문서 RAG (opt-in)**
+   Slack/Notion 같은 외부 source 는 기본 RAG 루프가 아니라 명시 opt-in cache 로 가져옵니다. 켠 경우에는 실패·stale·cap 초과 상태를 사용자가 볼 수 있어야 합니다.
 
 5. **로컬 우선 운영**
    SQLite + FTS5 기반으로 동작하고, 선택 ML 의존성은 없어도 graceful fallback 해야 합니다.
@@ -66,9 +66,9 @@ API key 없이 host 의 OAuth 구독을 그대로 사용합니다. 무거운 LLM
 
 `events` 는 raw I/O archive 입니다. redaction 후 저장하고, 짧은 backchannel turn 은 `noise=1` 로 soft flag 만 붙입니다.
 
-`search_entries` 는 기본 사용자 RAG 기억이자 명시 검색 단일 인덱스입니다. delta/rollup rich 추출, `/remember`, source document chunk 가 여기에 저장됩니다. opt-in external fetch 도 같은 테이블을 쓰지만 기본 RAG 루프에는 포함하지 않습니다. 다음 turn prefill, `/memory search/list/show/inject`, `/search` 가 이 테이블을 읽습니다.
+`search_entries` 는 기본 사용자 RAG 기억이자 명시 검색 단일 인덱스입니다. delta/rollup rich 추출, `/remember`, source document chunk 가 여기에 저장됩니다. opt-in external fetch 도 같은 테이블을 쓰지만 기본 RAG 루프에는 포함하지 않습니다. 다음 turn prefill 은 이 테이블을 가볍게 읽어 후보가 있을 때만 주입하고, `/memory search/list/show/inject`, `/search` 는 명시적으로 이 테이블을 읽습니다.
 
-`source_documents` / `search_entries` / `search_summaries` 는 retrieval 문서 RAG 계층입니다. 명시 ingestion 된 원본 문서는 `source_documents` 에 저장되고, chunking 된 검색 단위는 `search_entries(origin=source_document)` 로 들어가며, feature/document/project 요약은 `search_summaries` 로 관리합니다.
+`source_documents` / `search_entries` / `search_summaries` 는 retrieval 문서 RAG 계층입니다. PRD/ADR/file 같은 명시 ingestion 원본 문서는 `source_documents` 에 저장되고, chunking 된 검색 단위는 `search_entries(origin=source_document)` 로 들어가며, feature/document/project 요약은 `search_summaries` 로 관리합니다. opt-in Slack/Notion lazy fetch 는 보통 `source_documents` 를 만들지 않고 `search_entries(origin=external_fetch)` 로 직접 들어갑니다.
 
 working overlay 는 영구 entry 로 만들지 않습니다. 현재 세션 query surface 는 `events.metadata_json` 에 저장하고 `/search` 시점에 soft union 합니다. vector embedding 은 hook 동기 경로에서 만들지 않고, `imprint setup vector --backfill` 로 기존 `search_entries.embedding` 을 명시적으로 채웁니다.
 
@@ -123,7 +123,7 @@ retrieval v2 ingestion 은 `ingest_queue` 를 통해 후속 작업을 순차 처
 - `/search` 의 manual memory(`canonical_memory`) 와 rollup 근거(`rollup_evidence`) 역할 분리.
 - `search_entries` migration/backfill.
 - text_hash 기반 dedup.
-- 테스트 기준선: `32 PASS / 0 FAIL`.
+- 테스트 기준선: `33 PASS / 0 FAIL`.
 
 완료된 결정과 이유는 `HISTORY.md` 에 남깁니다.
 

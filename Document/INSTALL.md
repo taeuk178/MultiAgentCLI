@@ -26,20 +26,20 @@ Claude Code와 Codex 모두 같은 Git tag 버전을 기준으로 설치할 수 
 Release 전에는 repo root에서 버전을 동기화하고, main/tag/GitHub Release를 같은 버전으로 맞춥니다.
 
 ```bash
-python3 scripts/imprint/sync-plugin-version.py 0.1.3
+python3 scripts/imprint/sync-plugin-version.py 0.1.4
 git add VERSION plugin.json .claude-plugin .codex-plugin .agents/plugins/marketplace.json
-git commit -m "plugin 배포 버전 0.1.3 동기화"
+git commit -m "plugin 배포 버전 0.1.4 동기화"
 git push origin main
-git tag 0.1.3
-git push origin 0.1.3
-gh release create 0.1.3 --title "imprint 0.1.3" --notes-file /tmp/imprint-0.1.3-release.md
+git tag 0.1.4
+git push origin 0.1.4
+gh release create 0.1.4 --title "imprint 0.1.4" --notes-file /tmp/imprint-0.1.4-release.md
 ```
 
 이미 tag나 release가 있는지 확인하려면 아래 명령을 먼저 실행합니다.
 
 ```bash
-git tag --list 0.1.3
-gh release view 0.1.3
+git tag --list 0.1.4
+gh release view 0.1.4
 ```
 
 Claude Code에서는 `.claude-plugin/marketplace.json`을 읽습니다.
@@ -52,15 +52,15 @@ Claude Code에서는 `.claude-plugin/marketplace.json`을 읽습니다.
 Codex에서는 GitHub release tag를 marketplace로 추가합니다. plugin 본문은 repo root의 `plugin.json`에서 읽으므로 sparse checkout을 사용하지 않습니다.
 
 ```bash
-codex plugin marketplace add taeuk178/imprint --ref 0.1.3
+codex plugin marketplace add taeuk178/imprint --ref 0.1.4
 codex plugin marketplace upgrade
 ```
 
-이미 설치된 plugin을 `0.1.3` 기준으로 제거 후 다시 추가하려면 아래 순서로 실행합니다.
+이미 설치된 plugin을 `0.1.4` 기준으로 제거 후 다시 추가하려면 아래 순서로 실행합니다.
 
 ```bash
 codex plugin marketplace remove imprint
-codex plugin marketplace add taeuk178/imprint --ref 0.1.3
+codex plugin marketplace add taeuk178/imprint --ref 0.1.4
 codex plugin marketplace upgrade imprint
 ```
 
@@ -278,9 +278,9 @@ export IMPRINT_DISABLE_SQLITE_VEC=1
 
 - `SessionStart`: SQLite 스키마 적용, 프로젝트 등록, `.imprint/Guardrail.md` prepend.
 - `UserPromptSubmit`: user prompt redaction, `events.user_message` 저장, working surface metadata 저장, routing rule 평가, need-retrieval gate, context section prefill. `IMPRINT_ENABLE_LAZY_FETCH=1` 일 때만 external lazy-fetch worker 를 spawn 합니다.
-- `Stop`: 마지막 assistant 응답 redaction, `events.llm_response` 저장. 검색용 구현 기억은 delta/rollup 이 나중에 `events` 에서 추출합니다.
+- `Stop`: 마지막 assistant 응답 redaction, `events.llm_response` 저장. 검색용 구현 기억은 stale session 또는 명시 delta/rollup 이 나중에 `events` 에서 추출합니다.
 
-자동 hook 경로는 full `/search` 를 호출하지 않습니다. 사용자 turn 을 막지 않기 위해 동기 경로는 lightweight prefill 만 수행합니다. 이 경로는 `events.metadata_json` 의 working surface 와 `search_entries` 를 가볍게 읽습니다.
+자동 hook 경로는 full `/search` 를 호출하지 않습니다. 사용자 turn 을 막지 않기 위해 동기 경로는 lightweight prefill 만 수행합니다. 이 경로는 `events.metadata_json` 의 working surface 와 `search_entries` 를 가볍게 읽고, 후보가 있을 때만 `[Project memory context]` 에 넣습니다.
 
 ### 명시 search 경로
 
@@ -295,7 +295,7 @@ export IMPRINT_DISABLE_SQLITE_VEC=1
 ### 비동기 작업
 
 - opt-in lazy-fetch: `IMPRINT_ENABLE_LAZY_FETCH=1` 일 때 background model이 prompt 키워드/URL을 분석하고 Slack/Notion MCP를 read-only fetch.
-- rollup extract: background model이 여러 turn 의 `events` 에서 decision/code_context/summary/note 구현 기억을 추출.
+- rollup extract: background model이 session 단위 `events` 에서 decision/code_context/summary/note 구현 기억을 추출해 `search_entries` 에 저장.
 - retrieval ingest queue: 명시 문서 ingestion 뒤 `summary_regen`, `contradiction_scan`, `ner_extract` 를 처리.
 
 `/remember` 와 rollup 의 직접 `search_entries` 저장 경로는 현재 ingest queue 를 거치지 않습니다.

@@ -27,13 +27,13 @@
 | Redaction rule | `redact-rules.default.json`, `redact_text` | event, extract text, rollup metadata, retrieval surface 에 민감정보가 남지 않도록 저장 전 정리합니다. |
 | RRF + boost/penalty | `retrieve.py`, `routing.py` | FTS/vector/summary/working 후보를 합치고 entity, recency, contradiction 신호로 정렬합니다. |
 
-현재 핵심 검색 경로는 **FTS5 가 기본**, **vector 가 선택 보강**, **rollup 이 events 에서 검색용 implementation memory 를 만드는 후처리**입니다. raw `events` 는 archive/provenance 로 보존하지만 `/search` primary index 로 직접 쓰지 않습니다.
+현재 핵심 검색 경로는 **FTS5 가 기본**, **vector 가 선택 보강**, **rollup 이 session 단위 `events` 에서 검색용 implementation memory 를 만드는 후처리**입니다. raw `events` 는 archive/provenance 로 보존하지만 `/search` primary index 로 직접 쓰지 않습니다.
 
 ## Alternate Mermaid Views
 
 ### 일반 LLM 사용 Sequence
 
-평소처럼 LLM 과 대화하거나 코딩 작업을 맡길 때의 경로입니다. 이 경로는 기록과 가벼운 prefill 을 수행하고, 다음 turn prefill 또는 명시 `/search` 에 쓸 구현 기억을 background 로 축적합니다.
+평소처럼 LLM 과 대화하거나 코딩 작업을 맡길 때의 경로입니다. 이 경로는 raw 대화를 `events` 에 기록하고, 가벼운 prefill 만 수행합니다. 구현 기억은 session 이 stale 이거나 사용자가 명시 rollup 을 실행했을 때 background 에서 `search_entries` 로 정리됩니다.
 
 ```mermaid
 %%{init: {'flowchart': {'useMaxWidth': true, 'rankSpacing': 44, 'nodeSpacing': 34}, 'theme': 'default'}}%%
@@ -51,15 +51,18 @@ flowchart TB
 
     subgraph ASYNC["Background workers"]
       direction TB
+      EV["events<br/>session transcript"]
       ROLL["Delta rollup<br/>decision / code_context / summary / note"]
     end
 
     SEARCH_ENTRIES["search_entries<br/>persistent retrieval index"]
 
     U --> UPS --> SURF --> PREFILL --> MODEL --> STOP
-    SURF -.stale or explicit.-> ROLL
+    UPS --> EV
+    STOP --> EV
+    EV -.stale session<br/>or explicit rollup.-> ROLL
     ROLL --> SEARCH_ENTRIES
-    SEARCH_ENTRIES -.prefill candidate<br/>next turn.-> PREFILL
+    SEARCH_ENTRIES -.may appear in lightweight prefill<br/>next turn.-> PREFILL
     SEARCH_ENTRIES -.explicit search candidate.-> SEARCH["/search"]
 ```
 
@@ -98,8 +101,8 @@ erDiagram
     PROJECTS ||--o{ EXTRACT_STATE : tracks
     PROJECTS ||--o{ ENTITIES : has
     PROJECTS ||--o{ INGEST_QUEUE : schedules
-    SOURCE_DOCUMENTS ||--o{ SEARCH_ENTRIES : split_into
-    EVENTS ||--o{ SEARCH_ENTRIES : extracted_into
+    SOURCE_DOCUMENTS ||--o{ SEARCH_ENTRIES : chunked_into
+    EVENTS ||--o{ SEARCH_ENTRIES : rollup_extracts_into
     SEARCH_SUMMARIES ||--o{ SUMMARY_LINKS : has
     SEARCH_ENTRIES ||--o{ SUMMARY_LINKS : grounds
     SEARCH_ENTRIES ||--o{ ENTRY_ENTITIES : mentions
@@ -145,7 +148,7 @@ erDiagram
 | `projects` | project root 단위 scope | 모든 row 는 project_id 로 분리됩니다. |
 | `events` | redacted user/assistant raw archive | working surface 와 session_id 도 `metadata_json` 에 저장합니다. |
 | `extract_state` | rollup cursor | session 별로 어디까지 rich extract 했는지 기록합니다. |
-| `source_documents` | Slack/Notion/PRD/ADR/file 원본 | synthetic memory 문서는 넣지 않습니다. |
+| `source_documents` | PRD/ADR/file/명시 ingest 원본 | synthetic memory 문서는 넣지 않습니다. opt-in Slack/Notion lazy fetch 는 보통 이 테이블이 아니라 `search_entries(origin=external_fetch)` 로 들어갑니다. |
 | `search_entries` | 단일 검색 entry 인덱스 | `/remember`, rollup extract, source chunk 가 들어옵니다. opt-in external fetch 도 같은 인덱스를 사용합니다. |
 | `search_summaries` | feature/document/project 요약 | routed `/search` 에서 큰 범위 질문을 받쳐줍니다. |
 | `summary_links` | summary 와 근거 entry 연결 | feature/global 결과의 grounding 에 사용합니다. |
@@ -162,9 +165,9 @@ erDiagram
 | assistant response | `events(kind=llm_response)` | rollup provenance |
 | 현재 turn query surface | `events.metadata_json` | 다음 prefill, `/search` working overlay |
 | `/remember` | `search_entries(origin=manual_remember)` | `/search`, `/memory`, prefill |
-| delta/rollup rich extract | `search_entries(origin=assistant_extract)` | 다음 turn prefill 후보, `/search` decision/code_context/summary/note 검색 |
+| delta/rollup rich extract | `search_entries(origin=assistant_extract)` | 다음 turn prefill 후보가 될 수 있고, `/search` 에서는 decision/code_context/summary/note 근거로 검색됩니다. `assistant_extract` 는 현재 schema 의 legacy origin 이름입니다. |
 | opt-in Slack/Notion fetch | `search_entries(origin=external_fetch)` | external source context |
-| PRD/ADR/file ingest | `source_documents` + `search_entries(origin=source_document)` | source-grounded retrieval |
+| PRD/ADR/file/명시 source ingest | `source_documents` + `search_entries(origin=source_document)` | source-grounded retrieval |
 
 ## `/search` 동작
 
@@ -197,7 +200,7 @@ erDiagram
 |---|---|---|
 | 목적 | 지금 질문에 답하면서 가볍게 기억을 보강 | 저장된 구현 맥락과 근거를 직접 회수 |
 | 동기 비용 | 낮게 유지 | retrieval 비용 허용 |
-| 읽는 데이터 | working surface + 제한된 prefill | `search_entries`, `search_summaries`, working overlay |
+| 읽는 데이터 | working surface + `search_entries` 기반 제한 prefill | `search_entries`, `search_summaries`, working overlay |
 | 출력 | 일반 답변 | context block 또는 JSON trace |
 | raw events fallback | 없음 | 없음 |
 
@@ -242,7 +245,7 @@ imprint migrate search-entries
 | 실패 | 결과 |
 |---|---|
 | `sqlite3` 없음 | 저장과 검색 누락, hook 은 진행 |
-| `python3` 없음 | primary prefill/extract 누락 |
+| `python3` 없음 | primary prefill/rollup 누락 |
 | background model CLI 없음 | background model 경로 누락 |
 | Slack/Notion MCP 없음 | opt-in 외부 fetch 0건, 기존 memory 는 유지 |
 | 선택 ML 의존성 없음 | FTS-only / rule fallback |
