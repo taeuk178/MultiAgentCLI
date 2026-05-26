@@ -15,6 +15,12 @@
 
 기록 순서는 **최신이 위**. 항목당 한 단락 안에 변경/사유/대안 폐기 근거를 묶는다.
 
+## 2026-05-26 — 0.1.5 release metadata 동기화
+
+**무엇:** rollup 자동 embedding 과 Codex compact current-session rollup 을 `main` 에 병합한 뒤 release metadata 를 `0.1.5` 로 올렸다. `VERSION`, root/Codex/Claude plugin manifest, Claude marketplace, Codex marketplace ref, 설치 문서의 release/tag 예시를 같은 버전으로 맞췄다.
+
+**왜:** `0.1.5` 는 Codex App 의 long-lived thread/compact UX 와 vector 설치 후 새 rollup entry freshness 를 맞추는 release 다. GitHub tag, GitHub Release, Codex marketplace ref, Claude plugin metadata 가 엇갈리면 host 별 설치 경로가 서로 다른 rollup 정책을 받게 되므로 release 직전에 한 번에 동기화한다.
+
 ## 2026-05-26 — Codex compact 를 current session rollup boundary 로 사용
 
 **무엇:** Claude Code 와 Codex 의 session UX 차이를 반영해 `SessionStart` rollup 정책을 host 별로 나눴다. 기존 stale session rollup 은 유지하되, Codex 에서 `compact` 로 시작된 경우에는 `IMPRINT_CODEX_ROLLUP_ON_COMPACT` 가 켜져 있고 현재 session 의 마지막 event 가 `IMPRINT_CODEX_ROLLUP_CURRENT_MIN_AGE_SECONDS` 이상 idle 이면 current session 도 1 batch rollup 한다. 이를 위해 `rollup-session-if-idle` CLI 와 `rollup.sh --session-id-if-idle` 를 추가했다. Claude Code 에서는 compact 라도 기존처럼 current session 을 제외한다.

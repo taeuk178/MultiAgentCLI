@@ -9,7 +9,7 @@
       "source": {
         "source": "url",
         "url": "https://github.com/taeuk178/imprint.git",
-        "ref": "0.1.4"
+        "ref": "0.1.5"
       },
       "policy": {
         "installation": "AVAILABLE",
