@@ -4,7 +4,7 @@
 - 다음 세션에서 바로 볼 실행 항목과 운영 체크만 남깁니다.
 - 큰 그림은 `LoadMap.md`, 결정 사유는 `HISTORY.md`, 상세 흐름과 테이블 역할은 `flow.md` 를 봅니다.
 
-최종 업데이트: 2026-05-25.
+최종 업데이트: 2026-05-26.
 
 ## 현재 기준선
 
@@ -16,14 +16,15 @@ RAG 기본 루프와 1차 운영 관측성은 적용 완료된 상태입니다.
 - Stop hook 은 assistant 응답을 `events` 에 archive 만 합니다. per-turn flat extract 는 최소 RAG 검증을 위해 제거했고, 검색용 구현 기억은 delta/rollup 이 담당합니다.
 - 구현 중 여러 turn 에 걸친 decision/code_context/summary/note 는 delta/rollup 으로 `search_entries` 에 정제 저장되고, `/search` 는 `reason/files/symbols/tests/event_range` detail 을 출력합니다.
 - `/search` 는 같은 주제의 `/remember` 와 rollup row 가 함께 있을 때 역할을 분리합니다. 큰 틀/정책/요약 질문은 `manual_remember` 를 `canonical_memory` 로 앞세우고, 왜/어떻게/구현/파일/테스트 질문은 rollup row 를 `rollup_evidence` 로 앞세웁니다.
-- vector 검색은 `imprint setup vector --backfill` 로 `search_entries.embedding` 을 채운 뒤 참여합니다.
+- Claude Code 는 stale session 중심으로 rollup 하고, Codex App 은 compact 때 current session 이 idle 조건을 만족하면 1 batch guarded rollup 을 추가합니다.
+- vector 검색은 기존 entry 의 경우 `imprint setup vector --backfill` 로 `search_entries.embedding` 을 채운 뒤 참여합니다. 새 rollup entry 는 vector 설치 환경에서 자동 embedding 됩니다.
 - 선택 ML 의존성이 없어도 FTS5/LIKE fallback 으로 동작해야 합니다.
 
 최근 검증 기준:
 
 ```text
 python3 scripts/imprint/tests/run_tests.py
-TOTAL  33 PASS / 0 FAIL
+TOTAL  35 PASS / 0 FAIL
 ```
 
 테스트는 임시 `IMPRINT_HOME=/tmp/...` 에서 실행합니다. 사용자 홈 `~/.imprint` 직접 수정은 명시 동의 전까지 하지 않습니다.
@@ -34,7 +35,7 @@ TOTAL  33 PASS / 0 FAIL
    실제 사용 시나리오에 가까운 multi-turn fixture 를 10~20개 고정합니다. 예: "처음 A안 → 사용자 반박 → B안 결정 → 파일 수정 → 테스트 통과" 흐름을 만들고, `/search "왜 B로 바꿨지?"` 가 `decision + reason + files/symbols + tests` 를 회수하는지 봅니다. flat extract 를 제거했으므로 eval 은 반드시 rollup 실행 후의 `search_entries` 를 기준으로 합니다.
 
 2. **rollup freshness 운영 기준**
-   현재 rollup 은 stale session 또는 명시 명령 중심입니다. 구현 직후 바로 검색해야 하는 요구가 반복되면 `rollup.sh --latest --all` 를 UX 상 어디에 노출할지, 또는 긴 세션용 K-turn 안전밸브를 둘지 결정합니다. 단, per-turn extract 를 되살리기보다 rollup trigger/cadence 를 조정하는 방향을 우선합니다.
+   현재 rollup 은 Claude Code 에서는 stale session 또는 명시 명령 중심이고, Codex 에서는 compact current-session guarded rollup 을 추가합니다. 구현 직후 바로 검색해야 하는 요구가 반복되면 `rollup.sh --latest --all` 를 UX 상 어디에 노출할지, 또는 긴 세션용 K-turn 안전밸브를 둘지 결정합니다. 단, per-turn extract 를 되살리기보다 rollup trigger/cadence 를 조정하는 방향을 우선합니다.
 
 3. **rollup entry 품질 보강**
    결정 하나에 `reason/files/symbols/tests/alternatives/event_range` 가 함께 묶이는지 확인합니다. 부족하면 prompt 와 capped `retrieval_text` surface 를 조정하고, 파일/심볼은 환각 방지를 위해 transcript 에 literal 로 등장한 문자열만 허용하는 현재 원칙을 유지합니다.
@@ -54,11 +55,13 @@ TOTAL  33 PASS / 0 FAIL
 ## 확인 체크리스트
 
 - 새 세션 시작과 compact 직후 `SessionStart` 가 스키마 적용과 `Guardrail.md` prepend 를 조용히 수행하는지.
+- Codex compact 에서는 current session guarded rollup 이 idle 조건에서만 실행되고, Claude Code compact 에서는 current session 이 계속 제외되는지.
 - 질문 직후 `[Project memory context]` 가 query/session/retrieved/external section 으로 나뉘는지.
 - Stop 이후 `events.llm_response` 에 session_id metadata 가 저장되고, 별도 flat search entry 가 생기지 않는지.
 - opt-in external fetch 는 `IMPRINT_ENABLE_LAZY_FETCH=1` 또는 `/memory refresh <url>` 일 때만 후보로 보이는지.
 - `/search` 가 `search_entries` 를 primary 로 읽고 `source_status` marker 를 제외하는지.
 - rollup decision 후보가 `/search` 에서 `reason/files/symbols/tests/event_range` 를 함께 보여주는지.
+- vector 설치 환경에서 새 rollup entry 가 자동 embedding 되고, 기존 entry 는 `setup vector --backfill` 로 채워지는지.
 - 같은 주제의 `/remember` 와 rollup 후보가 공존할 때 큰 틀 질문은 `canonical_memory`, 구현 질문은 `rollup_evidence` 를 먼저 보여주는지.
 - `imprint migrate search-entries` 후 과거 `memory_chunks` 가 `search_entries` 후보로 회수되는지.
 - `imprint setup vector --status/--install/--warmup/--backfill` 이 한국어 진행 로그와 실패 힌트를 화면과 `plugin.log` 양쪽에 남기는지.

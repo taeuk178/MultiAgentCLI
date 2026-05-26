@@ -13,7 +13,7 @@ python3 scripts/imprint/tests/run_tests.py
 현재 기준선:
 
 ```text
-TOTAL  33 PASS / 0 FAIL
+TOTAL  35 PASS / 0 FAIL
 ```
 
 ## 현재 커버리지
@@ -27,7 +27,8 @@ TOTAL  33 PASS / 0 FAIL
 - `/search`, `/remember`, `setup vector` dispatcher
 - retrieval text override, decision-rich extract
 - Stop archive-only session metadata, delta/rollup cursor, stale session 보완
-- rollup write-lock 안전성, `/search` rollup detail 출력
+- rollup write-lock 안전성, transaction 밖 자동 embedding, `/search` rollup detail 출력
+- Codex compact current-session guarded rollup 과 Claude Code current-session 제외 정책
 - lazy fetch opt-in
 - legacy DB migration
 - source status, noise flag, profile, dedup/provenance trace
