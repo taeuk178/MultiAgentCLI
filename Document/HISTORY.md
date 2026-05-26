@@ -15,6 +15,18 @@
 
 기록 순서는 **최신이 위**. 항목당 한 단락 안에 변경/사유/대안 폐기 근거를 묶는다.
 
+## 2026-05-26 — Codex compact 를 current session rollup boundary 로 사용
+
+**무엇:** Claude Code 와 Codex 의 session UX 차이를 반영해 `SessionStart` rollup 정책을 host 별로 나눴다. 기존 stale session rollup 은 유지하되, Codex 에서 `compact` 로 시작된 경우에는 `IMPRINT_CODEX_ROLLUP_ON_COMPACT` 가 켜져 있고 현재 session 의 마지막 event 가 `IMPRINT_CODEX_ROLLUP_CURRENT_MIN_AGE_SECONDS` 이상 idle 이면 current session 도 1 batch rollup 한다. 이를 위해 `rollup-session-if-idle` CLI 와 `rollup.sh --session-id-if-idle` 를 추가했다. Claude Code 에서는 compact 라도 기존처럼 current session 을 제외한다.
+
+**왜:** Codex App 은 하나의 thread 를 오래 재사용하고 자동 compact 뒤에도 같은 thread 를 이어가는 UX라, stale session 만 처리하면 가장 중요한 현재 thread 가 오래도록 rich memory 로 정리되지 않을 수 있다. 반대로 Claude Code 는 session 경계가 상대적으로 명확해 live session 을 자동 확정하면 미완성 결정을 memory 로 굳힐 위험이 크다. 따라서 compact 를 Codex 전용 정리 boundary 로 삼되, idle age 와 batch limit 으로 premature rollup 을 줄인다.
+
+## 2026-05-26 — rollup 청크 자동 임베딩을 lock 밖 배치 처리로 추가
+
+**무엇:** vector 런타임이 설치된 환경에서 rollup 이 새로 만든 `search_entries` 청크를 자동 embedding 하도록 했다. `insert_extracted_chunk` 의 redaction, metadata, `retrieval_text` 계산을 prepared payload 단계로 분리하고, `rollup_session_once` 는 `BEGIN IMMEDIATE` 전에 payload 를 만들고 `embed_texts` 로 배치 임베딩한 뒤 transaction 안에서는 빠른 dedup/INSERT 만 수행한다. `IMPRINT_ROLLUP_EMBED=0` 으로 rollup 자동 임베딩만 끌 수 있고, 기존 전역 `IMPRINT_DISABLE_EMBEDDING=1` 도 그대로 상위 kill switch 로 동작한다.
+
+**왜:** `setup vector --backfill` 이후 새 rollup 청크가 다음 수동 backfill 전까지 `embedding=NULL` 로 남으면 vector opt-in 사용자가 기대하는 `/search` hybrid 후보 freshness 가 깨진다. 단순히 `generate_embedding=True` 를 transaction 안 insert 경로에 넣는 대안은 BGE-M3 `model.encode` 동안 SQLite writer lock 을 오래 잡아 hook/event write 와 충돌할 수 있어 폐기했다. 과거 NULL 청크 전수 치유는 첫 실행 스파이크와 cap/cursor 정책이 필요하므로 이번 범위에서 제외하고, 기존 명시 backfill 에 맡긴다.
+
 ## 2026-05-25 — 0.1.4 release metadata 동기화
 
 **무엇:** 최소 RAG 경로를 rollup 중심으로 단순화한 뒤 `VERSION`, root/Codex/Claude plugin manifest, Claude marketplace, Codex marketplace ref, 설치 문서의 release 예시를 `0.1.4` 로 맞췄다. `flow.md`, `README.md`, `INSTALL.md`, `LoadMap.md`, `TestCase.md`, `HANDOFF.md`, `skills/memory/SKILL.md` 는 현재 구조 기준으로 정리했다. 핵심 설명은 `events` archive, `/remember`/rollup/source ingest 의 `search_entries` 저장, `search_entries` 기반 lightweight prefill 후보와 명시 `/search` 후보를 분리해서 서술한다.

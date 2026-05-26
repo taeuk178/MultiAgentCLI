@@ -30,6 +30,27 @@ try:
 except Exception:
     pass
 ' 2>>"$IMPRINT_LOG" || true)
+SESSION_REASON=$(printf '%s' "$INPUT" | python3 -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    data = {}
+if not isinstance(data, dict):
+    data = {}
+keys = ("reason", "trigger", "matcher", "event", "hook_event_name", "hookEventName", "session_start_reason")
+values = [str(data.get(k) or "") for k in keys]
+if any("compact" in v.lower() for v in values):
+    print("compact")
+elif any("resume" in v.lower() for v in values):
+    print("resume")
+elif any("clear" in v.lower() for v in values):
+    print("clear")
+elif any("startup" in v.lower() for v in values):
+    print("startup")
+else:
+    print("")
+' 2>>"$IMPRINT_LOG" || true)
 
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 DEFAULTS_DIR="$PLUGIN_ROOT/prompts/defaults"
@@ -72,8 +93,21 @@ if command -v sqlite3 >/dev/null 2>&1; then
       ROLLUP_ARGS+=(--exclude-session "$SESSION_ID")
     fi
     ROLLUP_ARGS+=(--max-sessions "${IMPRINT_ROLLUP_MAX_STALE_SESSIONS:-3}")
-    profile_emit "session.rollup.spawn" "project=$PID exclude_session=$SESSION_ID"
+    CURRENT_ROLLUP_ARGS=()
+    if [[ "$IMPRINT_HOST" == "codex" \
+      && "$SESSION_REASON" == "compact" \
+      && "${IMPRINT_CODEX_ROLLUP_ON_COMPACT:-1}" != "0" ]]; then
+      CURRENT_ROLLUP_ARGS=(
+        --session-id-if-idle "$SESSION_ID"
+        --min-age-seconds "${IMPRINT_CODEX_ROLLUP_CURRENT_MIN_AGE_SECONDS:-60}"
+        --json
+      )
+    fi
+    profile_emit "session.rollup.spawn" "project=$PID host=$IMPRINT_HOST reason=$SESSION_REASON exclude_session=$SESSION_ID current_compact=$([[ ${#CURRENT_ROLLUP_ARGS[@]} -gt 0 ]] && echo 1 || echo 0)"
     ( bash "$SCRIPT_DIR/rollup.sh" "${ROLLUP_ARGS[@]}" 2>>"$IMPRINT_LOG" || true
+      if [[ ${#CURRENT_ROLLUP_ARGS[@]} -gt 0 ]]; then
+        bash "$SCRIPT_DIR/rollup.sh" "${CURRENT_ROLLUP_ARGS[@]}" 2>>"$IMPRINT_LOG" || true
+      fi
     ) </dev/null >/dev/null 2>&1 &
     disown 2>/dev/null || true
   fi

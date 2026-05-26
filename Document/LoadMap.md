@@ -56,7 +56,7 @@ API key 없이 host 의 OAuth 구독을 그대로 사용합니다. 무거운 LLM
 
 ### Hook 계층
 
-- `SessionStart`: 스키마 적용, 프로젝트 row upsert, `.imprint/Guardrail.md` prepend. `startup|resume|clear|compact` matcher 로 세션 시작과 compact 이후 모두 Guardrail 을 다시 주입합니다. 현재 session_id 를 알면 현재 세션을 제외한 stale session rollup 을 background 로 보완합니다.
+- `SessionStart`: 스키마 적용, 프로젝트 row upsert, `.imprint/Guardrail.md` prepend. `startup|resume|clear|compact` matcher 로 세션 시작과 compact 이후 모두 Guardrail 을 다시 주입합니다. 기본적으로 현재 session_id 를 제외한 stale session rollup 을 background 로 보완합니다. Codex App 에서는 long-lived thread 를 고려해 `compact` 때 current session 이 idle 조건을 만족하면 1 batch guarded rollup 을 추가로 수행합니다. Claude Code 는 compact 라도 current session 을 제외합니다.
 - `UserPromptSubmit`: prompt redaction, `events.user_message` 저장, working surface metadata 저장, routing rule 평가, need-retrieval gate, context section prefill. `IMPRINT_ENABLE_LAZY_FETCH=1` 일 때만 external lazy-fetch worker 를 spawn 합니다.
 - `Stop`: assistant 응답 redaction, `events.llm_response` archive 및 session_id metadata 저장. 검색용 구현 기억은 rollup 이 `events` 에서 추출합니다.
 
@@ -70,7 +70,7 @@ API key 없이 host 의 OAuth 구독을 그대로 사용합니다. 무거운 LLM
 
 `source_documents` / `search_entries` / `search_summaries` 는 retrieval 문서 RAG 계층입니다. PRD/ADR/file 같은 명시 ingestion 원본 문서는 `source_documents` 에 저장되고, chunking 된 검색 단위는 `search_entries(origin=source_document)` 로 들어가며, feature/document/project 요약은 `search_summaries` 로 관리합니다. opt-in Slack/Notion lazy fetch 는 보통 `source_documents` 를 만들지 않고 `search_entries(origin=external_fetch)` 로 직접 들어갑니다.
 
-working overlay 는 영구 entry 로 만들지 않습니다. 현재 세션 query surface 는 `events.metadata_json` 에 저장하고 `/search` 시점에 soft union 합니다. vector embedding 은 hook 동기 경로에서 만들지 않고, `imprint setup vector --backfill` 로 기존 `search_entries.embedding` 을 명시적으로 채웁니다.
+working overlay 는 영구 entry 로 만들지 않습니다. 현재 세션 query surface 는 `events.metadata_json` 에 저장하고 `/search` 시점에 soft union 합니다. 기존 entry 의 vector embedding 은 `imprint setup vector --backfill` 로 명시적으로 채웁니다. 새 rollup entry 는 vector 런타임이 설치되어 있으면 transaction 밖에서 배치 embedding 한 뒤 저장하므로 hook 동기 경로를 막지 않습니다.
 
 ### Retrieval 계층
 
@@ -132,8 +132,8 @@ retrieval v2 ingestion 은 `ingest_queue` 를 통해 후속 작업을 순차 처
 persistent memory 와 의미(벡터) 검색이 연결돼 있지 않았던 문제가 제품 핵심 목적의 직접 병목이었습니다. 2026-05-24 에 bridge 를 폐기하고 persistent memory, rollup extract, source document chunk 를 `search_entries` 단일 인덱스로 통합했습니다.
 
 - `search_entries` 에 embedding 컬럼이 있으므로 bridge 복제 없이 같은 row 가 FTS/vector 양쪽에 참여할 수 있습니다.
-- hook 동기 경로에서는 embedding 을 만들지 않습니다. 선택 ML cold-load 가 사용자 turn 을 느리게 만들 수 있기 때문입니다.
-- 기존 DB는 `imprint migrate search-entries` 로 명시 migration 하고, 벡터 검색 검증은 `imprint setup vector --backfill` 로 기존 entry embedding 을 채운 뒤 진행합니다.
+- hook 동기 경로에서는 embedding 을 만들지 않습니다. 선택 ML cold-load 가 사용자 turn 을 느리게 만들 수 있기 때문입니다. 새 rollup entry 의 embedding 은 background rollup 프로세스에서 write transaction 밖 배치 처리로만 생성합니다.
+- 기존 DB는 `imprint migrate search-entries` 로 명시 migration 하고, 벡터 검색 검증은 `imprint setup vector --backfill` 로 기존 entry embedding 을 채운 뒤 진행합니다. 이후 새 rollup entry 는 vector 설치 환경에서 자동 embedding 됩니다.
 - 아직 summary/entity/contradiction pipeline 자동 연결은 직접 저장 entry 전체에 강제하지 않습니다. 검색 품질과 운영 비용을 먼저 측정합니다.
 
 ## 목표별 현재 일치도
@@ -155,7 +155,7 @@ persistent memory 와 의미(벡터) 검색이 연결돼 있지 않았던 문제
 
 - Rollup extract, `/remember`, source document ingest 는 `search_entries` 에 직접 저장됩니다. opt-in external fetch 도 같은 저장 경로를 재사용합니다.
 - 기존 사용자 DB는 `imprint migrate search-entries` 로 명시 migration 합니다.
-- `imprint setup vector --backfill` 은 현재 프로젝트의 `search_entries.embedding` 을 채웁니다.
+- `imprint setup vector --backfill` 은 현재 프로젝트의 기존 `search_entries.embedding` 을 채웁니다. 새 rollup entry 는 vector 설치 환경에서 자동 embedding 됩니다.
 - 신규/기존 memory 가 명시 검색 경로에서 `search_entries` 후보로 보이는 것은 테스트로 고정했습니다. 다음은 embedding 가용 시 vector path 품질 검증입니다.
 - rollup decision entry 의 `reason/files/symbols/tests/event_range` 가 `/search` 출력에 보이는 것은 테스트로 고정했습니다.
 - 같은 주제의 `/remember` 와 rollup row 가 공존할 때 질문 의도별로 canonical/evidence 우선순위가 바뀌는 것은 테스트로 고정했습니다.
@@ -277,7 +277,7 @@ opt-in Slack/Notion fetch 를 켠 경우, fetch 실패, stale, URL cap 초과를
 - LLM judge fallback.
 - optional requirements 로 분리.
 - 단, 미설치 시 의미(벡터) 검색이 꺼져 "개념·자연어 질문으로 맥락 상기" 라는 핵심 목적이 키워드 수준으로 떨어집니다. graceful fallback 이 곧 "기능 동일" 은 아니라는 점을 사용자에게 명확히 알립니다(2026-05-21 실측에서 사용자 오해 확인).
-- persistent memory 는 `search_entries` 후보가 되지만, embedding BLOB 이 없으면 여전히 FTS 중심입니다. `imprint setup vector --backfill` 로 embedding 을 채운 뒤에야 vector path 에 참여합니다.
+- persistent memory 는 `search_entries` 후보가 되지만, embedding BLOB 이 없으면 여전히 FTS 중심입니다. 기존 entry 는 `imprint setup vector --backfill` 로 embedding 을 채운 뒤 vector path 에 참여하고, 새 rollup entry 는 vector 설치 환경에서 자동 embedding 됩니다.
 
 ## 영구 deferred
 

@@ -238,7 +238,7 @@ imprint setup vector --status
 - `transformers`: contradiction NLI 판정에 사용합니다. 없으면 Claude/LLM judge 또는 rule fallback 으로 내려갑니다.
 - `sqlite-vec`: SQLite vector extension 로드 후보입니다. 없으면 현재 `/search` 는 embedding BLOB 을 Python cosine 으로 순회하는 fallback 구현을 사용합니다.
 
-`search_entries` 에는 embedding 컬럼이 있습니다. 기존 entry 의 벡터 검색까지 켜려면 선택 ML 설치 후 setup dispatcher 의 `--backfill` 을 사용하세요. hook 동기 경로에서는 모델 cold-load 를 피하기 위해 새 entry 저장 시점의 embedding 생성을 기본으로 켜지 않습니다.
+`search_entries` 에는 embedding 컬럼이 있습니다. 기존 entry 의 벡터 검색까지 켜려면 선택 ML 설치 후 setup dispatcher 의 `--backfill` 을 사용하세요. 새 rollup entry 는 vector 런타임이 설치되어 있으면 background rollup 안에서 자동 embedding 됩니다. 이때 cold-load 와 encode 는 SQLite write transaction 밖에서 배치 처리하므로 hook 동기 경로를 막지 않습니다.
 
 설치하면 import 가능 여부를 보고 해당 경로에서 자동 활성화됩니다.
 
@@ -276,7 +276,7 @@ export IMPRINT_DISABLE_SQLITE_VEC=1
 
 ### 자동 hook 경로
 
-- `SessionStart`: SQLite 스키마 적용, 프로젝트 등록, `.imprint/Guardrail.md` prepend.
+- `SessionStart`: SQLite 스키마 적용, 프로젝트 등록, `.imprint/Guardrail.md` prepend. Claude Code 는 current session 을 제외한 stale rollup 을 background 로 보완합니다. Codex App 은 compact 때 current session 이 idle 조건을 만족하면 guarded rollup 을 1 batch 추가 수행합니다.
 - `UserPromptSubmit`: user prompt redaction, `events.user_message` 저장, working surface metadata 저장, routing rule 평가, need-retrieval gate, context section prefill. `IMPRINT_ENABLE_LAZY_FETCH=1` 일 때만 external lazy-fetch worker 를 spawn 합니다.
 - `Stop`: 마지막 assistant 응답 redaction, `events.llm_response` 저장. 검색용 구현 기억은 stale session 또는 명시 delta/rollup 이 나중에 `events` 에서 추출합니다.
 
@@ -295,7 +295,7 @@ export IMPRINT_DISABLE_SQLITE_VEC=1
 ### 비동기 작업
 
 - opt-in lazy-fetch: `IMPRINT_ENABLE_LAZY_FETCH=1` 일 때 background model이 prompt 키워드/URL을 분석하고 Slack/Notion MCP를 read-only fetch.
-- rollup extract: background model이 session 단위 `events` 에서 decision/code_context/summary/note 구현 기억을 추출해 `search_entries` 에 저장.
+- rollup extract: background model이 session 단위 `events` 에서 decision/code_context/summary/note 구현 기억을 추출해 `search_entries` 에 저장. vector 설치 환경에서는 새 rollup entry embedding 도 함께 생성합니다.
 - retrieval ingest queue: 명시 문서 ingestion 뒤 `summary_regen`, `contradiction_scan`, `ner_extract` 를 처리.
 
 `/remember` 와 rollup 의 직접 `search_entries` 저장 경로는 현재 ingest queue 를 거치지 않습니다.

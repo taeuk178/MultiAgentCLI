@@ -8,7 +8,7 @@
 - 무거운 작업은 background 로 보냅니다. rollup extract 는 동기 응답 경로를 막지 않습니다.
 - raw 대화 전체를 `/search` 에 자동 fallback 하지 않습니다. `/search` 는 정제된 `search_entries`, `search_summaries`, 현재 세션 working surface 만 사용합니다.
 - 영구 기억은 `search_entries` 로 모읍니다. `/remember`, rollup extract, source document ingest 가 같은 검색 인덱스를 씁니다.
-- vector 검색은 선택 기능입니다. `imprint setup vector --backfill` 로 `search_entries.embedding` 을 채운 뒤에만 semantic lane 이 참여합니다.
+- vector 검색은 선택 기능입니다. 기존 entry 는 `imprint setup vector --backfill` 로 `search_entries.embedding` 을 채운 뒤 semantic lane 에 참여합니다. 새 rollup entry 는 vector 설치 환경에서 자동 embedding 됩니다.
 - Slack/Notion fetch 는 기본 RAG 루프가 아니라 opt-in external source cache 입니다. 자동 lazy fetch 는 `IMPRINT_ENABLE_LAZY_FETCH=1` 일 때만 켭니다.
 
 ## 사용 기술과 역할
@@ -33,7 +33,7 @@
 
 ### 일반 LLM 사용 Sequence
 
-평소처럼 LLM 과 대화하거나 코딩 작업을 맡길 때의 경로입니다. 이 경로는 raw 대화를 `events` 에 기록하고, 가벼운 prefill 만 수행합니다. 구현 기억은 session 이 stale 이거나 사용자가 명시 rollup 을 실행했을 때 background 에서 `search_entries` 로 정리됩니다.
+평소처럼 LLM 과 대화하거나 코딩 작업을 맡길 때의 경로입니다. 이 경로는 raw 대화를 `events` 에 기록하고, 가벼운 prefill 만 수행합니다. 구현 기억은 session 이 stale 이거나 사용자가 명시 rollup 을 실행했을 때 background 에서 `search_entries` 로 정리됩니다. Codex App 은 긴 thread 를 계속 쓰는 UX 이므로 `compact` 이후에는 current session 도 idle 조건을 만족할 때 1 batch rollup 합니다.
 
 ```mermaid
 %%{init: {'flowchart': {'useMaxWidth': true, 'rankSpacing': 44, 'nodeSpacing': 34}, 'theme': 'default'}}%%
@@ -60,7 +60,7 @@ flowchart TB
     U --> UPS --> SURF --> PREFILL --> MODEL --> STOP
     UPS --> EV
     STOP --> EV
-    EV -.stale session<br/>or explicit rollup.-> ROLL
+    EV -.stale session<br/>explicit rollup<br/>Codex compact current session.-> ROLL
     ROLL --> SEARCH_ENTRIES
     SEARCH_ENTRIES -.may appear in lightweight prefill<br/>next turn.-> PREFILL
     SEARCH_ENTRIES -.explicit search candidate.-> SEARCH["/search"]
@@ -223,6 +223,9 @@ imprint migrate search-entries
 | `IMPRINT_PROFILE` | `0` | `1`이면 profile JSONL 기록 |
 | `IMPRINT_DISABLE_ROLLUP` | `0` | `1`이면 SessionStart stale rollup 비활성 |
 | `IMPRINT_ENABLE_LAZY_FETCH` | `0` | `1`이면 UserPromptSubmit 에서 Slack/Notion lazy fetch 활성 |
+| `IMPRINT_CODEX_ROLLUP_ON_COMPACT` | `1` | Codex compact 때 current session guarded rollup 활성 |
+| `IMPRINT_CODEX_ROLLUP_CURRENT_MIN_AGE_SECONDS` | `60` | Codex compact current rollup 의 마지막 event idle 기준 |
+| `IMPRINT_ROLLUP_EMBED` | `1` | vector 사용 가능 시 새 rollup entry 자동 embedding |
 | `IMPRINT_ROLLUP_STALE_MINUTES` | `30` | stale session rollup 기준 |
 | `IMPRINT_ROLLUP_BATCH_EVENTS` | `24` | rollup 1회 처리 event 상한 |
 | `IMPRINT_ROLLUP_MAX_CHARS` | `12000` | rollup model 입력 문자 상한 |

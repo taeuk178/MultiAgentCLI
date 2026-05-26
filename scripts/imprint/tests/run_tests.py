@@ -1899,6 +1899,234 @@ def tc_33_lazy_fetch_opt_in(env: dict, home: str, case: CaseResult) -> None:
         case.detail += f" err={(err_default or err_enabled)[:120]}"
 
 
+def tc_34_rollup_embedding_outside_write_lock(env: dict, home: str, case: CaseResult) -> None:
+    """Rollup pre-embeds outside the write transaction and stores blobs."""
+    code = """
+import json, os, sqlite3, sys, threading
+from pathlib import Path
+sys.path.insert(0, %r)
+import ingestion
+from retrieval import embedding as emb_mod
+from retrieval import rollup
+
+entered = threading.Event()
+release = threading.Event()
+embed_state = {"texts": [], "available_calls": 0}
+
+def fake_extract(_text, *, mode="rich"):
+    return [
+        {
+            "chunk_type": "decision",
+            "text": "자동 임베딩은 rollup 밖에서 준비한다.",
+            "keywords": ["embedding", "rollup"],
+            "reason": "DB write lock 시간을 줄이기 위해서다.",
+            "files": ["scripts/imprint/lib/retrieval/rollup.py"],
+            "symbols": ["rollup_session_once"],
+        },
+        {
+            "chunk_type": "summary",
+            "text": "rollup 자동 임베딩 회귀 테스트",
+            "keywords": ["embedding"],
+        },
+    ]
+
+def fake_is_available():
+    embed_state["available_calls"] += 1
+    return True
+
+def fake_embed_texts(texts):
+    embed_state["texts"] = list(texts)
+    entered.set()
+    release.wait(timeout=3)
+    return [bytes([i + 1]) * 4096 for i, _ in enumerate(texts)]
+
+ingestion.extract_chunks_from_response = fake_extract
+emb_mod.is_available = fake_is_available
+emb_mod.embed_texts = fake_embed_texts
+
+with ingestion.db() as conn:
+    rows = [
+        ("tc34-01", "user_message", "자동 임베딩 동작 확인", "2026-05-24T06:00:00Z"),
+        ("tc34-02", "llm_response", "결정: rollup 자동 임베딩은 lock 밖에서 한다.", "2026-05-24T06:01:00Z"),
+    ]
+    for event_id, kind, text, created_at in rows:
+        conn.execute(
+            "INSERT INTO events (id, project_id, source, kind, text_clean, metadata_json, noise, created_at) "
+            "VALUES (?, ?, 'eval', ?, ?, ?, 0, ?)",
+            (event_id, %r, kind, text, json.dumps({"session_id": "tc34-rollup"}, ensure_ascii=False), created_at),
+        )
+    conn.commit()
+
+result = {}
+
+def worker():
+    try:
+        result["stats"] = rollup.rollup_session_once(%r, "tc34-rollup").to_dict()
+    except Exception as exc:
+        result["error"] = repr(exc)
+
+t = threading.Thread(target=worker)
+t.start()
+entered_ok = entered.wait(timeout=2)
+writer_ok = False
+writer_err = ""
+try:
+    db_path = Path(os.environ["IMPRINT_HOME"]) / "app.sqlite"
+    conn = sqlite3.connect(str(db_path), timeout=0.1)
+    conn.execute("PRAGMA busy_timeout = 100")
+    conn.execute(
+        "INSERT INTO events (id, project_id, source, kind, text_clean, metadata_json, noise, created_at) "
+        "VALUES ('tc34-writer', ?, 'eval', 'user_message', 'concurrent writer during embed', '{}', 0, '2026-05-24T06:00:30Z')",
+        (%r,),
+    )
+    conn.commit()
+    writer_ok = True
+except Exception as exc:
+    writer_err = repr(exc)
+finally:
+    try:
+        conn.close()
+    except Exception:
+        pass
+    release.set()
+    t.join(timeout=4)
+
+with ingestion.db() as conn:
+    rows = conn.execute(
+        "SELECT raw_type, retrieval_text, length(embedding) FROM search_entries "
+        "WHERE project_id = ? AND json_extract(metadata_json, '$.session_id') = 'tc34-rollup' "
+        "ORDER BY raw_type",
+        (%r,),
+    ).fetchall()
+    writer_count = conn.execute(
+        "SELECT COUNT(*) FROM events WHERE id = 'tc34-writer'"
+    ).fetchone()[0]
+
+print(json.dumps({
+    "entered_ok": entered_ok,
+    "writer_ok": writer_ok,
+    "writer_err": writer_err,
+    "writer_count": writer_count,
+    "worker": result,
+    "embed_state": embed_state,
+    "rows": rows,
+}, ensure_ascii=False))
+""" % (str(LIB_DIR), PROJECT_ID, PROJECT_ID, PROJECT_ID, PROJECT_ID)
+    rc, out, err = run_python(env, code)
+    parsed = json.loads(out) if out else {}
+    worker = parsed.get("worker") or {}
+    stats = worker.get("stats") or {}
+    rows = parsed.get("rows") or []
+    texts = (parsed.get("embed_state") or {}).get("texts") or []
+    checks = {
+        "ok": rc == 0,
+        "embed_entered": parsed.get("entered_ok") is True,
+        "writer_ok": parsed.get("writer_ok") is True,
+        "writer_persisted": parsed.get("writer_count") == 1,
+        "worker_ok": not worker.get("error") and stats.get("entries_inserted") == 2,
+        "embedded_rows": len(rows) == 2 and all((r[2] or 0) == 4096 for r in rows),
+        "batch_once": len(texts) == 2,
+        "surface_used": bool(texts and "Reason: DB write lock" in texts[0]),
+    }
+    case.metrics = checks | {"parsed": parsed, "err": err[:160]}
+    case.passed = all(checks.values())
+    case.detail = (
+        f"writer={parsed.get('writer_ok')} entries={stats.get('entries_inserted')} "
+        f"embedded={len(rows)} batch={len(texts)}"
+    )
+    if not case.passed:
+        case.detail += f" err={(err or parsed.get('writer_err') or worker.get('error') or '')[:120]}"
+
+
+def tc_35_codex_compact_current_rollup(env: dict, home: str, case: CaseResult) -> None:
+    """Codex compact rolls up the current session; Claude compact keeps excluding it."""
+    env_codex = codex_hook_env(env)
+    env_codex["IMPRINT_CODEX_BIN"] = make_fake_codex(home)
+    env_codex["IMPRINT_CODEX_ROLLUP_CURRENT_MIN_AGE_SECONDS"] = "0"
+    env_codex["IMPRINT_ROLLUP_MAX_STALE_SESSIONS"] = "0"
+    env_claude = hook_env(env)
+    env_claude["IMPRINT_CLAUDE_BIN"] = make_fake_claude(home)
+    env_claude["IMPRINT_CODEX_ROLLUP_CURRENT_MIN_AGE_SECONDS"] = "0"
+    env_claude["IMPRINT_ROLLUP_MAX_STALE_SESSIONS"] = "0"
+
+    conn = sqlite3.connect(str(Path(home) / "app.sqlite"))
+    try:
+        rows = [
+            ("tc35-codex-01", "tc35-codex", "user_message", "Codex compact 현재 세션", "2026-05-24T07:00:00Z"),
+            ("tc35-codex-02", "tc35-codex", "llm_response", "결정: Codex compact에서 현재 세션을 rollup한다.", "2026-05-24T07:01:00Z"),
+            ("tc35-claude-01", "tc35-claude", "user_message", "Claude compact 현재 세션", "2026-05-24T08:00:00Z"),
+            ("tc35-claude-02", "tc35-claude", "llm_response", "결정: Claude compact에서는 현재 세션을 제외한다.", "2026-05-24T08:01:00Z"),
+        ]
+        for event_id, session_id, kind, text, created_at in rows:
+            conn.execute(
+                "INSERT INTO events (id, project_id, source, kind, text_clean, metadata_json, noise, created_at) "
+                "VALUES (?, ?, 'eval', ?, ?, ?, 0, ?)",
+                (event_id, ROOT_PROJECT_ID, kind, text, json.dumps({"session_id": session_id}, ensure_ascii=False), created_at),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+    codex_input = json.dumps({
+        "session_id": "tc35-codex",
+        "reason": "compact",
+        "last_assistant_message": "compact boundary",
+    }, ensure_ascii=False)
+    claude_input = json.dumps({
+        "session_id": "tc35-claude",
+        "reason": "compact",
+    }, ensure_ascii=False)
+    rc_codex, _, err_codex = run_cmd(
+        env_codex,
+        ["bash", "scripts/imprint/session-start.sh"],
+        input_text=codex_input,
+    )
+    rc_claude, _, err_claude = run_cmd(
+        env_claude,
+        ["bash", "scripts/imprint/session-start.sh"],
+        input_text=claude_input,
+    )
+
+    deadline = time.time() + 3.0
+    codex_count = 0
+    claude_count = 0
+    while time.time() < deadline:
+        codex_count = db_query(
+            home,
+            "SELECT COUNT(*) FROM search_entries WHERE project_id = ? AND json_extract(metadata_json, '$.session_id') = 'tc35-codex'",
+            (ROOT_PROJECT_ID,),
+        )[0][0]
+        claude_count = db_query(
+            home,
+            "SELECT COUNT(*) FROM search_entries WHERE project_id = ? AND json_extract(metadata_json, '$.session_id') = 'tc35-claude'",
+            (ROOT_PROJECT_ID,),
+        )[0][0]
+        if codex_count >= 1:
+            break
+        time.sleep(0.1)
+    time.sleep(0.2)
+    claude_count = db_query(
+        home,
+        "SELECT COUNT(*) FROM search_entries WHERE project_id = ? AND json_extract(metadata_json, '$.session_id') = 'tc35-claude'",
+        (ROOT_PROJECT_ID,),
+    )[0][0]
+    checks = {
+        "codex_rc": rc_codex == 0,
+        "claude_rc": rc_claude == 0,
+        "codex_current_rolled": codex_count >= 1,
+        "claude_current_excluded": claude_count == 0,
+    }
+    case.metrics = checks | {
+        "codex_count": codex_count,
+        "claude_count": claude_count,
+        "err": (err_codex or err_claude)[:160],
+    }
+    case.passed = all(checks.values())
+    case.detail = f"codex_current={codex_count} claude_current={claude_count}"
+    if not case.passed:
+        case.detail += f" err={(err_codex or err_claude)[:120]}"
+
+
 def tc_15_first_turn_working_overlay(env: dict, home: str, case: CaseResult) -> None:
     """UserPromptSubmit sync mini-chunk + prefill/search working overlay."""
     env_h = hook_env(env)
@@ -2596,6 +2824,8 @@ CASES: list[tuple[str, str, callable]] = [
     ("TC-31", "Search rollup detail output", tc_31_search_rollup_detail_output),
     ("TC-32", "Search manual memory vs rollup roles", tc_32_search_manual_memory_and_rollup_roles),
     ("TC-33", "Lazy fetch opt-in", tc_33_lazy_fetch_opt_in),
+    ("TC-34", "Rollup embedding outside write lock", tc_34_rollup_embedding_outside_write_lock),
+    ("TC-35", "Codex compact current rollup", tc_35_codex_compact_current_rollup),
 ]
 
 

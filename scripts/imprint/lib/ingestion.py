@@ -27,6 +27,7 @@ import subprocess
 import sys
 import time
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -728,10 +729,22 @@ def insert_external_chunk(
     return cid
 
 
-def insert_extracted_chunk(
-    conn: sqlite3.Connection,
-    project_id: str,
-    source_event_id: str | None,
+@dataclass
+class ExtractedChunkPayload:
+    chunk_type: str
+    text: str
+    keywords: list[str]
+    reason: str
+    files: list[str]
+    symbols: list[str]
+    alternatives: list[str]
+    tests: list[str]
+    metadata: dict[str, Any]
+    retrieval_text: str | None
+    text_hash: str
+
+
+def prepare_extracted_chunk(
     chunk_type: str,
     text: str,
     keywords: list[str],
@@ -741,8 +754,7 @@ def insert_extracted_chunk(
     alternatives: list[str] | None = None,
     tests: list[str] | None = None,
     metadata_extra: dict[str, Any] | None = None,
-) -> str:
-    cid = str(uuid.uuid4())
+) -> ExtractedChunkPayload:
     text = redact_text(text)
     keywords = [redact_text(k) for k in keywords]
     reason = redact_text(reason or "").strip()
@@ -751,16 +763,6 @@ def insert_extracted_chunk(
     alternatives = [redact_text(v) for v in (alternatives or []) if v]
     tests = [redact_text(v) for v in (tests or []) if v]
     text_hash = stable_text_hash(text)
-    if chunk_dedup_exists(
-        conn,
-        project_id,
-        source_uri=None,
-        evidence_level="assistant_extracted",
-        text_hash=text_hash,
-        source_event_id=source_event_id,
-        chunk_type=chunk_type,
-    ):
-        return ""
     md = {
         "source": "llm_response",
         "source_type": "chat",
@@ -790,18 +792,92 @@ def insert_extracted_chunk(
             files=files or None,
             symbols=symbols or None,
         )
+    return ExtractedChunkPayload(
+        chunk_type=chunk_type,
+        text=text,
+        keywords=keywords,
+        reason=reason,
+        files=files,
+        symbols=symbols,
+        alternatives=alternatives,
+        tests=tests,
+        metadata=md,
+        retrieval_text=retrieval_text,
+        text_hash=text_hash,
+    )
+
+
+def insert_prepared_extracted_chunk(
+    conn: sqlite3.Connection,
+    project_id: str,
+    source_event_id: str | None,
+    payload: ExtractedChunkPayload,
+    *,
+    embedding: bytes | None = None,
+    generate_embedding: bool = False,
+) -> str:
+    cid = str(uuid.uuid4())
+    if chunk_dedup_exists(
+        conn,
+        project_id,
+        source_uri=None,
+        evidence_level="assistant_extracted",
+        text_hash=payload.text_hash,
+        source_event_id=source_event_id,
+        chunk_type=payload.chunk_type,
+    ):
+        return ""
     insert_search_entry(
         conn,
         project_id=project_id,
         origin="assistant_extract",
-        raw_type=chunk_type,
-        text=text,
-        metadata=md,
+        raw_type=payload.chunk_type,
+        text=payload.text,
+        metadata=payload.metadata,
         source_event_id=source_event_id,
         entry_id=cid,
-        retrieval_text=retrieval_text,
+        embedding=embedding,
+        generate_embedding=generate_embedding,
+        retrieval_text=payload.retrieval_text,
     )
     return cid
+
+
+def insert_extracted_chunk(
+    conn: sqlite3.Connection,
+    project_id: str,
+    source_event_id: str | None,
+    chunk_type: str,
+    text: str,
+    keywords: list[str],
+    reason: str | None = None,
+    files: list[str] | None = None,
+    symbols: list[str] | None = None,
+    alternatives: list[str] | None = None,
+    tests: list[str] | None = None,
+    metadata_extra: dict[str, Any] | None = None,
+    embedding: bytes | None = None,
+    generate_embedding: bool = False,
+) -> str:
+    payload = prepare_extracted_chunk(
+        chunk_type,
+        text,
+        keywords,
+        reason=reason,
+        files=files,
+        symbols=symbols,
+        alternatives=alternatives,
+        tests=tests,
+        metadata_extra=metadata_extra,
+    )
+    return insert_prepared_extracted_chunk(
+        conn,
+        project_id,
+        source_event_id,
+        payload,
+        embedding=embedding,
+        generate_embedding=generate_embedding,
+    )
 
 
 def insert_source_status_chunk(

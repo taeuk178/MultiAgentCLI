@@ -21,6 +21,24 @@ DEFAULT_STALE_MINUTES = int(os.environ.get("IMPRINT_ROLLUP_STALE_MINUTES") or "3
 DEFAULT_MAX_STALE_SESSIONS = int(os.environ.get("IMPRINT_ROLLUP_MAX_STALE_SESSIONS") or "3")
 
 
+def _rollup_embedding_enabled() -> bool:
+    return os.environ.get("IMPRINT_ROLLUP_EMBED", "1").lower() not in {"0", "false", "no"}
+
+
+def _parse_iso(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        if value.endswith("Z"):
+            value = value[:-1] + "+00:00"
+        parsed = datetime.fromisoformat(value)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    except ValueError:
+        return None
+
+
 @dataclass
 class RollupStats:
     project_id: str
@@ -155,7 +173,7 @@ def rollup_session_once(
     batch_events: int = DEFAULT_BATCH_EVENTS,
     max_chars: int = DEFAULT_MAX_CHARS,
 ) -> RollupStats:
-    from ingestion import extract_chunks_from_response, insert_extracted_chunk
+    from ingestion import extract_chunks_from_response, insert_prepared_extracted_chunk, prepare_extracted_chunk
 
     stats = RollupStats(project_id=project_id, session_id=session_id)
     conn = db_connect()
@@ -177,6 +195,35 @@ def rollup_session_once(
     last = rows[-1]
     last_id = last["id"]
     last_created_at = last["created_at"]
+    payloads = [
+        prepare_extracted_chunk(
+            chunk["chunk_type"],
+            chunk["text"],
+            chunk.get("keywords") or [],
+            reason=chunk.get("reason"),
+            files=chunk.get("files"),
+            symbols=chunk.get("symbols"),
+            alternatives=chunk.get("alternatives"),
+            tests=chunk.get("tests"),
+            metadata_extra={
+                "rolled": True,
+                "rollup": True,
+                "session_id": session_id,
+                "event_range": [first_id, last_id],
+                "event_range_created_at": [rows[0]["created_at"], last_created_at],
+            },
+        )
+        for chunk in chunks
+    ]
+    embeddings: list[bytes | None] = [None] * len(payloads)
+    if payloads and _rollup_embedding_enabled():
+        from . import embedding as emb_mod
+
+        if emb_mod.is_available():
+            texts = [payload.retrieval_text or payload.text for payload in payloads]
+            blobs = emb_mod.embed_texts(texts)
+            if blobs and len(blobs) == len(payloads):
+                embeddings = list(blobs)
 
     conn = db_connect()
     try:
@@ -186,26 +233,13 @@ def rollup_session_once(
         if [r["id"] for r in expected_rows] != [r["id"] for r in rows]:
             conn.rollback()
             return stats
-        for chunk in chunks:
-            inserted = insert_extracted_chunk(
+        for payload, embedding in zip(payloads, embeddings):
+            inserted = insert_prepared_extracted_chunk(
                 conn,
                 project_id,
                 source_event_id,
-                chunk["chunk_type"],
-                chunk["text"],
-                chunk.get("keywords") or [],
-                reason=chunk.get("reason"),
-                files=chunk.get("files"),
-                symbols=chunk.get("symbols"),
-                alternatives=chunk.get("alternatives"),
-                tests=chunk.get("tests"),
-                metadata_extra={
-                    "rolled": True,
-                    "rollup": True,
-                    "session_id": session_id,
-                    "event_range": [first_id, last_id],
-                    "event_range_created_at": [rows[0]["created_at"], last_created_at],
-                },
+                payload,
+                embedding=embedding,
             )
             if inserted:
                 stats.entries_inserted += 1
@@ -354,3 +388,72 @@ def rollup_stale(
         "results": results,
         "entries_inserted": sum(int(r.get("entries_inserted") or 0) for r in results),
     }
+
+
+def rollup_session_if_idle(
+    project_id: str,
+    session_id: str,
+    *,
+    min_age_seconds: int,
+    all_batches: bool = False,
+) -> dict[str, Any]:
+    session_id = session_id.strip()
+    if not session_id:
+        return {"project_id": project_id, "session_id": "", "skipped": True, "reason": "empty_session_id"}
+
+    conn = db_connect()
+    try:
+        row = conn.execute(
+            """
+            SELECT e.id, e.created_at
+            FROM events e
+            WHERE e.project_id = ?
+              AND json_extract(e.metadata_json, '$.session_id') = ?
+              AND e.noise = 0
+            ORDER BY e.created_at DESC, e.id DESC
+            LIMIT 1
+            """,
+            (project_id, session_id),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    if row is None:
+        return {"project_id": project_id, "session_id": session_id, "skipped": True, "reason": "no_events"}
+
+    created_at = str(row["created_at"] or "")
+    last_at = _parse_iso(created_at)
+    if last_at is None:
+        return {
+            "project_id": project_id,
+            "session_id": session_id,
+            "skipped": True,
+            "reason": "invalid_last_event_time",
+            "last_event_id": row["id"],
+            "last_created_at": created_at,
+        }
+
+    age_seconds = int((datetime.now(timezone.utc) - last_at).total_seconds())
+    if age_seconds < min_age_seconds:
+        return {
+            "project_id": project_id,
+            "session_id": session_id,
+            "skipped": True,
+            "reason": "not_idle",
+            "age_seconds": age_seconds,
+            "min_age_seconds": min_age_seconds,
+            "last_event_id": row["id"],
+            "last_created_at": created_at,
+        }
+
+    stats = rollup_session(project_id, session_id, all_batches=all_batches)
+    data = stats.to_dict()
+    data.update({
+        "skipped": False,
+        "reason": "rolled",
+        "age_seconds": age_seconds,
+        "min_age_seconds": min_age_seconds,
+        "last_event_id": row["id"],
+        "last_created_at": created_at,
+    })
+    return data
