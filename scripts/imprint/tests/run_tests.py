@@ -2038,6 +2038,95 @@ print(json.dumps({
         case.detail += f" err={(err or parsed.get('writer_err') or worker.get('error') or '')[:120]}"
 
 
+def tc_35_codex_compact_current_rollup(env: dict, home: str, case: CaseResult) -> None:
+    """Codex compact rolls up the current session; Claude compact keeps excluding it."""
+    env_codex = codex_hook_env(env)
+    env_codex["IMPRINT_CODEX_BIN"] = make_fake_codex(home)
+    env_codex["IMPRINT_CODEX_ROLLUP_CURRENT_MIN_AGE_SECONDS"] = "0"
+    env_codex["IMPRINT_ROLLUP_MAX_STALE_SESSIONS"] = "0"
+    env_claude = hook_env(env)
+    env_claude["IMPRINT_CLAUDE_BIN"] = make_fake_claude(home)
+    env_claude["IMPRINT_CODEX_ROLLUP_CURRENT_MIN_AGE_SECONDS"] = "0"
+    env_claude["IMPRINT_ROLLUP_MAX_STALE_SESSIONS"] = "0"
+
+    conn = sqlite3.connect(str(Path(home) / "app.sqlite"))
+    try:
+        rows = [
+            ("tc35-codex-01", "tc35-codex", "user_message", "Codex compact 현재 세션", "2026-05-24T07:00:00Z"),
+            ("tc35-codex-02", "tc35-codex", "llm_response", "결정: Codex compact에서 현재 세션을 rollup한다.", "2026-05-24T07:01:00Z"),
+            ("tc35-claude-01", "tc35-claude", "user_message", "Claude compact 현재 세션", "2026-05-24T08:00:00Z"),
+            ("tc35-claude-02", "tc35-claude", "llm_response", "결정: Claude compact에서는 현재 세션을 제외한다.", "2026-05-24T08:01:00Z"),
+        ]
+        for event_id, session_id, kind, text, created_at in rows:
+            conn.execute(
+                "INSERT INTO events (id, project_id, source, kind, text_clean, metadata_json, noise, created_at) "
+                "VALUES (?, ?, 'eval', ?, ?, ?, 0, ?)",
+                (event_id, ROOT_PROJECT_ID, kind, text, json.dumps({"session_id": session_id}, ensure_ascii=False), created_at),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+    codex_input = json.dumps({
+        "session_id": "tc35-codex",
+        "reason": "compact",
+        "last_assistant_message": "compact boundary",
+    }, ensure_ascii=False)
+    claude_input = json.dumps({
+        "session_id": "tc35-claude",
+        "reason": "compact",
+    }, ensure_ascii=False)
+    rc_codex, _, err_codex = run_cmd(
+        env_codex,
+        ["bash", "scripts/imprint/session-start.sh"],
+        input_text=codex_input,
+    )
+    rc_claude, _, err_claude = run_cmd(
+        env_claude,
+        ["bash", "scripts/imprint/session-start.sh"],
+        input_text=claude_input,
+    )
+
+    deadline = time.time() + 3.0
+    codex_count = 0
+    claude_count = 0
+    while time.time() < deadline:
+        codex_count = db_query(
+            home,
+            "SELECT COUNT(*) FROM search_entries WHERE project_id = ? AND json_extract(metadata_json, '$.session_id') = 'tc35-codex'",
+            (ROOT_PROJECT_ID,),
+        )[0][0]
+        claude_count = db_query(
+            home,
+            "SELECT COUNT(*) FROM search_entries WHERE project_id = ? AND json_extract(metadata_json, '$.session_id') = 'tc35-claude'",
+            (ROOT_PROJECT_ID,),
+        )[0][0]
+        if codex_count >= 1:
+            break
+        time.sleep(0.1)
+    time.sleep(0.2)
+    claude_count = db_query(
+        home,
+        "SELECT COUNT(*) FROM search_entries WHERE project_id = ? AND json_extract(metadata_json, '$.session_id') = 'tc35-claude'",
+        (ROOT_PROJECT_ID,),
+    )[0][0]
+    checks = {
+        "codex_rc": rc_codex == 0,
+        "claude_rc": rc_claude == 0,
+        "codex_current_rolled": codex_count >= 1,
+        "claude_current_excluded": claude_count == 0,
+    }
+    case.metrics = checks | {
+        "codex_count": codex_count,
+        "claude_count": claude_count,
+        "err": (err_codex or err_claude)[:160],
+    }
+    case.passed = all(checks.values())
+    case.detail = f"codex_current={codex_count} claude_current={claude_count}"
+    if not case.passed:
+        case.detail += f" err={(err_codex or err_claude)[:120]}"
+
+
 def tc_15_first_turn_working_overlay(env: dict, home: str, case: CaseResult) -> None:
     """UserPromptSubmit sync mini-chunk + prefill/search working overlay."""
     env_h = hook_env(env)
@@ -2736,6 +2825,7 @@ CASES: list[tuple[str, str, callable]] = [
     ("TC-32", "Search manual memory vs rollup roles", tc_32_search_manual_memory_and_rollup_roles),
     ("TC-33", "Lazy fetch opt-in", tc_33_lazy_fetch_opt_in),
     ("TC-34", "Rollup embedding outside write lock", tc_34_rollup_embedding_outside_write_lock),
+    ("TC-35", "Codex compact current rollup", tc_35_codex_compact_current_rollup),
 ]
 
 

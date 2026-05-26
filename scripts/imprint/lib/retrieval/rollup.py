@@ -25,6 +25,20 @@ def _rollup_embedding_enabled() -> bool:
     return os.environ.get("IMPRINT_ROLLUP_EMBED", "1").lower() not in {"0", "false", "no"}
 
 
+def _parse_iso(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        if value.endswith("Z"):
+            value = value[:-1] + "+00:00"
+        parsed = datetime.fromisoformat(value)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    except ValueError:
+        return None
+
+
 @dataclass
 class RollupStats:
     project_id: str
@@ -374,3 +388,72 @@ def rollup_stale(
         "results": results,
         "entries_inserted": sum(int(r.get("entries_inserted") or 0) for r in results),
     }
+
+
+def rollup_session_if_idle(
+    project_id: str,
+    session_id: str,
+    *,
+    min_age_seconds: int,
+    all_batches: bool = False,
+) -> dict[str, Any]:
+    session_id = session_id.strip()
+    if not session_id:
+        return {"project_id": project_id, "session_id": "", "skipped": True, "reason": "empty_session_id"}
+
+    conn = db_connect()
+    try:
+        row = conn.execute(
+            """
+            SELECT e.id, e.created_at
+            FROM events e
+            WHERE e.project_id = ?
+              AND json_extract(e.metadata_json, '$.session_id') = ?
+              AND e.noise = 0
+            ORDER BY e.created_at DESC, e.id DESC
+            LIMIT 1
+            """,
+            (project_id, session_id),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    if row is None:
+        return {"project_id": project_id, "session_id": session_id, "skipped": True, "reason": "no_events"}
+
+    created_at = str(row["created_at"] or "")
+    last_at = _parse_iso(created_at)
+    if last_at is None:
+        return {
+            "project_id": project_id,
+            "session_id": session_id,
+            "skipped": True,
+            "reason": "invalid_last_event_time",
+            "last_event_id": row["id"],
+            "last_created_at": created_at,
+        }
+
+    age_seconds = int((datetime.now(timezone.utc) - last_at).total_seconds())
+    if age_seconds < min_age_seconds:
+        return {
+            "project_id": project_id,
+            "session_id": session_id,
+            "skipped": True,
+            "reason": "not_idle",
+            "age_seconds": age_seconds,
+            "min_age_seconds": min_age_seconds,
+            "last_event_id": row["id"],
+            "last_created_at": created_at,
+        }
+
+    stats = rollup_session(project_id, session_id, all_batches=all_batches)
+    data = stats.to_dict()
+    data.update({
+        "skipped": False,
+        "reason": "rolled",
+        "age_seconds": age_seconds,
+        "min_age_seconds": min_age_seconds,
+        "last_event_id": row["id"],
+        "last_created_at": created_at,
+    })
+    return data

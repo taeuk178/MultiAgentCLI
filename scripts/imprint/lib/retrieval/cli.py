@@ -13,6 +13,7 @@ usage:
   python3 -m retrieval.cli contradiction-scan <project_id>
   python3 -m retrieval.cli migrate-search-entries
   python3 -m retrieval.cli rollup-session <project_id> <session_id> [--all] [--json]
+  python3 -m retrieval.cli rollup-session-if-idle <project_id> <session_id> [--min-age-seconds n] [--all] [--json]
   python3 -m retrieval.cli rollup-latest <project_id> [--all] [--json]
   python3 -m retrieval.cli rollup-stale <project_id> [--exclude-session <id>] [--max-sessions <n>] [--json]
 """
@@ -340,6 +341,46 @@ def cmd_rollup_session(argv: list[str]) -> int:
     return 0
 
 
+def cmd_rollup_session_if_idle(argv: list[str]) -> int:
+    if len(argv) < 2:
+        print("usage: rollup-session-if-idle <project_id> <session_id> [--min-age-seconds n] [--all] [--json]", file=sys.stderr)
+        return 2
+    project_id, session_id = argv[:2]
+    min_age_seconds = 60
+    all_batches = False
+    as_json = False
+    i = 2
+    while i < len(argv):
+        arg = argv[i]
+        if arg == "--min-age-seconds":
+            if i + 1 >= len(argv):
+                print("usage: --min-age-seconds <n>", file=sys.stderr)
+                return 2
+            try:
+                min_age_seconds = int(argv[i + 1])
+            except ValueError:
+                print("error: --min-age-seconds must be an integer", file=sys.stderr)
+                return 2
+            i += 2
+        elif arg == "--all":
+            all_batches = True
+            i += 1
+        elif arg == "--json":
+            as_json = True
+            i += 1
+        else:
+            print(f"unknown option: {arg}", file=sys.stderr)
+            return 2
+    data = rollup_mod.rollup_session_if_idle(
+        project_id,
+        session_id,
+        min_age_seconds=max(0, min_age_seconds),
+        all_batches=all_batches,
+    )
+    _print_rollup(data, as_json=as_json)
+    return 0
+
+
 def cmd_rollup_latest(argv: list[str]) -> int:
     if not argv:
         print("usage: rollup-latest <project_id> [--all] [--json]", file=sys.stderr)
@@ -500,6 +541,7 @@ COMMANDS = {
     "embed-entries": cmd_embed_entries,
     "extract-entities": cmd_extract_entities,
     "rollup-session": cmd_rollup_session,
+    "rollup-session-if-idle": cmd_rollup_session_if_idle,
     "rollup-latest": cmd_rollup_latest,
     "rollup-stale": cmd_rollup_stale,
     "entities": cmd_entities,

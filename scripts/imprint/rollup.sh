@@ -10,6 +10,7 @@ usage() {
   cat >&2 <<'USAGE'
 usage:
   rollup.sh --session-id <id> [--all] [--json]
+  rollup.sh --session-id-if-idle <id> [--min-age-seconds <n>] [--all] [--json]
   rollup.sh --latest [--all] [--json]
   rollup.sh --stale [--exclude-session <id>] [--max-sessions <n>] [--all] [--json]
 USAGE
@@ -24,6 +25,7 @@ mode=""
 session_id=""
 exclude_session=""
 max_sessions=""
+min_age_seconds=""
 extra=()
 
 while [[ $# -gt 0 ]]; do
@@ -31,6 +33,15 @@ while [[ $# -gt 0 ]]; do
     --session-id)
       mode="session"
       session_id="${2:-}"
+      shift 2
+      ;;
+    --session-id-if-idle)
+      mode="session-if-idle"
+      session_id="${2:-}"
+      shift 2
+      ;;
+    --min-age-seconds)
+      min_age_seconds="${2:-}"
       shift 2
       ;;
     --latest)
@@ -73,6 +84,18 @@ case "$mode" in
       exit 2
     fi
     (cd "$SCRIPT_DIR/lib" && python3 -m retrieval.cli rollup-session "$PID" "$session_id" "${extra[@]}")
+    ;;
+  session-if-idle)
+    if [[ -z "${session_id// }" ]]; then
+      echo "rollup: --session-id-if-idle requires a value" >&2
+      exit 2
+    fi
+    args=(rollup-session-if-idle "$PID" "$session_id")
+    if [[ -n "${min_age_seconds// }" ]]; then
+      args+=(--min-age-seconds "$min_age_seconds")
+    fi
+    args+=("${extra[@]}")
+    (cd "$SCRIPT_DIR/lib" && python3 -m retrieval.cli "${args[@]}")
     ;;
   latest)
     (cd "$SCRIPT_DIR/lib" && python3 -m retrieval.cli rollup-latest "$PID" "${extra[@]}")
