@@ -21,6 +21,10 @@ DEFAULT_STALE_MINUTES = int(os.environ.get("IMPRINT_ROLLUP_STALE_MINUTES") or "3
 DEFAULT_MAX_STALE_SESSIONS = int(os.environ.get("IMPRINT_ROLLUP_MAX_STALE_SESSIONS") or "3")
 
 
+def _rollup_embedding_enabled() -> bool:
+    return os.environ.get("IMPRINT_ROLLUP_EMBED", "1").lower() not in {"0", "false", "no"}
+
+
 @dataclass
 class RollupStats:
     project_id: str
@@ -155,7 +159,7 @@ def rollup_session_once(
     batch_events: int = DEFAULT_BATCH_EVENTS,
     max_chars: int = DEFAULT_MAX_CHARS,
 ) -> RollupStats:
-    from ingestion import extract_chunks_from_response, insert_extracted_chunk
+    from ingestion import extract_chunks_from_response, insert_prepared_extracted_chunk, prepare_extracted_chunk
 
     stats = RollupStats(project_id=project_id, session_id=session_id)
     conn = db_connect()
@@ -177,6 +181,35 @@ def rollup_session_once(
     last = rows[-1]
     last_id = last["id"]
     last_created_at = last["created_at"]
+    payloads = [
+        prepare_extracted_chunk(
+            chunk["chunk_type"],
+            chunk["text"],
+            chunk.get("keywords") or [],
+            reason=chunk.get("reason"),
+            files=chunk.get("files"),
+            symbols=chunk.get("symbols"),
+            alternatives=chunk.get("alternatives"),
+            tests=chunk.get("tests"),
+            metadata_extra={
+                "rolled": True,
+                "rollup": True,
+                "session_id": session_id,
+                "event_range": [first_id, last_id],
+                "event_range_created_at": [rows[0]["created_at"], last_created_at],
+            },
+        )
+        for chunk in chunks
+    ]
+    embeddings: list[bytes | None] = [None] * len(payloads)
+    if payloads and _rollup_embedding_enabled():
+        from . import embedding as emb_mod
+
+        if emb_mod.is_available():
+            texts = [payload.retrieval_text or payload.text for payload in payloads]
+            blobs = emb_mod.embed_texts(texts)
+            if blobs and len(blobs) == len(payloads):
+                embeddings = list(blobs)
 
     conn = db_connect()
     try:
@@ -186,26 +219,13 @@ def rollup_session_once(
         if [r["id"] for r in expected_rows] != [r["id"] for r in rows]:
             conn.rollback()
             return stats
-        for chunk in chunks:
-            inserted = insert_extracted_chunk(
+        for payload, embedding in zip(payloads, embeddings):
+            inserted = insert_prepared_extracted_chunk(
                 conn,
                 project_id,
                 source_event_id,
-                chunk["chunk_type"],
-                chunk["text"],
-                chunk.get("keywords") or [],
-                reason=chunk.get("reason"),
-                files=chunk.get("files"),
-                symbols=chunk.get("symbols"),
-                alternatives=chunk.get("alternatives"),
-                tests=chunk.get("tests"),
-                metadata_extra={
-                    "rolled": True,
-                    "rollup": True,
-                    "session_id": session_id,
-                    "event_range": [first_id, last_id],
-                    "event_range_created_at": [rows[0]["created_at"], last_created_at],
-                },
+                payload,
+                embedding=embedding,
             )
             if inserted:
                 stats.entries_inserted += 1
