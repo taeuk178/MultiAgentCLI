@@ -22,6 +22,7 @@ In this repo, the direct path is:
 
 ```bash
 bash scripts/imprint/remember.sh "기억할 내용" --high
+bash scripts/imprint/remember.sh --stdin --title "기획 메모" --split auto < notes.md
 ```
 
 ## Usage
@@ -48,7 +49,9 @@ Use `--redact` when the text may contain secrets. `--type <chunk_type>` remains 
 ## Notes
 
 - `/remember` stores into the unified `search_entries` table.
+- Long `--stdin` input can be split into multiple `search_entries` rows. The rows share `metadata_json.chunk_group_id`, `chunk_group_title`, `chunk_index`, and `chunk_count`.
+- Default split mode is `--split auto`; use `--split always`, `--split never`, or `--no-split` for explicit control.
 - Importance is stored in metadata as `importance=require|high|middle|low`.
 - `--require` and `--high` also pin the row internally so important memories sort higher in existing memory paths.
-- `/search` retrieves remembered entries directly through the unified hybrid path.
+- `/search` retrieves remembered entries through the unified hybrid path and caps one remember group to at most two final candidates.
 - Do not create a separate `remember` table; keeping one search entry store avoids duplicate search, pin, and forget logic.

@@ -98,8 +98,10 @@ export IMPRINT_CLAUDE_MODEL=haiku
 | 특정 chunk 보기 | `/memory show <id>` 또는 `/memory show <id> --json` |
 | 특정 chunk 를 현재 turn 에 주입 | `/memory inject <id>` |
 | 직접 기억 저장 | `/remember <text> --high` |
+| 긴 문서형 기억 저장 | `/remember --stdin --title "<title>" --split auto` |
 | 항상 위로 올리기 | `/memory pin <id>` |
 | pin 해제 | `/memory unpin <id>` |
+| remember 묶음 전체 삭제 | `/memory forget --group <id-or-group-id>` |
 | 최근/pinned/source별 목록 | `/memory list --recent`, `/memory list --pinned`, `/memory list --source notion`, `/memory list --working` |
 | 외부 source 갱신 | `/memory refresh <url>` |
 | hook/DB 상태 진단 | `/memory status --json` |
@@ -139,6 +141,8 @@ Foreground prefill 은 raw 질문을 retrieved context 처럼 취급하지 않�
 - `External source context`: opt-in Slack/Notion/spec/message/thread 같은 grounded source context
 
 working memory 는 기본적으로 24시간 TTL 과 session 당 최신 20개 제한을 가집니다.
+
+긴 `/remember --stdin` 입력은 자동으로 여러 `search_entries` row 로 분할될 수 있습니다. 같은 입력에서 나온 row 는 `metadata_json.chunk_group_id` 로 묶이며, `/search` 는 한 그룹이 결과를 독점하지 않도록 최종 후보를 그룹당 최대 2개까지만 노출하고 출력에 `remember_group` 정보를 함께 보여줍니다.
 
 ## 안전과 한계
 

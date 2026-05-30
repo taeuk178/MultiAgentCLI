@@ -45,6 +45,18 @@ def _metadata_detail_lines(metadata: dict[str, Any] | None, *, source_event_id: 
     if metadata.get("rolled") or metadata.get("rollup"):
         session_id = str(metadata.get("session_id") or "").strip()
         lines.append(f"   rollup: true{f' session={session_id}' if session_id else ''}")
+    group_id = str(metadata.get("chunk_group_id") or "").strip()
+    if group_id:
+        title = str(metadata.get("chunk_group_title") or metadata.get("remember_title") or "").strip()
+        idx = metadata.get("chunk_index")
+        count = metadata.get("chunk_count")
+        position = ""
+        if isinstance(idx, int) and isinstance(count, int):
+            position = f" chunk={idx + 1}/{count}"
+        label = f"   remember_group: {group_id}{position}"
+        if title:
+            label += f" title={title[:120]}"
+        lines.append(label)
     return lines
 
 

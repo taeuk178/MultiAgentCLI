@@ -284,6 +284,23 @@ def _dedupe_candidates(candidates: list[RetrievalCandidate]) -> list[RetrievalCa
     return sorted(merged, key=lambda c: -c.final_score)
 
 
+def _limit_chunk_groups(candidates: list[RetrievalCandidate], top_k: int, *, max_per_group: int = 2) -> list[RetrievalCandidate]:
+    """최종 후보에서 같은 `/remember` 문서 그룹이 결과를 독점하지 않게 제한."""
+    counts: dict[str, int] = {}
+    out: list[RetrievalCandidate] = []
+    for cand in candidates:
+        group_id = cand.metadata.get("chunk_group_id") if isinstance(cand.metadata, dict) else None
+        if group_id:
+            key = str(group_id)
+            if counts.get(key, 0) >= max_per_group:
+                continue
+            counts[key] = counts.get(key, 0) + 1
+        out.append(cand)
+        if len(out) >= top_k:
+            break
+    return out
+
+
 def _build_fts_query(query: str) -> str | None:
     """trigram FTS5 용 OR 검색 표현 생성.
 
@@ -735,7 +752,7 @@ def retrieve(
 
             # CTX (top-K 자르기 — assembly 는 별도 모듈)
             with Span("CTX"):
-                final = ordered[:top_k]
+                final = _limit_chunk_groups(ordered, top_k)
 
         finally:
             conn.close()

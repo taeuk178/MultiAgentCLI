@@ -108,13 +108,14 @@ retrieval v2 ingestion 은 `ingest_queue` 를 통해 후속 작업을 순차 처
 
 ## 현재 기준선
 
-2026-05-24 기준 RAG 기본 기능, 1차 운영 관측성, `search_entries` 통합 스키마, `/search`, `/remember`, delta/rollup extract, vector setup dispatcher 는 적용 완료입니다.
+2026-05-30 기준 RAG 기본 기능, 1차 운영 관측성, `search_entries` 통합 스키마, `/search`, `/remember`, delta/rollup extract, vector setup dispatcher 는 적용 완료입니다.
 
 - redaction coverage.
 - hook memory loop smoke test.
 - 첫 turn working overlay.
 - context section 기반 prefill.
 - `/remember` 명시 저장과 `/memory` 기본 검색/list/show/inject/refresh/profile/status.
+- 긴 `/remember --stdin` 문서형 입력의 chunk 분할 저장, 그룹 metadata, 그룹 삭제.
 - 한국어 2자 토큰 fallback.
 - external source 상태 가시화.
 - events noise soft flag.
@@ -123,7 +124,7 @@ retrieval v2 ingestion 은 `ingest_queue` 를 통해 후속 작업을 순차 처
 - `/search` 의 manual memory(`canonical_memory`) 와 rollup 근거(`rollup_evidence`) 역할 분리.
 - `search_entries` migration/backfill.
 - text_hash 기반 dedup.
-- 테스트 기준선: `33 PASS / 0 FAIL`.
+- 테스트 기준선: `36 PASS / 0 FAIL`.
 
 완료된 결정과 이유는 `HISTORY.md` 에 남깁니다.
 
@@ -154,6 +155,7 @@ persistent memory 와 의미(벡터) 검색이 연결돼 있지 않았던 문제
 `search_entries` 통합과 `/search` UX 1차 개선은 완료됐습니다. 남은 작업은 embedding 채움과 검색 품질 검증입니다.
 
 - Rollup extract, `/remember`, source document ingest 는 `search_entries` 에 직접 저장됩니다. opt-in external fetch 도 같은 저장 경로를 재사용합니다.
+- 긴 `/remember` 입력은 `source_documents` 를 만들지 않고 `search_entries(origin=manual_remember)` 여러 row 로 분할됩니다. 같은 저장 묶음은 `metadata_json.chunk_group_id` 로 연결하고, `/search` 는 그룹당 최대 2개까지만 보여줍니다.
 - 기존 사용자 DB는 `imprint migrate search-entries` 로 명시 migration 합니다.
 - `imprint setup vector --backfill` 은 현재 프로젝트의 기존 `search_entries.embedding` 을 채웁니다. 새 rollup entry 는 vector 설치 환경에서 자동 embedding 됩니다.
 - 신규/기존 memory 가 명시 검색 경로에서 `search_entries` 후보로 보이는 것은 테스트로 고정했습니다. 다음은 embedding 가용 시 vector path 품질 검증입니다.

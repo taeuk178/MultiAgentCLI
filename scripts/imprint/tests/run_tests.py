@@ -1065,6 +1065,153 @@ def tc_22_remember_skill_dispatcher(env: dict, home: str, case: CaseResult) -> N
     )
 
 
+def tc_36_remember_document_split(env: dict, home: str, case: CaseResult) -> None:
+    """Long /remember input is chunked, grouped, capped in search, and deletable by group."""
+    project_root = tempfile.mkdtemp(prefix="imprint-remember-doc-project-")
+    pid_proc = subprocess.run(
+        ["bash", "-lc", f"source {ROOT / 'scripts' / 'imprint' / 'lib' / 'common.sh'}; project_id"],
+        env=env, capture_output=True, text=True, cwd=project_root,
+    )
+    pid = pid_proc.stdout.strip()
+    now = "2026-05-23T00:00:00Z"
+    conn = sqlite3.connect(str(Path(home) / "app.sqlite"))
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO projects VALUES (?, ?, ?, ?, ?)",
+            (pid, project_root, "remember-doc-fixture", now, now),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    long_doc = "\n".join([
+        "# 로그인 firebase 이벤트 계획",
+        "",
+        "## 카카오 로그인",
+        ("로그인 firebase 이벤트 카카오 API 비즈니스 로직 테스트 경로를 저장한다. " * 45),
+        "",
+        "## API 구축",
+        ("로그인 firebase 이벤트 API 구축 비즈니스 로직 검증 내용을 저장한다. " * 45),
+        "",
+        "## 테스트",
+        "```swift",
+        "func logFirebaseEvent() {",
+        "",
+        "  Analytics.logEvent(\"login\", parameters: nil)",
+        "}",
+        "```",
+    ])
+    proc = subprocess.run(
+        ["bash", str(ROOT / "scripts" / "imprint" / "remember.sh"), "--stdin", "--title", "로그인 firebase 이벤트 계획", "--split", "always", "--require"],
+        input=long_doc,
+        env=env,
+        capture_output=True,
+        text=True,
+        cwd=project_root,
+    )
+    no_split_proc = subprocess.run(
+        ["bash", str(ROOT / "scripts" / "imprint" / "remember.sh"), "--stdin", "--no-split"],
+        input=long_doc,
+        env=env,
+        capture_output=True,
+        text=True,
+        cwd=project_root,
+    )
+    retrieve_proc = subprocess.run(
+        [sys.executable, "-m", "retrieval.cli", "retrieve_json", pid, "로그인 firebase 이벤트", "10"],
+        env=env,
+        capture_output=True,
+        text=True,
+        cwd=str(LIB_DIR),
+    )
+    formatted_proc = subprocess.run(
+        [sys.executable, "-m", "retrieval.cli", "retrieve", pid, "로그인 firebase 이벤트", "10"],
+        env=env,
+        capture_output=True,
+        text=True,
+        cwd=str(LIB_DIR),
+    )
+
+    conn = sqlite3.connect(str(Path(home) / "app.sqlite"))
+    try:
+        rows = conn.execute(
+            """
+            SELECT id, chunk_index, section_path, text, metadata_json, embedding
+            FROM search_entries
+            WHERE project_id = ?
+              AND json_extract(metadata_json, '$.chunk_group_title') = '로그인 firebase 이벤트 계획'
+            ORDER BY chunk_index
+            """,
+            (pid,),
+        ).fetchall()
+        no_split_count = conn.execute(
+            """
+            SELECT COUNT(*) FROM search_entries
+            WHERE project_id = ?
+              AND json_extract(metadata_json, '$.remember_title') = '로그인 firebase 이벤트 계획'
+              AND json_extract(metadata_json, '$.chunk_group_id') IS NULL
+            """,
+            (pid,),
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    ids = [r[0] for r in rows]
+    metadata = [json.loads(r[4] or "{}") for r in rows]
+    group_ids = {m.get("chunk_group_id") for m in metadata if m.get("chunk_group_id")}
+    retrieve_json = json.loads(retrieve_proc.stdout) if retrieve_proc.stdout else {}
+    candidates = retrieve_json.get("candidates") or []
+    group_candidate_count = sum(
+        1 for c in candidates
+        if c.get("metadata", {}).get("chunk_group_id") in group_ids
+    )
+    code_rows = [r[3] for r in rows if "```" in (r[3] or "")]
+    first_id = ids[0] if ids else ""
+    forget_proc = subprocess.run(
+        ["bash", str(ROOT / "scripts" / "imprint" / "memory.sh"), "forget", "--group", first_id],
+        env=env,
+        capture_output=True,
+        text=True,
+        cwd=project_root,
+    )
+    conn = sqlite3.connect(str(Path(home) / "app.sqlite"))
+    try:
+        remaining_group = 0
+        if group_ids:
+            remaining_group = conn.execute(
+                "SELECT COUNT(*) FROM search_entries WHERE project_id = ? "
+                "AND json_extract(metadata_json, '$.chunk_group_id') = ?",
+                (pid, next(iter(group_ids))),
+            ).fetchone()[0]
+    finally:
+        conn.close()
+
+    checks = {
+        "script_ok": pid_proc.returncode == 0 and bool(pid) and proc.returncode == 0 and "remembered" in proc.stdout,
+        "split_rows": len(rows) >= 2 and len(group_ids) == 1,
+        "metadata": all(m.get("chunk_count") == len(rows) and m.get("importance") == "require" for m in metadata),
+        "heading_preserved": any("## 카카오 로그인" in (r[3] or "") for r in rows),
+        "code_fence_intact": len(code_rows) == 1 and "```swift" in code_rows[0] and code_rows[0].count("```") == 2,
+        "embedding_null": all(r[5] is None for r in rows),
+        "search_cap": retrieve_proc.returncode == 0 and group_candidate_count <= 2,
+        "assembly_group": "remember_group:" in formatted_proc.stdout,
+        "no_split": no_split_proc.returncode == 0 and no_split_count == 1,
+        "forget_group": forget_proc.returncode == 0 and remaining_group == 0,
+    }
+    case.metrics = checks | {
+        "rows": len(rows),
+        "group_candidates": group_candidate_count,
+        "no_split_count": no_split_count,
+        "remaining_group": remaining_group,
+        "error": (proc.stderr or retrieve_proc.stderr or forget_proc.stderr)[:160],
+    }
+    case.passed = all(checks.values())
+    case.detail = (
+        f"rows={len(rows)} group_cap={checks['search_cap']} "
+        f"assembly={checks['assembly_group']} forget={checks['forget_group']}"
+    )
+
+
 def tc_23_setup_vector_logging(env: dict, home: str, case: CaseResult) -> None:
     """Vector setup reports Korean progress and rejects typo options with logs."""
     rc, out, err = run_cmd(env, ["bash", "scripts/imprint/setup.sh", "vector", "--status"])
@@ -2826,6 +2973,7 @@ CASES: list[tuple[str, str, callable]] = [
     ("TC-33", "Lazy fetch opt-in", tc_33_lazy_fetch_opt_in),
     ("TC-34", "Rollup embedding outside write lock", tc_34_rollup_embedding_outside_write_lock),
     ("TC-35", "Codex compact current rollup", tc_35_codex_compact_current_rollup),
+    ("TC-36", "Remember document split/group", tc_36_remember_document_split),
 ]
 
 
