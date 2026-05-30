@@ -164,7 +164,7 @@ erDiagram
 | user prompt | `events(kind=user_message)` | working overlay, observability |
 | assistant response | `events(kind=llm_response)` | rollup provenance |
 | 현재 turn query surface | `events.metadata_json` | 다음 prefill, `/search` working overlay |
-| `/remember` | `search_entries(origin=manual_remember)` | `/search`, `/memory`, prefill |
+| `/remember` | `search_entries(origin=manual_remember)` | 짧은 입력은 1 row, 긴 `--stdin` 문서는 `metadata_json.chunk_group_id` 로 묶인 여러 row 로 저장됩니다. `/search`, `/memory`, prefill 후보가 됩니다. |
 | delta/rollup rich extract | `search_entries(origin=assistant_extract)` | 다음 turn prefill 후보가 될 수 있고, `/search` 에서는 decision/code_context/summary/note 근거로 검색됩니다. `assistant_extract` 는 현재 schema 의 legacy origin 이름입니다. |
 | opt-in Slack/Notion fetch | `search_entries(origin=external_fetch)` | external source context |
 | PRD/ADR/file/명시 source ingest | `source_documents` + `search_entries(origin=source_document)` | source-grounded retrieval |
@@ -184,6 +184,7 @@ erDiagram
 - `text`: 사용자에게 보여줄 본문
 - `retrieval_text`: FTS/vector 검색용 surface
 - `role=canonical_memory`: 사용자가 `/remember` 로 명시 저장한 큰 틀 기억
+- `metadata.chunk_group_id`: 긴 `/remember` 입력에서 같은 저장 묶음임을 나타내는 그룹 id
 - `role=rollup_evidence`: rollup 이 대화에서 추출한 구현 근거
 - `metadata.reason`: 왜 그렇게 결정했는지
 - `metadata.files`, `metadata.symbols`: 관련 파일/심볼
@@ -191,6 +192,8 @@ erDiagram
 - `metadata.event_range`, `source_event_id`: 원래 대화 provenance
 
 큰 틀/정책/요약 계열 질문에서는 `canonical_memory` 를 더 앞에 두고, 왜/어떻게/구현/파일/테스트 계열 질문에서는 `rollup_evidence` 를 더 앞에 둡니다. 같은 주제의 `/remember` 와 rollup row 를 저장 단계에서 합치지 않는 이유는, manual memory 는 사용자가 직접 남긴 canonical note 이고 rollup 은 원문 대화 provenance 를 가진 evidence 이기 때문입니다.
+
+문서형 `/remember` 는 같은 `chunk_group_id` 후보가 결과를 독점하지 않도록 최종 `/search` 후보에서 그룹당 최대 2개까지만 노출합니다. 출력에는 `remember_group`, chunk position, title 을 붙여 여러 row 가 하나의 저장 묶음처럼 읽히게 합니다. 인접 `+/-1 chunk_index` 확장은 아직 자동으로 하지 않습니다.
 
 저신뢰 상황은 trace 에 남기지만 raw `events` 전체를 자동 검색하지 않습니다. raw 대화 전체 검색이 필요하면 별도 explicit debug 경로로 다루는 것이 원칙입니다.
 

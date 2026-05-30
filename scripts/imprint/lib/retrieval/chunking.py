@@ -53,10 +53,39 @@ class ChunkConfig:
 
 
 def _split_by_paragraph(text: str) -> list[str]:
-    """빈 줄로 paragraph 분할. paragraph 첫 줄이 markdown heading 이면 그 줄을
-    별도 paragraph 로 분리 — heading 직후 빈 줄이 없는 입력도 정상 인식.
+    """빈 줄로 paragraph 분할.
+
+    fenced code block 내부의 빈 줄은 분할 지점으로 보지 않는다. `/remember --stdin`
+    문서형 저장에서 code fence 가 여러 chunk 로 찢어지면 검색 결과가 코드 조각처럼
+    보이므로, fence 구간은 하나의 paragraph 로 보존한다.
     """
-    parts = _BLANK_LINE_RE.split(text.strip())
+    blocks: list[str] = []
+    buf: list[str] = []
+    in_fence = False
+    fence_marker = ""
+    for line in text.strip().splitlines():
+        stripped = line.strip()
+        fence = re.match(r"^(```|~~~)", stripped)
+        if fence:
+            marker = fence.group(1)
+            if not in_fence:
+                in_fence = True
+                fence_marker = marker
+            elif marker == fence_marker:
+                in_fence = False
+                fence_marker = ""
+            buf.append(line)
+            continue
+        if not in_fence and not stripped:
+            if buf:
+                blocks.append("\n".join(buf).strip())
+                buf = []
+            continue
+        buf.append(line)
+    if buf:
+        blocks.append("\n".join(buf).strip())
+
+    parts = blocks
     out: list[str] = []
     for p in parts:
         p = p.strip()

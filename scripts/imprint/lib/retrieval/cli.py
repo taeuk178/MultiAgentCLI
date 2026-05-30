@@ -16,6 +16,7 @@ usage:
   python3 -m retrieval.cli rollup-session-if-idle <project_id> <session_id> [--min-age-seconds n] [--all] [--json]
   python3 -m retrieval.cli rollup-latest <project_id> [--all] [--json]
   python3 -m retrieval.cli rollup-stale <project_id> [--exclude-session <id>] [--max-sessions <n>] [--json]
+  python3 -m retrieval.cli remember <project_id> <text...> [--stdin] [--split auto|always|never]
 """
 from __future__ import annotations
 
@@ -31,6 +32,7 @@ from .assembly import format_for_claude, format_routed_for_claude
 from .ingest import ingest_document
 from .retrieve import retrieve
 from . import rollup as rollup_mod
+from . import remember as remember_mod
 from .routing import routed_retrieve
 from .scope import classify
 from .version import find_supersede_candidates
@@ -526,6 +528,10 @@ def cmd_supersede(argv: list[str]) -> int:
     return 0
 
 
+def cmd_remember(argv: list[str]) -> int:
+    return remember_mod.main(argv)
+
+
 COMMANDS = {
     "retrieve": cmd_retrieve,
     "retrieve_json": cmd_retrieve_json,
@@ -544,6 +550,7 @@ COMMANDS = {
     "rollup-session-if-idle": cmd_rollup_session_if_idle,
     "rollup-latest": cmd_rollup_latest,
     "rollup-stale": cmd_rollup_stale,
+    "remember": cmd_remember,
     "entities": cmd_entities,
 }
 

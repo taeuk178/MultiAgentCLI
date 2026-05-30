@@ -40,7 +40,8 @@ imprint memory search "Notion 페이지 섹션 분해 규칙"
 ```
 
 ### `/memory remember <text> [--require|--high|--middle|--low] [--type <t>] [--redact]`
-Store an explicit memory chunk. Optionally specify chunk_type or pin it.
+Store explicit memory. Short input becomes one `search_entries` row; long
+document-style input can be split into a grouped set of rows.
 Secret-shaped text is redacted before storage; `--redact` keeps the same
 behavior explicit and records `redacted: true` metadata even when no pattern
 matched.
@@ -48,7 +49,13 @@ matched.
 ```bash
 imprint remember "Quick 모드는 one-shot 실행, 외부 fetch는 opt-in으로만 사용" --high
 imprint remember "key sk-ant-XXX 작동 확인" --redact     # secrets masked before INSERT
+imprint remember --stdin --title "로그인 기획 메모" --split auto < notes.md
+imprint remember --stdin --no-split < notes.md
 ```
+
+`--split auto` is the default and splits at 1200+ characters, 20+ lines, or
+2+ markdown headings. Split rows share `metadata_json.chunk_group_id`; `/search`
+shows at most two candidates from the same group.
 
 정규식 룰셋은 저장 전 chunk text를 마스킹하고, 마스킹이 발생했거나 `--redact`를 지정하면 metadata에 `redacted: true`를 기록합니다. 룰셋 우선순위: `$IMPRINT_REDACT_RULES` > `~/.imprint/redact-rules.json` > plugin default(`scripts/imprint/lib/redact-rules.default.json`). 사용자 룰셋 형식은 plugin default를 그대로 복사해 추가 패턴을 더하면 됩니다.
 
@@ -128,6 +135,10 @@ List memory chunks for the current project (또는 `--project`로 다른 프로�
 
 ### `/memory forget <chunk-id>`
 Delete a chunk.
+
+### `/memory forget --group <id-or-group-id>`
+Delete all rows in a remembered document group. You may pass either the group id
+or any chunk id from that group.
 
 ### `/memory refresh <spec>`
 Drop cached external (Slack/Notion) chunks. A single URL refresh re-fetches

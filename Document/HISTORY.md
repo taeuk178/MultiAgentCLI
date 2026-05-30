@@ -15,6 +15,12 @@
 
 기록 순서는 **최신이 위**. 항목당 한 단락 안에 변경/사유/대안 폐기 근거를 묶는다.
 
+## 2026-05-30 — `/remember` 문서형 분할 저장 v2
+
+**무엇:** `/remember` 저장 경로를 Bash 직접 `INSERT` 에서 Python `retrieval.remember` 경로로 옮겼다. 짧은 입력은 기존처럼 `search_entries(origin=manual_remember)` 1 row 로 저장하고, 긴 `--stdin`/문서형 입력은 `chunking.py` preset(`target=400`, `max=800`, `min=60`, overlap 0) 으로 여러 row 로 분할한다. 스키마 변경 없이 `metadata_json.chunk_group_id`, `chunk_group_title`, `chunk_index`, `chunk_count` 를 저장하고, `/search` 최종 후보는 같은 그룹을 최대 2개까지만 노출한다. 출력에는 `remember_group` detail 을 붙이고, `/memory forget --group <id-or-group-id>` 로 묶음 전체 삭제를 추가했다.
+
+**왜:** imprint 의 수동 기억 저장은 사용자가 직접 남긴 canonical context 이므로 긴 기획/메모/Slack 정리문도 다룰 수 있어야 한다. 한 row 에 통째로 저장하면 FTS/vector surface 가 커져 특정 섹션 회수가 약해지고, 반대로 단순 분할만 하면 같은 문서 조각이 검색 결과를 도배한다. `source_documents` 를 만들지 않고 `search_entries` 와 metadata 만 쓰면 구조를 늘리지 않으면서도 저장은 chunk 단위, UX 는 문서 묶음 단위로 유지할 수 있다. 인접 chunk 자동 확장은 검색 노이즈와 구현 범위를 키우므로 v1.1 로 미뤘다.
+
 ## 2026-05-26 — 0.1.5 release metadata 동기화
 
 **무엇:** rollup 자동 embedding 과 Codex compact current-session rollup 을 `main` 에 병합한 뒤 release metadata 를 `0.1.5` 로 올렸다. `VERSION`, root/Codex/Claude plugin manifest, Claude marketplace, Codex marketplace ref, 설치 문서의 release/tag 예시를 같은 버전으로 맞췄다.

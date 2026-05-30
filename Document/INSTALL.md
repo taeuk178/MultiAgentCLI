@@ -152,6 +152,8 @@ Coding agent 세션 안에서:
 
 ```text
 /remember <text> [--require|--high|--middle|--low] [--redact]
+/remember --stdin [--title <s>] [--split auto|always|never]
+/remember --no-split
 /memory search <query>
 /memory list [--recent|--pinned|--type <t>|--source <slack|notion|internal>|--working]
 /memory show <chunk-id> [--json]
@@ -159,6 +161,7 @@ Coding agent 세션 안에서:
 /memory pin <chunk-id>
 /memory unpin <chunk-id>
 /memory forget <chunk-id>
+/memory forget --group <id-or-group-id>
 /memory refresh <url|source slack|source notion|project>
 /memory stats [--all] [--json]
 /memory profile [--days <n>] [--json]
@@ -299,6 +302,7 @@ export IMPRINT_DISABLE_SQLITE_VEC=1
 - retrieval ingest queue: 명시 문서 ingestion 뒤 `summary_regen`, `contradiction_scan`, `ner_extract` 를 처리.
 
 `/remember` 와 rollup 의 직접 `search_entries` 저장 경로는 현재 ingest queue 를 거치지 않습니다.
+긴 `/remember --stdin` 입력은 스키마 변경 없이 `metadata_json.chunk_group_id` 로 묶인 여러 `search_entries` row 로 저장됩니다. 기본은 `--split auto` 이며 1200자 이상, 20줄 이상, heading 2개 이상이면 분할합니다. 검색 결과는 같은 그룹 후보를 최대 2개까지만 노출하고, 전체 묶음 삭제는 `/memory forget --group <id-or-group-id>` 를 사용합니다.
 
 ## 검증
 

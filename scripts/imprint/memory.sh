@@ -3,6 +3,7 @@
 # Usage:
 #   memory.sh search <query>
 #   memory.sh remember <text> [--type <raw_type>] [--require|--high|--middle|--low] [--pin]
+#   memory.sh remember --stdin [--title <title>] [--split auto|always|never]
 #   memory.sh inject <chunk-id>
 #   memory.sh pin <chunk-id>
 #   memory.sh unpin <chunk-id>
@@ -18,8 +19,9 @@ usage() {
 imprint memory <subcommand> [args]
 
   search <query>             FTS search across this project's memory
-  remember <text>            Store an explicit chunk
+  remember <text>            Store explicit memory
                              (--require|--high|--middle|--low, --type <t>, --pin, --redact)
+                             (--stdin, --title <s>, --split auto|always|never, --no-split)
   inject <id>                Print a chunk's text for context injection
   show <id> [--json]         Pretty-print a chunk's text + metadata (debug)
   stats [--all] [--json]     Memory 분포·통계 요약(현 프로젝트 또는 전 프로젝트)
@@ -126,52 +128,34 @@ PY
 }
 
 cmd_remember() {
-  local text=""
-  local raw_type="note"
-  local importance="middle"
-  local pinned=0
-  local redact=0
-  while [[ $# -gt 0 ]]; do
-    case "$1" in
-      --type)   raw_type="${2:-note}"; shift 2 ;;
-      --require) importance="require"; pinned=1; shift ;;
-      --high)   importance="high"; pinned=1; shift ;;
-      --middle) importance="middle"; shift ;;
-      --low)    importance="low"; shift ;;
-      --pin)    pinned=1; shift ;;
-      --redact) redact=1; shift ;;
-      --*)      log_error "remember unknown option: $1"; echo "remember: unknown option $1" >&2; exit 2 ;;
-      *)        text+="${text:+ }$1"; shift ;;
+  local i=1
+  local args=("$@")
+  while [[ $i -le ${#args[@]} ]]; do
+    local arg="${args[$((i - 1))]}"
+    case "$arg" in
+      --type|--title|--split)
+        i=$((i + 2))
+        ;;
+      --require|--high|--middle|--low|--pin|--redact|--stdin|--no-split|--json)
+        i=$((i + 1))
+        ;;
+      --*)
+        log_error "remember unknown option: $arg"
+        echo "remember: unknown option $arg" >&2
+        exit 2
+        ;;
+      *)
+        i=$((i + 1))
+        ;;
     esac
   done
-  if [[ -z "${text// }" ]]; then
-    echo "remember requires <text>" >&2
+
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "python3 not found in PATH" >&2
     exit 1
   fi
-  local metadata="{\"importance\":\"$importance\"}"
-  local redacted_text
-  redacted_text=$(redact_text "$text")
-  if (( redact )) || [[ "$redacted_text" != "$text" ]]; then
-    text="$redacted_text"
-    metadata="{\"importance\":\"$importance\",\"redacted\":true}"
-  else
-    text="$redacted_text"
-  fi
   local pid; pid=$(project_id)
-  local id; id=$(new_id)
-  local now; now=$(now_iso)
-  local esc_text; esc_text=$(sql_escape "$text")
-  local esc_type; esc_type=$(sql_escape "$raw_type")
-  local esc_md; esc_md=$(sql_escape "$metadata")
-  db_exec "
-    INSERT INTO search_entries
-      (id, project_id, origin, raw_type, normalized_type, chunk_index, text,
-       retrieval_text, metadata_json, valid_from, is_current, created_at, pinned)
-    VALUES
-      ('$id', '$pid', 'manual_remember', '$esc_type', NULL, 0, '$esc_text',
-       '$esc_text', '$esc_md', '$now', 1, '$now', $pinned);
-  "
-  echo "remembered $id ($raw_type, importance=$importance, pinned=$pinned, redacted=$redact)"
+  cd "$SCRIPT_DIR/lib" && python3 -m retrieval.cli remember "$pid" "$@"
 }
 
 cmd_inject() {
@@ -810,10 +794,48 @@ PY
 }
 
 cmd_forget() {
+  local group=0
+  if [[ "${1:-}" == "--group" ]]; then
+    group=1
+    shift
+  fi
   local id="${1:-}"
   if [[ -z "$id" ]]; then
-    echo "forget requires <chunk-id>" >&2
+    if [[ "$group" == "1" ]]; then
+      echo "forget --group requires <id-or-group-id>" >&2
+    else
+      echo "forget requires <chunk-id>" >&2
+    fi
     exit 1
+  fi
+  if [[ "$group" == "1" ]]; then
+    local pid; pid=$(project_id)
+    IMPRINT_DB="$IMPRINT_DB" FORGET_PROJECT_ID="$pid" FORGET_TARGET="$id" python3 - <<'PY'
+import os
+import sqlite3
+
+conn = sqlite3.connect(os.environ["IMPRINT_DB"], timeout=5.0)
+target = os.environ["FORGET_TARGET"]
+project_id = os.environ["FORGET_PROJECT_ID"]
+try:
+    row = conn.execute(
+        "SELECT json_extract(metadata_json, '$.chunk_group_id') FROM search_entries "
+        "WHERE project_id = ? AND id = ? LIMIT 1",
+        (project_id, target),
+    ).fetchone()
+    group_id = row[0] if row and row[0] else target
+    conn.execute(
+        "DELETE FROM search_entries WHERE project_id = ? AND "
+        "(json_extract(metadata_json, '$.chunk_group_id') = ? OR id = ?)",
+        (project_id, group_id, target),
+    )
+    deleted = conn.total_changes
+    conn.commit()
+finally:
+    conn.close()
+print(f"deleted group {target} ({deleted} entries)")
+PY
+    return
   fi
   local esc; esc=$(sql_escape "$id")
   db_exec "DELETE FROM search_entries WHERE id = '$esc';"
