@@ -23,7 +23,6 @@ TOTAL  36 PASS / 0 FAIL
 - entity alias, contradiction judge/fallback
 - hook memory loop, redaction, first-turn working overlay
 - `/memory` search/list/show/inject/status/profile
-- `search_entries` migration/backfill
 - `/search`, `/remember`, `setup vector` dispatcher
 - `/remember --stdin` 문서형 split/group 저장, search group cap, `forget --group`
 - retrieval text override, decision-rich extract
@@ -31,7 +30,6 @@ TOTAL  36 PASS / 0 FAIL
 - rollup write-lock 안전성, transaction 밖 자동 embedding, `/search` rollup detail 출력
 - Codex compact current-session guarded rollup 과 Claude Code current-session 제외 정책
 - lazy fetch opt-in
-- legacy DB migration
 - source status, noise flag, profile, dedup/provenance trace
 
 ## 테스트 추가 원칙

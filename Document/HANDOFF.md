@@ -6,13 +6,11 @@
 
 최종 업데이트: 2026-05-30.
 
-## 현재 기준선
-
-RAG 기본 루프와 1차 운영 관측성은 적용 완료된 상태입니다.
+## 현재 동작 요약
 
 - 자동 hook 루프: `SessionStart → UserPromptSubmit → Stop → 다음 UserPromptSubmit`.
 - 수동 저장/검색: `/remember`, `/search`, `/memory search/list/show/inject/refresh/forget/stats/profile/status`.
-- persistent memory 는 `search_entries` 단일 인덱스에 저장됩니다. legacy `memory_chunks + chunks_v2` bridge 는 제거됐습니다.
+- persistent memory 는 `search_entries` 단일 인덱스에 저장됩니다.
 - Stop hook 은 assistant 응답을 `events` 에 archive 만 합니다. per-turn flat extract 는 최소 RAG 검증을 위해 제거했고, 검색용 구현 기억은 delta/rollup 이 담당합니다.
 - 구현 중 여러 turn 에 걸친 decision/code_context/summary/note 는 delta/rollup 으로 `search_entries` 에 정제 저장되고, `/search` 는 `reason/files/symbols/tests/event_range` detail 을 출력합니다.
 - `/search` 는 같은 주제의 `/remember` 와 rollup row 가 함께 있을 때 역할을 분리합니다. 큰 틀/정책/요약 질문은 `manual_remember` 를 `canonical_memory` 로 앞세우고, 왜/어떻게/구현/파일/테스트 질문은 rollup row 를 `rollup_evidence` 로 앞세웁니다.
@@ -51,7 +49,7 @@ TOTAL  36 PASS / 0 FAIL
    현재 confidence 는 확률이 아니라 내부 휴리스틱입니다. `/search` 는 세부 근거 detail 을 이미 출력하므로, eval 결과를 본 뒤 `evidence_strength=strong|medium|weak` 또는 calibrated numeric score 로 표현할지 결정합니다. 출력에는 숫자만 두지 말고 weak/medium 의 이유도 함께 보여줘야 합니다.
 
 7. **운영 피드백 수집**
-   vector setup, migration/backfill, FTS fallback, profile 로그에서 반복 실패나 지연 신호가 있는지 확인합니다. 바로 기능을 늘리기보다 trace/profile 데이터로 먼저 판단합니다.
+   vector setup, FTS fallback, profile 로그에서 반복 실패나 지연 신호가 있는지 확인합니다. 바로 기능을 늘리기보다 trace/profile 데이터로 먼저 판단합니다.
 
 ## 확인 체크리스트
 
@@ -64,7 +62,6 @@ TOTAL  36 PASS / 0 FAIL
 - rollup decision 후보가 `/search` 에서 `reason/files/symbols/tests/event_range` 를 함께 보여주는지.
 - vector 설치 환경에서 새 rollup entry 가 자동 embedding 되고, 기존 entry 는 `setup vector --backfill` 로 채워지는지.
 - 같은 주제의 `/remember` 와 rollup 후보가 공존할 때 큰 틀 질문은 `canonical_memory`, 구현 질문은 `rollup_evidence` 를 먼저 보여주는지.
-- `imprint migrate search-entries` 후 과거 `memory_chunks` 가 `search_entries` 후보로 회수되는지.
 - `imprint setup vector --status/--install/--warmup/--backfill` 이 한국어 진행 로그와 실패 힌트를 화면과 `plugin.log` 양쪽에 남기는지.
 
 ## 관찰 지표

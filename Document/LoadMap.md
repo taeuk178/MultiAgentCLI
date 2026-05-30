@@ -106,35 +106,13 @@ retrieval v2 ingestion 은 `ingest_queue` 를 통해 후속 작업을 순차 처
 
 `/remember` 와 rollup 의 직접 `search_entries` 저장 경로는 현재 queue 를 거치지 않습니다. WAL + busy_timeout 으로 일반 동시성은 흡수하고, summary/entity/contradiction queue 통합은 필요해질 때만 검토합니다.
 
-## 현재 기준선
+## 현재 구조 요약
 
-2026-05-30 기준 RAG 기본 기능, 1차 운영 관측성, `search_entries` 통합 스키마, `/search`, `/remember`, delta/rollup extract, vector setup dispatcher 는 적용 완료입니다.
-
-- redaction coverage.
-- hook memory loop smoke test.
-- 첫 turn working overlay.
-- context section 기반 prefill.
-- `/remember` 명시 저장과 `/memory` 기본 검색/list/show/inject/refresh/profile/status.
-- 긴 `/remember --stdin` 문서형 입력의 chunk 분할 저장, 그룹 metadata, 그룹 삭제.
-- 한국어 2자 토큰 fallback.
-- external source 상태 가시화.
-- events noise soft flag.
-- 명시 검색 JSON trace.
-- delta/rollup 기반 구현 결정 arc 저장과 `/search` 세부 근거 출력.
-- `/search` 의 manual memory(`canonical_memory`) 와 rollup 근거(`rollup_evidence`) 역할 분리.
-- `search_entries` migration/backfill.
-- text_hash 기반 dedup.
-- 테스트 기준선: `36 PASS / 0 FAIL`.
-
-완료된 결정과 이유는 `HISTORY.md` 에 남깁니다.
-
-## 알려진 핵심 갭 (2026-05-21 발견, 2026-05-24 구조 정리)
-
-persistent memory 와 의미(벡터) 검색이 연결돼 있지 않았던 문제가 제품 핵심 목적의 직접 병목이었습니다. 2026-05-24 에 bridge 를 폐기하고 persistent memory, rollup extract, source document chunk 를 `search_entries` 단일 인덱스로 통합했습니다.
+현재 RAG 경로는 `events` archive 와 `search_entries` retrieval index 를 분리합니다.
 
 - `search_entries` 에 embedding 컬럼이 있으므로 bridge 복제 없이 같은 row 가 FTS/vector 양쪽에 참여할 수 있습니다.
 - hook 동기 경로에서는 embedding 을 만들지 않습니다. 선택 ML cold-load 가 사용자 turn 을 느리게 만들 수 있기 때문입니다. 새 rollup entry 의 embedding 은 background rollup 프로세스에서 write transaction 밖 배치 처리로만 생성합니다.
-- 기존 DB는 `imprint migrate search-entries` 로 명시 migration 하고, 벡터 검색 검증은 `imprint setup vector --backfill` 로 기존 entry embedding 을 채운 뒤 진행합니다. 이후 새 rollup entry 는 vector 설치 환경에서 자동 embedding 됩니다.
+- 기존 DB는 `imprint migrate search-entries` 로 명시 migration 하고, 벡터 검색 검증은 `imprint setup vector --backfill` 로 기존 entry embedding 을 채운 뒤 진행합니다.
 - 아직 summary/entity/contradiction pipeline 자동 연결은 직접 저장 entry 전체에 강제하지 않습니다. 검색 품질과 운영 비용을 먼저 측정합니다.
 
 ## 목표별 현재 일치도
@@ -152,15 +130,15 @@ persistent memory 와 의미(벡터) 검색이 연결돼 있지 않았던 문제
 
 ### 1. persistent memory 의미 검색 검증
 
-`search_entries` 통합과 `/search` UX 1차 개선은 완료됐습니다. 남은 작업은 embedding 채움과 검색 품질 검증입니다.
+`search_entries` 기반 검색 품질을 실제 프로젝트 질문으로 검증합니다.
 
 - Rollup extract, `/remember`, source document ingest 는 `search_entries` 에 직접 저장됩니다. opt-in external fetch 도 같은 저장 경로를 재사용합니다.
 - 긴 `/remember` 입력은 `source_documents` 를 만들지 않고 `search_entries(origin=manual_remember)` 여러 row 로 분할됩니다. 같은 저장 묶음은 `metadata_json.chunk_group_id` 로 연결하고, `/search` 는 그룹당 최대 2개까지만 보여줍니다.
 - 기존 사용자 DB는 `imprint migrate search-entries` 로 명시 migration 합니다.
 - `imprint setup vector --backfill` 은 현재 프로젝트의 기존 `search_entries.embedding` 을 채웁니다. 새 rollup entry 는 vector 설치 환경에서 자동 embedding 됩니다.
-- 신규/기존 memory 가 명시 검색 경로에서 `search_entries` 후보로 보이는 것은 테스트로 고정했습니다. 다음은 embedding 가용 시 vector path 품질 검증입니다.
-- rollup decision entry 의 `reason/files/symbols/tests/event_range` 가 `/search` 출력에 보이는 것은 테스트로 고정했습니다.
-- 같은 주제의 `/remember` 와 rollup row 가 공존할 때 질문 의도별로 canonical/evidence 우선순위가 바뀌는 것은 테스트로 고정했습니다.
+- embedding 가용 시 vector path 품질을 검증합니다.
+- rollup decision entry 의 `reason/files/symbols/tests/event_range` 가 실제 답변에 충분한 근거가 되는지 확인합니다.
+- 같은 주제의 `/remember` 와 rollup row 가 공존할 때 질문 의도별 canonical/evidence 우선순위가 적절한지 확인합니다.
 - 확장 가능성: `/search` 유사도 품질과 latency 가 충분히 검증되면, 명시 검색 결과를 prefill 자동 주입으로 연결할 수 있습니다. 현재 로드맵에서는 가능성만 남기고 기본 동작으로 두지 않습니다.
 
 ### 2. RAG 사용성 검증과 confidence 표현
