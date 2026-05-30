@@ -3,7 +3,7 @@
 
 Usage:
   python3 scripts/imprint/sync-plugin-version.py
-  python3 scripts/imprint/sync-plugin-version.py 0.1.1
+  python3 scripts/imprint/sync-plugin-version.py 0.2
 
 The version string is shared by:
 - VERSION
@@ -29,8 +29,8 @@ def load_version(argv: list[str]) -> str:
         version = argv[1].strip()
     else:
         version = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
-    if not re.fullmatch(r"\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?", version):
-        raise SystemExit(f"invalid semver version: {version!r}")
+    if not re.fullmatch(r"\d+\.\d+(?:\.\d+)?(?:[-+][0-9A-Za-z.-]+)?", version):
+        raise SystemExit(f"invalid version: {version!r}")
     return version
 
 

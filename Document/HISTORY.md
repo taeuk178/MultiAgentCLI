@@ -15,6 +15,12 @@
 
 기록 순서는 **최신이 위**. 항목당 한 단락 안에 변경/사유/대안 폐기 근거를 묶는다.
 
+## 2026-05-30 — 0.2 release metadata 동기화
+
+**무엇:** `/remember` 문서형 분할 저장 v2 와 완료 이력 문서 정리가 `main` 에 병합된 뒤 release metadata 를 `0.2` 로 올렸다. `VERSION`, root/Codex/Claude plugin manifest, Claude marketplace, Codex marketplace ref, 설치 문서의 release/tag 예시를 같은 버전으로 맞췄다. minor release ref 를 직접 쓸 수 있도록 `sync-plugin-version.py` 는 `0.2` 같은 `major.minor` 형식을 허용한다.
+
+**왜:** `0.2` 는 `search_entries` 기반 RAG의 초기 구조가 `/remember`, rollup, search UX까지 한 덩어리로 안정화된 기준선이다. 특히 긴 수동 메모를 chunk group 으로 저장하고 검색 결과에서는 문서 묶음처럼 읽히게 만든 변화는 사용자-facing 저장 모델을 바꾸므로 patch release 보다 minor release 로 명확히 구분한다.
+
 ## 2026-05-30 — `/remember` 문서형 분할 저장 v2
 
 **무엇:** `/remember` 저장 경로를 Bash 직접 `INSERT` 에서 Python `retrieval.remember` 경로로 옮겼다. 짧은 입력은 기존처럼 `search_entries(origin=manual_remember)` 1 row 로 저장하고, 긴 `--stdin`/문서형 입력은 `chunking.py` preset(`target=400`, `max=800`, `min=60`, overlap 0) 으로 여러 row 로 분할한다. 스키마 변경 없이 `metadata_json.chunk_group_id`, `chunk_group_title`, `chunk_index`, `chunk_count` 를 저장하고, `/search` 최종 후보는 같은 그룹을 최대 2개까지만 노출한다. 출력에는 `remember_group` detail 을 붙이고, `/memory forget --group <id-or-group-id>` 로 묶음 전체 삭제를 추가했다.

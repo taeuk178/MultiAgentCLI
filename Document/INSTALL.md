@@ -26,20 +26,20 @@ Claude Code와 Codex 모두 같은 Git tag 버전을 기준으로 설치할 수 
 Release 전에는 repo root에서 버전을 동기화하고, main/tag/GitHub Release를 같은 버전으로 맞춥니다.
 
 ```bash
-python3 scripts/imprint/sync-plugin-version.py 0.1.5
+python3 scripts/imprint/sync-plugin-version.py 0.2
 git add VERSION plugin.json .claude-plugin .codex-plugin .agents/plugins/marketplace.json
-git commit -m "plugin 배포 버전 0.1.5 동기화"
+git commit -m "plugin 배포 버전 0.2 동기화"
 git push origin main
-git tag 0.1.5
-git push origin 0.1.5
-gh release create 0.1.5 --title "imprint 0.1.5" --notes-file /tmp/imprint-0.1.5-release.md
+git tag 0.2
+git push origin 0.2
+gh release create 0.2 --title "imprint 0.2" --notes-file /tmp/imprint-0.2-release.md
 ```
 
 이미 tag나 release가 있는지 확인하려면 아래 명령을 먼저 실행합니다.
 
 ```bash
-git tag --list 0.1.5
-gh release view 0.1.5
+git tag --list 0.2
+gh release view 0.2
 ```
 
 Claude Code에서는 `.claude-plugin/marketplace.json`을 읽습니다.
@@ -52,15 +52,15 @@ Claude Code에서는 `.claude-plugin/marketplace.json`을 읽습니다.
 Codex에서는 GitHub release tag를 marketplace로 추가합니다. plugin 본문은 repo root의 `plugin.json`에서 읽으므로 sparse checkout을 사용하지 않습니다.
 
 ```bash
-codex plugin marketplace add taeuk178/imprint --ref 0.1.5
+codex plugin marketplace add taeuk178/imprint --ref 0.2
 codex plugin marketplace upgrade
 ```
 
-이미 설치된 plugin을 `0.1.5` 기준으로 제거 후 다시 추가하려면 아래 순서로 실행합니다.
+이미 설치된 plugin을 `0.2` 기준으로 제거 후 다시 추가하려면 아래 순서로 실행합니다.
 
 ```bash
 codex plugin marketplace remove imprint
-codex plugin marketplace add taeuk178/imprint --ref 0.1.5
+codex plugin marketplace add taeuk178/imprint --ref 0.2
 codex plugin marketplace upgrade imprint
 ```
 
