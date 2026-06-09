@@ -92,3 +92,84 @@ GROUP BY 1;
 3. `imprint setup vector --status` 로 벡터 런타임 상태 확인.
 4. 실제 프로젝트에서 개념 질의 1~2개로 `/search` 출력과 trace 의 `embedding_used` 확인.
 5. `/memory status --json`, `/memory profile --json`, `plugin.log` 로 실패/지연 신호 확인.
+
+## 발견된 미해결 이슈 — SKILL.md dispatcher 환경변수 부재 (2026-06-09 분석)
+
+### 증상
+
+imprint repo 가 아닌 다른 프로젝트(예: NudgeEAP-iOS)에서 `/imprint:search` 또는
+`/imprint:remember` 를 실행하면 다음 에러가 납니다.
+
+```
+Bash(bash scripts/imprint/search.sh "..."): Exit 127, No such file or directory
+DISPATCHER=/scripts/imprint/search.sh
+ls: /scripts/imprint/search.sh: No such file or directory
+not found
+```
+
+### 근본 원인
+
+설치된 skill 의 SKILL.md 가 다음 패턴으로 dispatcher 를 구성합니다.
+
+```bash
+DISPATCHER="${IMPRINT_PLUGIN_ROOT:-${PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-$CLAUDE_PLUGIN_ROOT}}}/scripts/imprint/search.sh"
+```
+
+Claude Code 가 skill bash 호출에 넘기는 환경에는 위 네 변수 중 **어느 것도 설정되어
+있지 않습니다.** 확인 시 `env | grep -iE "claude|imprint|plugin"` 결과에 `CLAUDE_PLUGIN_DATA`
+는 있지만 `CLAUDE_PLUGIN_ROOT` 는 없습니다 (Claude Code 2.1.169 기준).
+
+네 변수가 모두 빈 문자열이면 `${var:-…}` 체인은 마지막에 빈 문자열을 그대로 사용하고
+결과적으로 `DISPATCHER=/scripts/imprint/search.sh` (filesystem root 의 절대경로) 가
+됩니다. 이 경로는 존재하지 않으므로 `ls` 와 `bash` 모두 실패합니다.
+
+`bash scripts/imprint/search.sh ...` 직접 호출 역시 imprint repo 가 아닌 PWD 에서는
+상대경로가 깨져 동일하게 실패합니다. imprint repo 내부에서만 우연히 동작했기 때문에
+지금까지 발견이 늦었습니다.
+
+### 영향 범위
+
+같은 dispatcher 패턴을 사용하는 모든 skill:
+
+- `skills/search/SKILL.md`
+- `skills/remember/SKILL.md`
+- `skills/memory/SKILL.md`
+- `skills/setup/SKILL.md`
+- `skills/hud/SKILL.md`
+
+imprint repo 외부의 모든 프로젝트에서 5 개 명령이 동일한 증상을 보입니다.
+
+### "에러는 아니지만 헷갈리는" 부수 신호
+
+진짜 에러는 위의 dispatcher 부재이지만 `~/.imprint/plugin.log` 에는 매 session-start
+마다 다음 WARN 이 반복 기록되고 있어 사용자가 별개의 문제로 오해할 수 있습니다.
+
+```
+WARN: embedding model load failed: ModuleNotFoundError("No module named 'sentence_transformers'") — falling back to FTS-only
+WARN: cross-encoder load failed: ModuleNotFoundError("No module named 'sentence_transformers'") — rerank disabled
+```
+
+이쪽은 graceful degradation 이며 `imprint setup vector --install --warmup --backfill`
+로 별도 해결합니다. dispatcher 버그와는 무관합니다.
+
+### 해결 방향 후보
+
+| 안 | 설명 | 트레이드오프 |
+|---|---|---|
+| A | SKILL.md 에 glob fallback 추가: `$(ls -d "$HOME"/.claude/plugins/cache/imprint/imprint/*/scripts/imprint/<cmd>.sh \| sort -V \| tail -1)` 형태로 latest install 을 탐색 | 즉시 동작, 설치 변경 불필요. Codex 경로도 같이 탐색해야 양 host 호환. |
+| B | `imprint setup` 단계에서 `~/.imprint/plugin-root` marker 에 plugin root 절대경로를 기록하고 SKILL.md 는 이 파일을 읽음 | 깔끔하지만 setup 변경과 설치 순서 의존성 추가. |
+| C | `bin/` 에 `imprint-search` / `imprint-remember` 등 shim 을 두고 PATH 에 의존 (PATH 에는 이미 `imprint/0.2/bin` 이 들어가 있음) | 가장 정석적이지만 bin shim 다섯 개 신규 추가 필요. 현재 bin 디렉터리는 비어 있음. |
+
+권장은 **A 안 즉시 적용 + B 안 또는 C 안 후속**입니다. A 안만으로도 사용자 환경에서
+다음 세션부터 다섯 개 skill 이 정상 동작하게 됩니다.
+
+### 검증 시나리오
+
+수정 후 다음을 확인합니다.
+
+1. imprint repo 가 아닌 임의 디렉터리(예: `~/Desktop/Develop/NudgeEAP-iOS`)에서
+   `/imprint:search "테스트 쿼리"` 가 exit 0 으로 grounding chunks 를 출력하는지.
+2. Codex 환경(CODEX_PLUGIN_ROOT 만 있는 경우 등)에서도 동일하게 동작하는지.
+3. 환경변수가 모두 설정된 정상 케이스에서 기존 동작에 회귀가 없는지.
+4. `imprint repo` 안에서 `bash scripts/imprint/search.sh "..."` 직접 호출 흐름은
+   여전히 정상인지 (SKILL.md 변경이 직접 호출 경로에는 영향 없음).
