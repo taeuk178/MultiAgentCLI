@@ -2933,6 +2933,288 @@ def tc_19_legacy_db_migration(env: dict, home: str, case: CaseResult) -> None:
     )
 
 
+def tc_37_prefill_relevance_filter(env: dict, home: str, case: CaseResult) -> None:
+    """Automatic prefill keeps pinned/relevant entries and drops lexical noise."""
+    project_id = "tc37-prefill"
+    db_path = Path(home) / "app.sqlite"
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO projects VALUES (?, ?, ?, ?, ?)",
+            (project_id, "/tc37/imprint", "imprint", "2026-07-21", "2026-07-21"),
+        )
+
+        def add_entry(
+            entry_id: str,
+            text: str,
+            *,
+            retrieval_text: str | None = None,
+            keywords: list[str] | None = None,
+            pinned: int = 0,
+            files: list[str] | None = None,
+            symbols: list[str] | None = None,
+            source_uri: str | None = None,
+            created_at: str = "2026-07-21T00:00:00Z",
+        ) -> None:
+            metadata = {"keywords": keywords or []}
+            if files:
+                metadata["files"] = files
+            if symbols:
+                metadata["symbols"] = symbols
+            if source_uri:
+                metadata["source_uri"] = source_uri
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO search_entries
+                  (id, project_id, raw_type, text, retrieval_text, pinned,
+                   metadata_json, is_current, created_at)
+                VALUES (?, ?, 'decision', ?, ?, ?, ?, 1, ?)
+                """,
+                (
+                    entry_id,
+                    project_id,
+                    text,
+                    retrieval_text or text,
+                    pinned,
+                    json.dumps(metadata, ensure_ascii=False),
+                    created_at,
+                ),
+            )
+
+        add_entry("tc37-generic", "imprint memory decision context 내부 기록")
+        add_entry(
+            "tc37-latest",
+            "최신 무관 항목은 검색 결과를 채우면 안 됩니다.",
+            created_at="2026-07-21T23:59:59Z",
+        )
+        add_entry(
+            "tc37-sqlite",
+            "SQLite 데이터베이스 경로를 ~/.imprint/app.sqlite로 정리했습니다.",
+        )
+        add_entry(
+            "tc37-rewrite-only",
+            "영문 이벤트 진입점",
+            retrieval_text="button click handler action",
+        )
+        add_entry(
+            "tc37-metadata-noise",
+            "무관한 metadata keyword 후보",
+            keywords=["결제"],
+        )
+        add_entry("tc37-like", "결제 버튼은 확인 화면을 엽니다.")
+        conn.commit()
+    finally:
+        conn.close()
+
+    profile_env = dict(env)
+    profile_env["IMPRINT_PROFILE"] = "1"
+
+    def prefill(query: str) -> tuple[int, str, str]:
+        return run_cmd(
+            profile_env,
+            [sys.executable, str(LIB_DIR / "ingestion.py"), "prefill", project_id, "tc37"],
+            input_text=query,
+        )
+
+    def last_prefill_profile() -> dict:
+        latest: dict = {}
+        profile_path = Path(home) / "profile.jsonl"
+        if not profile_path.exists():
+            return latest
+        for line in profile_path.read_text().splitlines():
+            record = json.loads(line)
+            if record.get("stage") == "cmd_prefill" and record.get("project_id") == project_id:
+                latest = record
+        return latest
+
+    rc_review, out_review, _ = prefill("imprint 활용 후기를 어떻게 쓰면 좋을까?")
+    rc_weak, out_weak, _ = prefill("memory 의 decision 이 왜 들어갔을까?")
+    weak_profile = last_prefill_profile()
+    rc_sqlite, out_sqlite, _ = prefill("SQLite 경로 어떻게 정리했었지?")
+    rc_rewrite, out_rewrite, _ = prefill("버튼 클릭 동작 알려줘")
+    rc_like, out_like, _ = prefill("결제 버튼 알려줘")
+    rc_missing, out_missing, _ = prefill("오로라 색상 정책 알려줘")
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute(
+            "UPDATE search_entries SET pinned = 1 WHERE id = 'tc37-latest'",
+        )
+        strong_entries = [
+            ("tc37-file", "foo.py 파일에서 설정을 읽습니다.", {"files": ["foo.py"]}),
+            ("tc37-path", "src/foo.py 경로의 핸들러를 수정합니다.", {"files": ["src/foo.py"]}),
+            ("tc37-issue", "ABC-123 이슈는 재시도 정책을 변경합니다.", {"symbols": ["ABC-123"]}),
+            ("tc37-version", "v1.2.3 버전에서 마이그레이션합니다.", {"source_uri": "release://v1.2.3"}),
+        ]
+        for entry_id, text_value, metadata in strong_entries:
+            conn.execute(
+                """
+                INSERT INTO search_entries
+                  (id, project_id, raw_type, text, retrieval_text, pinned,
+                   metadata_json, is_current, created_at)
+                VALUES (?, ?, 'decision', ?, ?, 0, ?, 1, '2026-07-21T12:00:00Z')
+                """,
+                (entry_id, project_id, text_value, text_value, json.dumps(metadata)),
+            )
+        for index in range(10):
+            text_value = f"알파 베타 관련 결정 {index}"
+            conn.execute(
+                """
+                INSERT INTO search_entries
+                  (id, project_id, raw_type, text, retrieval_text, pinned,
+                   metadata_json, is_current, created_at)
+                VALUES (?, ?, 'decision', ?, ?, 0, '{}', 1, ?)
+                """,
+                (
+                    f"tc37-cap-{index}",
+                    project_id,
+                    text_value,
+                    text_value,
+                    f"2026-07-21T13:{index:02d}:00Z",
+                ),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+    rc_pin, out_pin, _ = prefill("응")
+    pin_profile = last_prefill_profile()
+    strong_outputs: dict[str, str] = {}
+    strong_rcs: list[int] = []
+    for identifier in ("foo.py", "src/foo.py", "ABC-123", "v1.2.3"):
+        rc, output, _ = prefill(f"{identifier} 알려줘")
+        strong_rcs.append(rc)
+        strong_outputs[identifier] = output
+
+    rc_cap, out_cap, _ = prefill("알파 베타 알려줘")
+    cap_profile = last_prefill_profile()
+
+    matcher_code = """
+import json
+from ingestion import extract_strong_identifiers
+values = ['foo.py', 'src/foo.py', 'ABC-123', 'v1.2.3']
+print(json.dumps({value: extract_strong_identifiers(value) for value in values}))
+"""
+    rc_matcher, matcher_out, _ = run_python(profile_env, matcher_code)
+    try:
+        matcher_result = json.loads(matcher_out)
+    except json.JSONDecodeError:
+        matcher_result = {}
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute(
+            "INSERT OR IGNORE INTO projects VALUES (?, ?, ?, ?, ?)",
+            (ROOT_PROJECT_ID, str(ROOT), ROOT.name, "2026-07-21", "2026-07-21"),
+        )
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO search_entries
+              (id, project_id, raw_type, text, retrieval_text, pinned,
+               metadata_json, is_current, created_at)
+            VALUES ('tc37-shell-fallback', ?, 'decision', ?, ?, 0, '{}', 1,
+                    '2026-07-21T23:59:59Z')
+            """,
+            (
+                ROOT_PROJECT_ID,
+                "TC37_SHELL_FALLBACK imprint memory decision 무관 항목",
+                "TC37_SHELL_FALLBACK imprint memory decision 무관 항목",
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    hook_input = json.dumps(
+        {"prompt": "imprint 활용 후기를 어떻게 쓰면 좋을까?", "session_id": "tc37-hook"},
+        ensure_ascii=False,
+    )
+    rc_hook, out_hook, _ = run_cmd(
+        hook_env(profile_env),
+        ["bash", "scripts/imprint/user-prompt-submit.sh"],
+        input_text=hook_input,
+    )
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute("DROP TABLE search_entries_fts")
+        conn.commit()
+    finally:
+        conn.close()
+    rc_fts_failure, out_fts_failure, _ = prefill("결제 버튼 알려줘")
+
+    bullet_count = sum(1 for line in out_cap.splitlines() if line.startswith("- ["))
+    profile_consistent = (
+        cap_profile.get("pinned_found") == 1
+        and isinstance(cap_profile.get("retrieved_found"), int)
+        and isinstance(cap_profile.get("retrieved_accepted"), int)
+        and cap_profile.get("retrieved_skipped_low_relevance")
+        == cap_profile.get("retrieved_found") - cap_profile.get("retrieved_accepted")
+        and cap_profile.get("retrieved_included") == 8
+        and cap_profile.get("retrieved_chunks") == 8
+    )
+    weak_profile_consistent = (
+        int(weak_profile.get("retrieved_found") or 0) >= 1
+        and weak_profile.get("retrieved_accepted") == 0
+        and weak_profile.get("retrieved_skipped_low_relevance")
+        == weak_profile.get("retrieved_found")
+        and weak_profile.get("retrieved_included") == 0
+    )
+    pin_profile_consistent = (
+        pin_profile.get("pinned_found") == 1
+        and pin_profile.get("retrieved_found") == 0
+        and pin_profile.get("retrieved_accepted") == 0
+        and pin_profile.get("retrieved_skipped_low_relevance") == 0
+        and pin_profile.get("retrieved_included") == 1
+        and pin_profile.get("retrieved_chunks") == 1
+    )
+    checks = {
+        "negative_review": rc_review == 0 and "[Retrieved memory]" not in out_review,
+        "negative_weak": rc_weak == 0 and "[Retrieved memory]" not in out_weak,
+        "positive_sqlite": rc_sqlite == 0 and "SQLite 데이터베이스 경로" in out_sqlite,
+        "no_partial_fill": "최신 무관" not in out_sqlite and "memory decision" not in out_sqlite,
+        "rewrite_not_evidence": rc_rewrite == 0 and "영문 이벤트" not in out_rewrite,
+        "like_after_rejected": rc_like == 0 and "결제 버튼은" in out_like,
+        "no_recent_fallback": rc_missing == 0 and "[Retrieved memory]" not in out_missing,
+        "pinned_gate_false": rc_pin == 0 and "최신 무관 항목" in out_pin,
+        "strong_outputs": (
+            all(rc == 0 for rc in strong_rcs)
+            and "foo.py 파일" in strong_outputs.get("foo.py", "")
+            and "src/foo.py 경로" in strong_outputs.get("src/foo.py", "")
+            and "ABC-123 이슈" in strong_outputs.get("ABC-123", "")
+            and "v1.2.3 버전" in strong_outputs.get("v1.2.3", "")
+        ),
+        "strong_matcher": (
+            rc_matcher == 0
+            and all(matcher_result.get(value) == [value] for value in matcher_result)
+            and len(matcher_result) == 4
+        ),
+        "cap": rc_cap == 0 and bullet_count == 8,
+        "profile": (
+            weak_profile_consistent
+            and pin_profile_consistent
+            and profile_consistent
+        ),
+        "hook_empty_no_legacy_refill": (
+            rc_hook == 0 and "TC37_SHELL_FALLBACK" not in out_hook
+        ),
+        "fts_failure": rc_fts_failure == 0 and "결제 버튼은" in out_fts_failure,
+    }
+    case.metrics = checks | {
+        "cap_bullets": bullet_count,
+        "profile_found": cap_profile.get("retrieved_found"),
+        "profile_accepted": cap_profile.get("retrieved_accepted"),
+        "profile_included": cap_profile.get("retrieved_included"),
+    }
+    case.passed = all(checks.values())
+    failed = [name for name, passed in checks.items() if not passed]
+    case.detail = (
+        f"failed={failed or 'none'} cap={bullet_count} "
+        f"profile={cap_profile.get('retrieved_found')}/"
+        f"{cap_profile.get('retrieved_accepted')}/"
+        f"{cap_profile.get('retrieved_included')}"
+    )
+
+
 # -----------------------------------------------------------------------------
 # 러너
 # -----------------------------------------------------------------------------
@@ -2974,6 +3256,7 @@ CASES: list[tuple[str, str, callable]] = [
     ("TC-34", "Rollup embedding outside write lock", tc_34_rollup_embedding_outside_write_lock),
     ("TC-35", "Codex compact current rollup", tc_35_codex_compact_current_rollup),
     ("TC-36", "Remember document split/group", tc_36_remember_document_split),
+    ("TC-37", "Prefill relevance filter", tc_37_prefill_relevance_filter),
 ]
 
 

@@ -77,9 +77,35 @@ NOTION_URL_RE = re.compile(
 # Tokenizer shared by deterministic gate/rewrite/prefill search.
 TOKEN_RE = re.compile(r"[가-힣A-Za-z0-9_]+")
 
+# Automatic prefill favors precision. These terms may still generate search
+# candidates, but they never count as independent relevance evidence.
+PREFILL_WEAK_TOKENS = {
+    "memory", "memories", "decision", "decisions", "context", "code",
+    "project", "imprint", "메모리", "기억", "결정", "맥락", "코드", "프로젝트",
+}
+PREFILL_QUERY_STOPWORDS = {
+    "알려줘", "알려주세요", "설명해줘", "설명해주세요",
+    "어떻게", "뭐야", "무엇", "동작",
+}
+PREFILL_KOREAN_PARTICLES = (
+    "에서", "으로", "에게", "까지", "부터", "처럼",
+    "을", "를", "은", "는", "이", "가", "과", "와", "의", "에", "로", "도", "만",
+)
+
+# Raw-prompt matchers preserve punctuation that TOKEN_RE deliberately drops.
+STRONG_IDENTIFIER_PATTERNS = (
+    re.compile(r"(?<![A-Za-z0-9_])(?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]+(?![A-Za-z0-9_])"),
+    re.compile(r"(?<![A-Za-z0-9_])v?\d+\.\d+(?:\.\d+)+(?:[-+][A-Za-z0-9.-]+)?(?![A-Za-z0-9_])", re.IGNORECASE),
+    re.compile(r"\b[A-Z][A-Z0-9]+-\d+\b"),
+    re.compile(r"(?<![A-Za-z0-9_.-])[A-Za-z0-9_-]+\.[A-Za-z][A-Za-z0-9]{0,9}(?![A-Za-z0-9_.-])"),
+    re.compile(r"\b[A-Za-z][A-Za-z0-9]*_[A-Za-z0-9_]+\b"),
+    re.compile(r"\b[a-z]+(?:[A-Z][A-Za-z0-9]*)+\b"),
+)
+
 # Foreground prefill limits. Hook latency 를 위해 query/session/retrieved context 크기를 제한한다.
 WORKING_CONTEXT_LIMIT = int(os.environ.get("IMPRINT_WORKING_CONTEXT_LIMIT") or "4")
 PREFILL_CONTEXT_LIMIT = int(os.environ.get("IMPRINT_PREFILL_LIMIT") or "8")
+PREFILL_CANDIDATE_LIMIT = int(os.environ.get("IMPRINT_PREFILL_CANDIDATE_LIMIT") or "32")
 
 # Working memory retention policy.
 # raw_turn 은 query context 용도라 오래 보관하지 않고 session 당 최신 N개만 유지한다.
@@ -1160,13 +1186,9 @@ def prefill_keywords(prompt: str) -> list[str]:
     """원문 token + deterministic rewrite terms 를 FTS/metadata 검색어로 사용."""
     seen: set[str] = set()
     out: list[str] = []
-    stopwords = {
-        "알려줘", "알려주세요", "설명해줘", "설명해주세요",
-        "어떻게", "뭐야", "무엇", "동작",
-    }
     for tok in TOKEN_RE.findall(prompt or ""):
         t = tok.strip().lower()
-        if len(t) < 2 or t in stopwords or t in seen:
+        if len(t) < 2 or t in PREFILL_QUERY_STOPWORDS or t in seen:
             continue
         seen.add(t)
         out.append(t)
@@ -1177,6 +1199,78 @@ def prefill_keywords(prompt: str) -> list[str]:
                 seen.add(t)
                 out.append(t)
     return out[:16]
+
+
+def _project_weak_tokens(conn: sqlite3.Connection, project_id: str) -> set[str]:
+    weak = set(PREFILL_WEAK_TOKENS)
+    try:
+        row = conn.execute(
+            "SELECT root_path, name FROM projects WHERE id = ?",
+            (project_id,),
+        ).fetchone()
+    except sqlite3.Error:
+        row = None
+    if row:
+        values = [row[1] or ""]
+        if row[0]:
+            values.append(Path(str(row[0])).name)
+        for value in values:
+            weak.update(
+                tok.lower() for tok in TOKEN_RE.findall(str(value)) if len(tok) >= 2
+            )
+    return weak
+
+
+def prefill_original_terms(
+    conn: sqlite3.Connection,
+    project_id: str,
+    prompt: str,
+) -> list[str]:
+    """Return distinct original non-weak tokens used as relevance evidence."""
+    weak = _project_weak_tokens(conn, project_id)
+    seen: set[str] = set()
+    terms: list[str] = []
+    for token in TOKEN_RE.findall(prompt or ""):
+        term = token.strip().lower()
+        if (
+            len(term) < 2
+            or term in PREFILL_QUERY_STOPWORDS
+            or term in weak
+            or term in seen
+        ):
+            continue
+        seen.add(term)
+        terms.append(term)
+    return terms
+
+
+def extract_strong_identifiers(prompt: str) -> list[str]:
+    """Extract file/path/symbol/version/issue identifiers from the raw prompt."""
+    matches: list[tuple[int, int, str]] = []
+    for pattern in STRONG_IDENTIFIER_PATTERNS:
+        for match in pattern.finditer(prompt or ""):
+            matches.append((match.start(), match.end(), match.group(0)))
+
+    # Keep the longest overlapping raw identifier. For "src/foo.py", retaining
+    # a second "foo.py" identifier would incorrectly admit broader candidates.
+    selected: list[tuple[int, int, str]] = []
+    for start, end, value in sorted(
+        matches,
+        key=lambda item: (-(item[1] - item[0]), item[0]),
+    ):
+        if any(start >= kept_start and end <= kept_end for kept_start, kept_end, _ in selected):
+            continue
+        selected.append((start, end, value))
+
+    seen: set[str] = set()
+    out: list[str] = []
+    for _start, _end, value in sorted(selected, key=lambda item: item[0]):
+        normalized = value.casefold()
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        out.append(value)
+    return out
 
 
 def cleanup_working_memory(
@@ -1295,144 +1389,323 @@ def _chunk_section(chunk: dict) -> str:
     return "retrieved"
 
 
+@dataclass
+class PrefillSearchResult:
+    candidates: list[dict]
+    found_count: int
+    accepted_count: int
+    matched_term_counts: list[int]
+
+
+def _prefill_metadata(raw: str | None) -> dict[str, Any]:
+    try:
+        value = json.loads(raw or "{}")
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _prefill_candidate(row: sqlite3.Row | tuple, *, bm25_score: float | None = None) -> dict:
+    return {
+        "id": row[0],
+        "chunk_type": row[1],
+        "text": row[2],
+        "metadata_json": row[3],
+        "pinned": int(row[4] or 0),
+        "created_at": row[5] or "",
+        "bm25_score": bm25_score,
+        "matched_term_count": 0,
+        "strong_identifier_match": False,
+    }
+
+
+def _merge_prefill_candidate(seen: dict[str, dict], candidate: dict) -> None:
+    existing = seen.get(candidate["id"])
+    if existing is None:
+        seen[candidate["id"]] = candidate
+    elif existing.get("bm25_score") is None and candidate.get("bm25_score") is not None:
+        existing["bm25_score"] = candidate["bm25_score"]
+
+
+def _candidate_literal_values(candidate: dict) -> tuple[list[str], list[str]]:
+    metadata = _prefill_metadata(candidate.get("metadata_json"))
+    files = metadata.get("files") if isinstance(metadata.get("files"), list) else []
+    symbols = metadata.get("symbols") if isinstance(metadata.get("symbols"), list) else []
+    evidence_values = [str(candidate.get("text") or "")]
+    evidence_values.extend(str(value) for value in files + symbols if value)
+    identifier_values = list(evidence_values)
+    for key in ("source_uri", "url"):
+        value = metadata.get(key)
+        if value:
+            identifier_values.append(str(value))
+    return evidence_values, identifier_values
+
+
+def _contains_exact_identifier(identifier: str, values: list[str]) -> bool:
+    pattern = re.compile(
+        rf"(?<![A-Za-z0-9_]){re.escape(identifier)}(?![A-Za-z0-9_])",
+        re.IGNORECASE,
+    )
+    return any(pattern.search(value) for value in values)
+
+
+def _normalize_prefill_evidence_token(token: str) -> str:
+    normalized = token.lower()
+    for particle in PREFILL_KOREAN_PARTICLES:
+        if normalized.endswith(particle) and len(normalized) - len(particle) >= 2:
+            return normalized[:-len(particle)]
+    return normalized
+
+
+def _term_matches_evidence(term: str, evidence_tokens: set[str]) -> bool:
+    normalized_term = _normalize_prefill_evidence_token(term)
+    normalized_evidence = {
+        _normalize_prefill_evidence_token(token) for token in evidence_tokens
+    }
+    if normalized_term in normalized_evidence:
+        return True
+    if re.fullmatch(r"[가-힣]+", normalized_term):
+        return any(token.startswith(normalized_term) for token in normalized_evidence)
+    return False
+
+
+def _score_prefill_candidate(
+    candidate: dict,
+    original_terms: list[str],
+    strong_identifiers: list[str],
+) -> dict:
+    evidence_values, identifier_values = _candidate_literal_values(candidate)
+    evidence_tokens = {
+        token.lower()
+        for value in evidence_values
+        for token in TOKEN_RE.findall(value)
+    }
+    matched_terms = [
+        term for term in original_terms if _term_matches_evidence(term, evidence_tokens)
+    ]
+    strong_matches = [
+        identifier
+        for identifier in strong_identifiers
+        if _contains_exact_identifier(identifier, identifier_values)
+    ]
+    candidate["matched_terms"] = matched_terms
+    candidate["matched_term_count"] = len(matched_terms)
+    candidate["strong_identifiers"] = strong_matches
+    candidate["strong_identifier_match"] = bool(strong_matches)
+    return candidate
+
+
+def _prefill_recency(value: str | None) -> float:
+    if not value:
+        return 0.0
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.timestamp()
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _prefill_candidate_order(candidate: dict) -> tuple:
+    bm25_score = candidate.get("bm25_score")
+    return (
+        -int(bool(candidate.get("strong_identifier_match"))),
+        -int(candidate.get("matched_term_count") or 0),
+        bm25_score is None,
+        float(bm25_score) if bm25_score is not None else 0.0,
+        -_prefill_recency(candidate.get("created_at")),
+        str(candidate.get("id") or ""),
+    )
+
+
+def _rank_prefill_pool(
+    candidates: Iterable[dict],
+    original_terms: list[str],
+    strong_identifiers: list[str],
+    limit: int,
+) -> list[dict]:
+    scored = [
+        _score_prefill_candidate(candidate, original_terms, strong_identifiers)
+        for candidate in candidates
+    ]
+    return sorted(scored, key=_prefill_candidate_order)[: max(0, limit)]
+
+
+def _accepted_prefill_candidates(candidates: Iterable[dict]) -> list[dict]:
+    return [
+        candidate
+        for candidate in candidates
+        if candidate.get("strong_identifier_match")
+        or int(candidate.get("matched_term_count") or 0) >= 2
+    ]
+
+
+def load_pinned_memory(
+    conn: sqlite3.Connection,
+    project_id: str,
+    limit: int = PREFILL_CONTEXT_LIMIT,
+) -> list[dict]:
+    """Load pinned entries regardless of the retrieval gate."""
+    cur = conn.execute(
+        """
+        SELECT id, raw_type, text, metadata_json, pinned, created_at
+        FROM search_entries
+        WHERE project_id = ?
+          AND pinned = 1
+          AND is_current = 1
+          AND coalesce(raw_type, '') != 'source_status'
+        ORDER BY created_at DESC, id
+        LIMIT ?
+        """,
+        (project_id, max(0, limit)),
+    )
+    return [_prefill_candidate(row) for row in cur]
+
+
+def _fts_prefill_candidates(
+    conn: sqlite3.Connection,
+    project_id: str,
+    keywords: list[str],
+    limit: int,
+) -> list[dict]:
+    if not keywords:
+        return []
+    fts_query = fts_escape(" ".join(keywords))
+    if not fts_query:
+        return []
+    try:
+        cur = conn.execute(
+            """
+            SELECT m.id, m.raw_type, m.text, m.metadata_json, m.pinned, m.created_at,
+                   bm25(search_entries_fts) AS bm25_score
+            FROM search_entries_fts
+            JOIN search_entries m ON m.rowid = search_entries_fts.rowid
+            WHERE search_entries_fts MATCH ?
+              AND m.project_id = ?
+              AND m.pinned = 0
+              AND m.is_current = 1
+              AND coalesce(m.raw_type, '') != 'source_status'
+            ORDER BY bm25_score, m.created_at DESC
+            LIMIT ?
+            """,
+            (fts_query, project_id, max(0, limit)),
+        )
+        return [_prefill_candidate(row, bm25_score=row[6]) for row in cur]
+    except sqlite3.OperationalError as exc:
+        log("WARN", f"fts search failed: {exc}")
+        return []
+
+
+def _metadata_prefill_candidates(
+    conn: sqlite3.Connection,
+    project_id: str,
+    keywords: list[str],
+    limit: int,
+) -> list[dict]:
+    if not keywords:
+        return []
+    placeholders = ",".join("?" * len(keywords))
+    try:
+        cur = conn.execute(
+            f"""
+            SELECT m.id, m.raw_type, m.text, m.metadata_json, m.pinned, m.created_at,
+                   COUNT(DISTINCT lower(CAST(je.value AS TEXT))) AS hits
+            FROM search_entries m,
+                 json_each(json_extract(m.metadata_json, '$.keywords')) je
+            WHERE m.project_id = ?
+              AND m.pinned = 0
+              AND m.is_current = 1
+              AND coalesce(m.raw_type, '') != 'source_status'
+              AND lower(CAST(je.value AS TEXT)) IN ({placeholders})
+            GROUP BY m.id
+            ORDER BY hits DESC, m.created_at DESC
+            LIMIT ?
+            """,
+            [project_id, *keywords, max(0, limit)],
+        )
+        return [_prefill_candidate(row) for row in cur]
+    except sqlite3.OperationalError as exc:
+        log("WARN", f"keywords search failed: {exc}")
+        return []
+
+
+def _like_prefill_candidates(
+    conn: sqlite3.Connection,
+    project_id: str,
+    short_terms: list[str],
+    limit: int,
+) -> list[dict]:
+    terms = short_terms[:8]
+    if not terms:
+        return []
+    clauses: list[str] = []
+    params: list[str] = []
+    for term in terms:
+        escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        clauses.append("lower(m.text) LIKE ? ESCAPE '\\'")
+        params.append(f"%{escaped}%")
+    try:
+        cur = conn.execute(
+            f"""
+            SELECT m.id, m.raw_type, m.text, m.metadata_json, m.pinned, m.created_at
+            FROM search_entries m
+            WHERE m.project_id = ?
+              AND m.pinned = 0
+              AND m.is_current = 1
+              AND coalesce(m.raw_type, '') != 'source_status'
+              AND ({' OR '.join(clauses)})
+            ORDER BY m.created_at DESC
+            LIMIT ?
+            """,
+            [project_id, *params, max(0, limit)],
+        )
+        return [_prefill_candidate(row) for row in cur]
+    except sqlite3.OperationalError as exc:
+        log("WARN", f"like fallback search failed: {exc}")
+        return []
+
+
 def search_memory(
     conn: sqlite3.Connection,
     project_id: str,
     keywords: list[str],
     prompt: str,
-    limit: int = 8,
-) -> list[dict]:
-    """Returns chunks ranked by (pinned DESC, match_score DESC, recency DESC).
-
-    Match score = (FTS5 hits across keywords) + (keyword-array hits in metadata.keywords).
-    """
+    limit: int = PREFILL_CANDIDATE_LIMIT,
+) -> PrefillSearchResult:
+    """Generate, filter, and rank unpinned prefill candidates."""
+    pool_limit = max(0, limit)
+    original_terms = prefill_original_terms(conn, project_id, prompt)
+    strong_identifiers = extract_strong_identifiers(prompt)
     seen: dict[str, dict] = {}
 
-    # 1. FTS5 search across keywords
-    if keywords:
-        fts_query = fts_escape(" ".join(keywords))
-        if fts_query:
-            try:
-                cur = conn.execute(
-                    "SELECT m.id, m.raw_type, m.text, m.metadata_json, m.pinned, m.created_at "
-                    "FROM search_entries_fts f "
-                    "JOIN search_entries m ON m.rowid = f.rowid "
-                    "WHERE f.retrieval_text MATCH ? AND m.project_id = ? "
-                    "  AND m.raw_type != 'source_status' "
-                    "  AND m.is_current = 1 "
-                    "ORDER BY m.pinned DESC, m.created_at DESC LIMIT ?;",
-                    (fts_query, project_id, limit * 2),
-                )
-                for row in cur:
-                    cid = row[0]
-                    seen[cid] = {
-                        "id": cid, "chunk_type": row[1], "text": row[2],
-                        "metadata_json": row[3], "pinned": row[4], "created_at": row[5],
-                        "score": 2.0 + (1.0 if row[4] else 0.0),
-                    }
-            except sqlite3.OperationalError as exc:
-                log("WARN", f"fts search failed: {exc}")
+    for candidate in _fts_prefill_candidates(conn, project_id, keywords, pool_limit):
+        _merge_prefill_candidate(seen, candidate)
+    for candidate in _metadata_prefill_candidates(conn, project_id, keywords, pool_limit):
+        _merge_prefill_candidate(seen, candidate)
 
-    # 2. metadata.keywords array hit
-    if keywords:
-        placeholders = ",".join("?" * len(keywords))
-        try:
-            cur = conn.execute(
-                f"""
-                SELECT m.id, m.raw_type, m.text, m.metadata_json, m.pinned, m.created_at,
-                       COUNT(DISTINCT je.value) AS hits
-                FROM search_entries m, json_each(json_extract(m.metadata_json, '$.keywords')) je
-                WHERE m.project_id = ?
-                  AND m.raw_type != 'source_status'
-                  AND m.is_current = 1
-                  AND je.value IN ({placeholders})
-                GROUP BY m.id
-                ORDER BY hits DESC, m.pinned DESC, m.created_at DESC
-                LIMIT ?;
-                """,
-                [project_id, *keywords, limit * 2],
-            )
-            for row in cur:
-                cid = row[0]
-                hits = row[6] or 0
-                bonus = 1.0 + 0.5 * hits + (1.0 if row[4] else 0.0)
-                if cid in seen:
-                    seen[cid]["score"] += bonus
-                else:
-                    seen[cid] = {
-                        "id": cid, "chunk_type": row[1], "text": row[2],
-                        "metadata_json": row[3], "pinned": row[4], "created_at": row[5],
-                        "score": bonus,
-                    }
-        except sqlite3.OperationalError as exc:
-            log("WARN", f"keywords search failed: {exc}")
+    pool = _rank_prefill_pool(seen.values(), original_terms, strong_identifiers, pool_limit)
+    accepted = _accepted_prefill_candidates(pool)
+    short_terms = [term for term in original_terms if len(term) == 2]
+    if len(accepted) < PREFILL_CONTEXT_LIMIT and short_terms:
+        for candidate in _like_prefill_candidates(
+            conn, project_id, short_terms, pool_limit,
+        ):
+            _merge_prefill_candidate(seen, candidate)
+        pool = _rank_prefill_pool(
+            seen.values(), original_terms, strong_identifiers, pool_limit,
+        )
+        accepted = _accepted_prefill_candidates(pool)
 
-    # 2b. LIKE fallback for short Korean/UI tokens that trigram FTS misses.
-    if keywords and not seen:
-        tokens: list[str] = []
-        seen_tokens: set[str] = set()
-        for tok in keywords:
-            t = tok.strip().lower()
-            if len(t) < 2 or t in seen_tokens:
-                continue
-            seen_tokens.add(t)
-            tokens.append(t)
-        if tokens:
-            clauses = []
-            params: list[str] = []
-            for tok in tokens[:8]:
-                clauses.append("lower(m.text) LIKE ?")
-                params.append(f"%{tok}%")
-            try:
-                cur = conn.execute(
-                    f"""
-                    SELECT m.id, m.raw_type, m.text, m.metadata_json, m.pinned, m.created_at
-                    FROM search_entries m
-                    WHERE m.project_id = ?
-                      AND m.raw_type != 'source_status'
-                      AND m.is_current = 1
-                      AND ({' OR '.join(clauses)})
-                    ORDER BY m.pinned DESC, m.created_at DESC
-                    LIMIT ?;
-                    """,
-                    [project_id, *params, limit * 2],
-                )
-                for row in cur:
-                    haystack = (row[2] or "").lower()
-                    hits = sum(1 for tok in tokens if tok in haystack)
-                    seen[row[0]] = {
-                        "id": row[0], "chunk_type": row[1], "text": row[2],
-                        "metadata_json": row[3], "pinned": row[4], "created_at": row[5],
-                        "score": 1.5 + min(0.5, hits * 0.1) + (1.0 if row[4] else 0.0),
-                    }
-            except sqlite3.OperationalError as exc:
-                log("WARN", f"like fallback search failed: {exc}")
-
-    # 3. fallback: 최근 retrieved memory (decision/code_context/summary/note + 외부 source)
-    # 외부 source chunk를 'note'에서 spec/message/thread로 분리한 뒤
-    # fallback이 빈 결과를 내지 않도록 신규 타입도 포함시킨다.
-    if not seen:
-        try:
-            cur = conn.execute(
-                "SELECT id, raw_type, text, metadata_json, pinned, created_at "
-                "FROM search_entries "
-                "WHERE project_id = ? AND raw_type IN "
-                "  ('decision','fix','todo','note','spec','message','thread') "
-                "  AND is_current = 1 "
-                "ORDER BY pinned DESC, created_at DESC LIMIT ?;",
-                (project_id, limit),
-            )
-            for row in cur:
-                seen[row[0]] = {
-                    "id": row[0], "chunk_type": row[1], "text": row[2],
-                    "metadata_json": row[3], "pinned": row[4], "created_at": row[5],
-                    "score": 0.1,
-                }
-        except sqlite3.OperationalError:
-            pass
-
-    ranked = sorted(seen.values(), key=lambda x: (x["score"], x["pinned"], x["created_at"]), reverse=True)
-    return ranked[:limit]
+    accepted = sorted(accepted, key=_prefill_candidate_order)
+    return PrefillSearchResult(
+        candidates=accepted,
+        found_count=len(pool),
+        accepted_count=len(accepted),
+        matched_term_counts=[
+            int(candidate.get("matched_term_count") or 0) for candidate in pool
+        ],
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1627,7 +1900,11 @@ def cmd_prefill(argv: list[str]) -> int:
     t0 = time.monotonic()
     chunks: list[dict] = []
     working_count = 0
-    retrieved_count = 0
+    pinned_found = 0
+    retrieved_found = 0
+    retrieved_accepted = 0
+    retrieved_included = 0
+    matched_term_counts: list[int] = []
     need_retrieval, retrieval_reason = retrieval_gate(prompt)
     try:
         try:
@@ -1636,16 +1913,29 @@ def cmd_prefill(argv: list[str]) -> int:
                     conn, project_id, session_id, limit=WORKING_CONTEXT_LIMIT,
                 )
                 working_count = len(working)
-                retrieved = []
+                pinned = load_pinned_memory(
+                    conn, project_id, limit=PREFILL_CONTEXT_LIMIT,
+                )
+                pinned_found = len(pinned)
+                search_result = PrefillSearchResult([], 0, 0, [])
                 if need_retrieval:
-                    retrieved = search_memory(
+                    search_result = search_memory(
                         conn, project_id, prefill_keywords(prompt), prompt,
-                        limit=PREFILL_CONTEXT_LIMIT,
+                        limit=PREFILL_CANDIDATE_LIMIT,
                     )
-                retrieved_count = len(retrieved)
+                retrieved_found = search_result.found_count
+                retrieved_accepted = search_result.accepted_count
+                matched_term_counts = search_result.matched_term_counts
+
+                pinned_ids = {c.get("id") for c in pinned if c.get("id")}
+                unpinned = [
+                    candidate
+                    for candidate in search_result.candidates
+                    if candidate.get("id") not in pinned_ids
+                ]
                 seen: set[str] = set()
                 chunks = []
-                for c in working + retrieved:
+                for c in working:
                     cid = c.get("id")
                     if cid in seen:
                         continue
@@ -1654,6 +1944,17 @@ def cmd_prefill(argv: list[str]) -> int:
                     chunks.append(c)
                     if len(chunks) >= PREFILL_CONTEXT_LIMIT:
                         break
+                if len(chunks) < PREFILL_CONTEXT_LIMIT:
+                    for c in pinned + unpinned:
+                        cid = c.get("id")
+                        if cid in seen:
+                            continue
+                        if cid:
+                            seen.add(cid)
+                        chunks.append(c)
+                        retrieved_included += 1
+                        if len(chunks) >= PREFILL_CONTEXT_LIMIT:
+                            break
         except sqlite3.Error as exc:
             log("WARN", f"db prefill: {exc}")
             chunks = []
@@ -1663,7 +1964,15 @@ def cmd_prefill(argv: list[str]) -> int:
                       dur_ms=int((time.monotonic() - t0) * 1000),
                       chunks=len(chunks),
                       working_chunks=working_count,
-                      retrieved_chunks=retrieved_count,
+                      pinned_found=pinned_found,
+                      retrieved_found=retrieved_found,
+                      retrieved_accepted=retrieved_accepted,
+                      retrieved_skipped_low_relevance=max(
+                          0, retrieved_found - retrieved_accepted,
+                      ),
+                      retrieved_included=retrieved_included,
+                      retrieved_chunks=retrieved_included,
+                      matched_term_count=matched_term_counts,
                       retrieved_search_skipped=not need_retrieval,
                       need_retrieval=need_retrieval,
                       retrieval_reason=retrieval_reason,

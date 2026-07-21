@@ -114,7 +114,9 @@ imprint memory profile --days 7 --json
 ```
 
 ### `/memory pin <chunk-id>`
-Mark chunk as pinned so the prefill hook always includes it.
+Mark a chunk as pinned so it bypasses relevance filtering and takes priority in
+the retrieved-memory slots that remain within the overall prefill limit.
+Pinned lookup runs even when the normal retrieval gate is closed.
 
 ### `/memory list [필터들...]`
 List memory chunks for the current project (또는 `--project`로 다른 프로젝트).
