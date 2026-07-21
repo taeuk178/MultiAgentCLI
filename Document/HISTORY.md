@@ -15,6 +15,12 @@
 
 기록 순서는 **최신이 위**. 항목당 한 단락 안에 변경/사유/대안 폐기 근거를 묶는다.
 
+## 2026-07-21 — Codex 개인 marketplace 설치 경로 정합성 수정
+
+**무엇:** `install-codex.sh` 가 plugin source 를 `~/plugins/imprint`에 연결하고 `~/.agents/plugins/marketplace.json`은 Codex의 자동 발견에 맡기도록 수정했다. 과거 스크립트가 만든 `[marketplaces.imprint]` 설정은 제거하고, marketplace의 실제 이름으로 `codex plugin add imprint@<name>`까지 실행한다.
+
+**왜:** 기존 스크립트는 source link를 `~/.agents/plugins/imprint`에 만들고 `~/.agents`를 marketplace root로 중복 등록했다. 현재 Codex CLI는 개인 marketplace의 `./plugins/imprint`를 `~/plugins/imprint`로 해석하므로 source를 찾지 못했고, 중복 등록된 root에서는 지원 manifest가 없다는 오류가 발생했다. 개인 marketplace의 표준 경로와 자동 발견 계약을 따르면 수동 config 수정 없이 신규 설치와 재설치가 같은 흐름으로 동작한다.
+
 ## 2026-07-21 — 0.2.1 release metadata 동기화
 
 **무엇:** 자동 prefill 관련성 필터와 pinned lane 분리가 `main` 에 병합된 뒤 release metadata 를 `0.2.1` 로 올렸다. `VERSION`, root/Codex/Claude plugin manifest, Claude marketplace, Codex marketplace ref, 설치 문서의 release/tag 예시를 같은 버전으로 맞췄다.

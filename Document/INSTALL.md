@@ -32,7 +32,7 @@ codex plugin marketplace add taeuk178/imprint --ref 0.2.1
 codex plugin marketplace upgrade
 ```
 
-재설치하려면 Claude Code 는 `/plugin uninstall imprint@imprint` → `/plugin marketplace remove imprint` 후 위 설치를 다시 실행하고, Codex 는 `codex plugin marketplace remove imprint` 후 다시 add/upgrade 합니다. Codex CLI 에는 `plugin install` 명령이 없으므로 실제 plugin 설치는 Codex App UI 에서 수행합니다.
+재설치하려면 Claude Code 는 `/plugin uninstall imprint@imprint` → `/plugin marketplace remove imprint` 후 위 설치를 다시 실행합니다. Codex 로컬 설치는 아래 `install-codex.sh` 가 개인 marketplace 를 갱신한 뒤 `codex plugin add imprint@imprint` 까지 수행합니다.
 
 ### 2. 로컬 마켓플레이스로 등록
 
@@ -43,7 +43,7 @@ codex plugin marketplace upgrade
 /plugin install imprint@imprint
 ```
 
-Codex App 에서 `Imprint: Memory` 같은 스킬까지 바로 쓰려면 설치 스크립트를 실행합니다. `~/.codex/config.toml` 설정과 skill/wrapper 링크(`~/.codex/skills/`, `~/.agents/plugins/imprint`, `~/.local/bin/imprint`)를 한 번에 처리합니다. 설정 후 Codex App 을 재시작하거나 새 thread 를 엽니다.
+Codex App 에서 `Imprint: Memory` 같은 스킬까지 바로 쓰려면 설치 스크립트를 실행합니다. 개인 marketplace 파일(`~/.agents/plugins/marketplace.json`), plugin source 링크(`~/plugins/imprint`), skill/wrapper 링크(`~/.codex/skills/`, `~/.local/bin/imprint`)를 만들고 `codex plugin add` 로 설치합니다. 개인 marketplace 는 Codex 가 자동 발견하므로 별도 `marketplace add` 설정을 만들지 않습니다. 설정 후 Codex App 을 재시작하거나 새 thread 를 엽니다.
 
 ```bash
 bash <ABSOLUTE_PATH_TO_THIS_REPO>/scripts/imprint/install-codex.sh

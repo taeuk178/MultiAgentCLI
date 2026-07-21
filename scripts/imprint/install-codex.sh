@@ -9,6 +9,7 @@ IMPRINT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
 CODEX_CONFIG="${CODEX_CONFIG:-$CODEX_HOME/config.toml}"
 MARKETPLACE_ROOT="${IMPRINT_CODEX_MARKETPLACE_ROOT:-$HOME/.agents}"
+PLUGIN_PARENT="${IMPRINT_CODEX_PLUGIN_PARENT:-$HOME/plugins}"
 LOCAL_BIN="${LOCAL_BIN:-$HOME/.local/bin}"
 
 link_force() {
@@ -25,14 +26,20 @@ link_force() {
   ln -s "$target" "$link_path"
 }
 
-mkdir -p "$MARKETPLACE_ROOT/plugins" "$CODEX_HOME/skills" "$LOCAL_BIN"
+mkdir -p "$MARKETPLACE_ROOT/plugins" "$PLUGIN_PARENT" "$CODEX_HOME/skills" "$LOCAL_BIN"
 
-link_force "$IMPRINT_ROOT" "$MARKETPLACE_ROOT/plugins/imprint"
+LEGACY_PLUGIN_LINK="$MARKETPLACE_ROOT/plugins/imprint"
+if [[ -L "$LEGACY_PLUGIN_LINK" ]]; then
+  rm -f "$LEGACY_PLUGIN_LINK"
+fi
+
+link_force "$IMPRINT_ROOT" "$PLUGIN_PARENT/imprint"
 for skill in "$IMPRINT_ROOT"/skills/*; do
   [[ -d "$skill" && -f "$skill/SKILL.md" ]] || continue
   link_force "$skill" "$CODEX_HOME/skills/$(basename "$skill")"
 done
 
+MARKETPLACE_NAME="$(
 MARKETPLACE_FILE="$MARKETPLACE_ROOT/plugins/marketplace.json" python3 - <<'PY'
 import json
 import os
@@ -46,7 +53,7 @@ if path.exists():
 else:
     data = {"name": "imprint", "interface": {"displayName": "Imprint"}, "plugins": []}
 
-data.setdefault("name", "imprint")
+data["name"] = data.get("name") or "imprint"
 data.setdefault("interface", {}).setdefault("displayName", "Imprint")
 plugins = [plugin for plugin in data.get("plugins", []) if plugin.get("name") != "imprint"]
 plugins.append(
@@ -60,15 +67,16 @@ plugins.append(
 data["plugins"] = plugins
 
 path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+print(data["name"])
 PY
+)"
 
-CODEX_CONFIG="$CODEX_CONFIG" MARKETPLACE_ROOT="$MARKETPLACE_ROOT" python3 - <<'PY'
+CODEX_CONFIG="$CODEX_CONFIG" python3 - <<'PY'
 import os
 import re
 from pathlib import Path
 
 path = Path(os.environ["CODEX_CONFIG"])
-marketplace_root = os.environ["MARKETPLACE_ROOT"]
 path.parent.mkdir(parents=True, exist_ok=True)
 text = path.read_text() if path.exists() else ""
 
@@ -93,13 +101,14 @@ def replace_table(value: str, table: str, body: str) -> str:
         return pattern.sub(block, value)
     return value.rstrip() + "\n\n" + block
 
+def remove_table(value: str, table: str) -> str:
+    escaped = re.escape(table)
+    pattern = re.compile(rf"(?ms)^\[{escaped}\]\n.*?(?=^\[|\Z)")
+    return pattern.sub("", value)
+
 text = ensure_features_plugin_hooks(text)
 text = replace_table(text, 'plugins."imprint@imprint"', "enabled = true")
-text = replace_table(
-    text,
-    "marketplaces.imprint",
-    f'source_type = "local"\nsource = "{marketplace_root}"',
-)
+text = remove_table(text, "marketplaces.imprint")
 
 path.write_text(text.rstrip() + "\n")
 PY
@@ -142,6 +151,19 @@ case "\${1:-}" in
 esac
 SH
 chmod +x "$LOCAL_BIN/imprint"
+
+if [[ -n "${CODEX_BIN:-}" ]]; then
+  CODEX_EXEC="$CODEX_BIN"
+elif [[ -x "/Applications/ChatGPT.app/Contents/Resources/codex" ]]; then
+  CODEX_EXEC="/Applications/ChatGPT.app/Contents/Resources/codex"
+elif command -v codex >/dev/null 2>&1; then
+  CODEX_EXEC="$(command -v codex)"
+else
+  echo "Codex CLI not found. Set CODEX_BIN and run this installer again." >&2
+  exit 1
+fi
+
+"$CODEX_EXEC" plugin add "imprint@$MARKETPLACE_NAME"
 
 echo "Imprint Codex install complete."
 echo "Restart Codex App or open a new thread, then search for 'Imprint: Memory', 'Imprint: Search', or 'Imprint: Setup'."
