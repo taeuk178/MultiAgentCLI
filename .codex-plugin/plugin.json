@@ -1,6 +1,6 @@
 {
   "name": "imprint",
-  "version": "0.2",
+  "version": "0.2.1",
   "description": "Per-project context memory for Codex/GPT and Claude Code. Local SQLite + FTS5, prefill injection, and rollup-backed search.",
   "author": {
     "name": "Imprint contributors"

@@ -3,7 +3,7 @@
 
 Usage:
   python3 scripts/imprint/sync-plugin-version.py
-  python3 scripts/imprint/sync-plugin-version.py 0.2
+  python3 scripts/imprint/sync-plugin-version.py 0.2.1
 
 The version string is shared by:
 - VERSION

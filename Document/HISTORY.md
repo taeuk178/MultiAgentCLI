@@ -15,6 +15,12 @@
 
 기록 순서는 **최신이 위**. 항목당 한 단락 안에 변경/사유/대안 폐기 근거를 묶는다.
 
+## 2026-07-21 — 0.2.1 release metadata 동기화
+
+**무엇:** 자동 prefill 관련성 필터와 pinned lane 분리가 `main` 에 병합된 뒤 release metadata 를 `0.2.1` 로 올렸다. `VERSION`, root/Codex/Claude plugin manifest, Claude marketplace, Codex marketplace ref, 설치 문서의 release/tag 예시를 같은 버전으로 맞췄다.
+
+**왜:** 이번 변경은 저장·검색 모델을 바꾸지 않고 자동 주입의 precision과 pinned 계약, profile 정합성을 보강하는 호환 가능한 수정이다. 기존 `0.2` 사용자가 기능 변화의 경계를 명확히 식별하면서 업그레이드할 수 있도록 patch release로 배포한다.
+
 ## 2026-07-21 — 자동 prefill 관련성 필터와 pinned lane 분리
 
 **무엇:** `UserPromptSubmit` 의 경량 prefill 에서 매칭 실패 시 최신 unpinned memory 를 채우던 fallback 을 제거했다. pinned entry 는 retrieval gate 와 무관하게 별도 조회하고, unpinned 후보는 원본 질의의 서로 다른 non-weak token 2개 또는 파일명·경로·이슈 키·버전 같은 강한 식별자 1개가 직접 맞을 때만 포함한다. FTS5 trigram 이 놓치는 2글자 원본 토큰은 후보가 부족할 때 LIKE 후보 생성 경로로 보강하며, BM25 는 통과 여부가 아닌 정렬에만 사용한다. 조립 순서는 working → pinned → accepted unpinned 이고 전체 prefill cap 은 유지한다.

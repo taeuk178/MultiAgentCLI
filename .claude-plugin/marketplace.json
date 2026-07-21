@@ -9,7 +9,7 @@
     {
       "name": "imprint",
       "description": "Per-project context memory for Claude Code: persistent memory chunks, prefill context injection, and rollup-backed search. OAuth subscription based.",
-      "version": "0.2",
+      "version": "0.2.1",
       "source": "./",
       "category": "productivity",
       "tags": [
@@ -20,5 +20,5 @@
       ]
     }
   ],
-  "version": "0.2"
+  "version": "0.2.1"
 }

@@ -28,7 +28,7 @@ Claude Code 는 `.claude-plugin/marketplace.json` 을 읽습니다.
 Codex 는 GitHub release tag 를 marketplace 로 추가합니다. plugin 본문은 repo root 의 `plugin.json` 에서 읽습니다.
 
 ```bash
-codex plugin marketplace add taeuk178/imprint --ref 0.2
+codex plugin marketplace add taeuk178/imprint --ref 0.2.1
 codex plugin marketplace upgrade
 ```
 
@@ -206,12 +206,12 @@ bash -n scripts/imprint/memory.sh
 release 전 repo root 에서 버전을 동기화하고 main/tag/GitHub Release 를 같은 버전으로 맞춥니다. 기존 tag/release 확인은 `git tag --list <v>`, `gh release view <v>`.
 
 ```bash
-python3 scripts/imprint/sync-plugin-version.py 0.2
+python3 scripts/imprint/sync-plugin-version.py 0.2.1
 git add VERSION plugin.json .claude-plugin .codex-plugin .agents/plugins/marketplace.json
-git commit -m "plugin 배포 버전 0.2 동기화"
+git commit -m "plugin 배포 버전 0.2.1 동기화"
 git push origin main
-git tag 0.2 && git push origin 0.2
-gh release create 0.2 --title "imprint 0.2" --notes-file <notes-file>
+git tag 0.2.1 && git push origin 0.2.1
+gh release create 0.2.1 --title "imprint 0.2.1" --notes-file <notes-file>
 ```
 
 ## 제거
