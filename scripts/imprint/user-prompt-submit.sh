@@ -221,23 +221,28 @@ if [[ "${IMPRINT_ENABLE_LAZY_FETCH:-0}" == "1" && -n "$PID" && -x "$(command -v 
 fi
 
 PREFILL_OUT=""
+PREFILL_FAILED=0
 if [[ -n "$PID" && -x "$(command -v python3)" ]]; then
-  PREFILL_OUT=$(printf '%s' "$SAFE_PROMPT" \
-    | python3 "$SCRIPT_DIR/lib/ingestion.py" prefill "$PID" "$SESSION_ID" "$EVENT_ID" 2>>"$IMPRINT_LOG" || true)
+  if ! PREFILL_OUT=$(printf '%s' "$SAFE_PROMPT" \
+    | python3 "$SCRIPT_DIR/lib/ingestion.py" prefill "$PID" "$SESSION_ID" "$EVENT_ID" 2>>"$IMPRINT_LOG"); then
+    PREFILL_FAILED=1
+    PREFILL_OUT=""
+  fi
 fi
 
-# Fallback: if ingestion.py produced nothing (host CLI missing, OAuth not
-# configured, etc.) emit the legacy simple memory context so the user still
-# benefits from prior chunks.
-if [[ -z "${PREFILL_OUT// }" && -n "$PID" ]] && command -v sqlite3 >/dev/null 2>&1; then
+# A successful empty prefill is intentional: do not refill it with unrelated
+# recent memory. If the Python process itself fails, preserve only the explicit
+# pinned contract through the lightweight SQLite fallback.
+if [[ "$PREFILL_FAILED" == "1" && -n "$PID" ]] && command -v sqlite3 >/dev/null 2>&1; then
   INJECTED=$(db_exec "
     SELECT '- [' || raw_type || '] ' || REPLACE(text, char(10), ' ')
     FROM search_entries
     WHERE project_id = '$PID'
-      AND raw_type IN ('decision', 'fix', 'todo', 'note')
+      AND pinned = 1
       AND is_current = 1
-    ORDER BY pinned DESC, created_at DESC
-    LIMIT 5;
+      AND coalesce(raw_type, '') != 'source_status'
+    ORDER BY created_at DESC
+    LIMIT 8;
   " 2>>"$IMPRINT_LOG" || true)
 
   if [[ -n "${INJECTED// }" ]]; then

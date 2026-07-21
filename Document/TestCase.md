@@ -13,7 +13,7 @@ python3 scripts/imprint/tests/run_tests.py
 현재 기준선:
 
 ```text
-TOTAL  36 PASS / 0 FAIL
+TOTAL  37 PASS / 0 FAIL
 ```
 
 ## 현재 커버리지
@@ -31,6 +31,7 @@ TOTAL  36 PASS / 0 FAIL
 - Codex compact current-session guarded rollup 과 Claude Code current-session 제외 정책
 - lazy fetch opt-in
 - source status, noise flag, profile, dedup/provenance trace
+- prefill relevance filter, pinned gate bypass, strong identifier/LIKE fallback
 
 ## 테스트 추가 원칙
 

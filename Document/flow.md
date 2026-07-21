@@ -10,6 +10,7 @@
 - 영구 기억은 `search_entries` 로 모읍니다. `/remember`, rollup extract, source document ingest 가 같은 검색 인덱스를 씁니다.
 - vector 검색은 선택 기능입니다. 기존 entry 는 `imprint setup vector --backfill` 로 `search_entries.embedding` 을 채운 뒤 semantic lane 에 참여합니다. 새 rollup entry 는 vector 설치 환경에서 자동 embedding 됩니다.
 - Slack/Notion fetch 는 기본 RAG 루프가 아니라 opt-in external source cache 입니다. 자동 lazy fetch 는 `IMPRINT_ENABLE_LAZY_FETCH=1` 일 때만 켭니다.
+- 자동 prefill 은 precision-first 입니다. working context 다음에 gate 와 무관한 pinned entry 를 넣고, unpinned entry 는 원본 질의의 non-weak token 2개 또는 강한 식별자 1개가 직접 맞을 때만 남깁니다. 매칭 실패 시 최신 unpinned memory 로 채우지 않습니다.
 
 ## 사용 기술과 역할
 
@@ -33,7 +34,7 @@
 
 ### 일반 LLM 사용 Sequence
 
-평소처럼 LLM 과 대화하거나 코딩 작업을 맡길 때의 경로입니다. 이 경로는 raw 대화를 `events` 에 기록하고, 가벼운 prefill 만 수행합니다. 구현 기억은 session 이 stale 이거나 사용자가 명시 rollup 을 실행했을 때 background 에서 `search_entries` 로 정리됩니다. Codex App 은 긴 thread 를 계속 쓰는 UX 이므로 `compact` 이후에는 current session 도 idle 조건을 만족할 때 1 batch rollup 합니다.
+평소처럼 LLM 과 대화하거나 코딩 작업을 맡길 때의 경로입니다. 이 경로는 raw 대화를 `events` 에 기록하고, 가벼운 prefill 만 수행합니다. prefill 은 전체 cap 안에서 **working → pinned → accepted unpinned** 순으로 조립합니다. pinned 는 retrieval gate 를 우회하지만, unpinned 는 원본 근거 필터를 통과해야 하며 빈 슬롯을 최신 memory 로 채우지 않습니다. 구현 기억은 session 이 stale 이거나 사용자가 명시 rollup 을 실행했을 때 background 에서 `search_entries` 로 정리됩니다. Codex App 은 긴 thread 를 계속 쓰는 UX 이므로 `compact` 이후에는 current session 도 idle 조건을 만족할 때 1 batch rollup 합니다.
 
 ```mermaid
 %%{init: {'flowchart': {'useMaxWidth': true, 'rankSpacing': 44, 'nodeSpacing': 34}, 'theme': 'default'}}%%
@@ -224,6 +225,9 @@ imprint migrate search-entries
 |---|---|---|
 | `IMPRINT_HOME` | `~/.imprint` | DB, log, profile 저장 위치 |
 | `IMPRINT_PROFILE` | `0` | `1`이면 profile JSONL 기록 |
+| `IMPRINT_WORKING_CONTEXT_LIMIT` | `4` | prefill working 후보 조회 상한 |
+| `IMPRINT_PREFILL_LIMIT` | `8` | working·pinned·unpinned를 합친 최종 prefill 상한 |
+| `IMPRINT_PREFILL_CANDIDATE_LIMIT` | `32` | 관련성 필터 전에 조회하는 unpinned 후보 pool 상한 |
 | `IMPRINT_DISABLE_ROLLUP` | `0` | `1`이면 SessionStart stale rollup 비활성 |
 | `IMPRINT_ENABLE_LAZY_FETCH` | `0` | `1`이면 UserPromptSubmit 에서 Slack/Notion lazy fetch 활성 |
 | `IMPRINT_CODEX_ROLLUP_ON_COMPACT` | `1` | Codex compact 때 current session guarded rollup 활성 |
@@ -245,6 +249,11 @@ imprint migrate search-entries
 | `~/.imprint/app.sqlite` | SQLite DB |
 | `~/.imprint/plugin.log` | hook, dispatcher, ingestion log |
 | `~/.imprint/profile.jsonl` | `IMPRINT_PROFILE=1` 측정값 |
+
+`cmd_prefill` profile 은 `pinned_found`, `retrieved_found`,
+`retrieved_accepted`, `retrieved_skipped_low_relevance`,
+`retrieved_included` 를 정수 count 로 기록합니다. 기존 `retrieved_chunks` 는
+호환을 위해 유지하며 실제 포함 수인 `retrieved_included` 와 같습니다.
 
 ### Graceful degradation
 
