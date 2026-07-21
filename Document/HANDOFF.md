@@ -23,7 +23,7 @@
 
 ```text
 python3 scripts/imprint/tests/run_tests.py
-TOTAL  36 PASS / 0 FAIL
+TOTAL  37 PASS / 0 FAIL
 ```
 
 테스트는 임시 `IMPRINT_HOME=/tmp/...` 에서 실행합니다. 사용자 홈 `~/.imprint` 직접 수정은 명시 동의 전까지 하지 않습니다.
@@ -174,7 +174,12 @@ WARN: cross-encoder load failed: ModuleNotFoundError("No module named 'sentence_
 4. `imprint repo` 안에서 `bash scripts/imprint/search.sh "..."` 직접 호출 흐름은
    여전히 정상인지 (SKILL.md 변경이 직접 호출 경로에는 영향 없음).
 
-## 발견된 미해결 이슈 — prefill 저관련 memory 주입 (2026-07-21 분석)
+## 해결된 이슈 — prefill 저관련 memory 주입 (2026-07-21)
+
+구현 완료: `dd0819a` (`prefill 저관련 메모리 주입을 차단`). 아래 분석과 합의안을
+그대로 반영했으며 TC-37을 포함한 전체 기준선은 37 PASS / 0 FAIL입니다. 운영
+환경에서는 `IMPRINT_PROFILE=1`의 lane별 count 분포를 관찰해 weak token과 후보
+pool 크기를 조정합니다.
 
 ### 증상
 
@@ -189,34 +194,33 @@ WARN: cross-encoder load failed: ModuleNotFoundError("No module named 'sentence_
 주제(imprint)는 같지만 의도(후기 작성 vs 내부 디버깅)가 다른 경우를 구분하지
 못하고, 일반어 토큰 하나만 겹쳐도 후보가 됩니다.
 
-### 근본 원인
+### 변경 전 근본 원인
 
 prefill 경로는 `/search` 의 hybrid 파이프라인(`retrieve.py`)을 쓰지 않습니다.
 
-- `cmd_prefill` (`ingestion.py:1614`) → `retrieval_gate()` 통과 시
-  `search_memory()` (`ingestion.py:1298`) 호출.
-- `search_memory` 는 FTS5 hit 에 **일괄 2.0점**, metadata.keywords hit 에
-  `1.0 + 0.5×hits`, LIKE fallback 에 1.5점을 주는 경량 스코어러입니다.
-  임베딩·RRF·rerank 모두 없음.
+- `cmd_prefill` 은 `retrieval_gate()` 통과 시 `search_memory()` 를 호출했습니다.
+- 당시 `search_memory` 는 FTS5 hit 에 **일괄 2.0점**, metadata.keywords hit 에
+  `1.0 + 0.5×hits`, LIKE fallback 에 1.5점을 주는 경량 스코어러였습니다.
+  임베딩·RRF·rerank은 없었습니다.
 - **절대 점수 하한이 없어** 키워드 하나만 겹쳐도 상위 8개
-  (`PREFILL_CONTEXT_LIMIT`) 를 채웁니다.
-- **무조건 fallback**: 매칭이 하나도 없으면 최신
+  (`PREFILL_CONTEXT_LIMIT`) 를 채웠습니다.
+- **기존 무조건 fallback**: 매칭이 하나도 없으면 최신
   decision/fix/todo/note/spec/message/thread 를 관련성 없이 recency 순으로
-  score 0.1 로 반환합니다 (`ingestion.py:1411`). "빈 결과를 내지 않도록" 이
+  score 0.1 로 반환했습니다. "빈 결과를 내지 않도록" 이
   의도된 설계였으나 자동 prefill 에서는 이 의도 자체가 오주입 원인입니다.
-- `retrieval_gate()` (`ingestion.py:1129`) 는 "왜/어떻게" 류 키워드 또는
-  5개 이상 토큰이면 대부분 열리므로 관련성 판정 역할을 하지 못합니다.
+- `retrieval_gate()` 는 "왜/어떻게" 류 키워드 또는 5개 이상 토큰이면 대부분
+  열리므로 후보별 관련성 판정 역할을 하지 못했습니다.
 - `retrieve.py` 의 `_low_confidence_reasons()` (top1 < 0.13,
   working_only, entity_mismatch 진단) 는 `/search` 경로 전용이며, 그마저도
   trace/CLI 출력용일 뿐 후보 제외에는 쓰이지 않습니다.
-- profile 의 `retrieved_chunks` 는 dedupe/cap 적용 전에 계산되어 실제 포함
-  수와 다를 수 있습니다 (`ingestion.py:1645` 부근).
+- 기존 profile 의 `retrieved_chunks` 는 dedupe/cap 적용 전에 계산되어 실제
+  포함 수와 다를 수 있었습니다.
 
 즉 문제는 "top-1 점수가 낮다" 가 아니라 **관련 후보가 부족해도 슬롯을 끝까지
-채우는 정책**입니다. 저신뢰 진단 인프라는 있으나 prefill 은 그 경로를 타지
-않고, 타는 경로에는 진단 자체가 없습니다.
+채우던 정책**이었습니다. 저신뢰 진단 인프라는 있었으나 prefill 은 그 경로를
+타지 않았고, 당시 경량 경로에는 후보별 차단 기준도 없었습니다.
 
-### 확정 해결 방향 (2026-07-21 리뷰 합의)
+### 확정 해결 방향 (2026-07-21 리뷰 합의·구현 완료)
 
 초기 A+B안(점수 임계값 + stopword 확장)은 리뷰를 거쳐 아래 안으로 교체했습니다.
 

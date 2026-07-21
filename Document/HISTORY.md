@@ -15,6 +15,12 @@
 
 기록 순서는 **최신이 위**. 항목당 한 단락 안에 변경/사유/대안 폐기 근거를 묶는다.
 
+## 2026-07-21 — 자동 prefill 관련성 필터와 pinned lane 분리
+
+**무엇:** `UserPromptSubmit` 의 경량 prefill 에서 매칭 실패 시 최신 unpinned memory 를 채우던 fallback 을 제거했다. pinned entry 는 retrieval gate 와 무관하게 별도 조회하고, unpinned 후보는 원본 질의의 서로 다른 non-weak token 2개 또는 파일명·경로·이슈 키·버전 같은 강한 식별자 1개가 직접 맞을 때만 포함한다. FTS5 trigram 이 놓치는 2글자 원본 토큰은 후보가 부족할 때 LIKE 후보 생성 경로로 보강하며, BM25 는 통과 여부가 아닌 정렬에만 사용한다. 조립 순서는 working → pinned → accepted unpinned 이고 전체 prefill cap 은 유지한다.
+
+**왜:** 기존 구현은 일반어 하나가 겹치거나 검색 결과가 없어도 최신 memory 로 슬롯을 채워, 질문 주제와 의도가 다른 내부 결정이 자동 주입될 수 있었다. `/search` 의 hybrid 검색을 foreground hook 에 그대로 쓰면 프로세스별 embedding cold-load 비용이 생기고 current boost 때문에 저신뢰 하한도 충분한 차단 기준이 되지 않는다. 따라서 자동 주입은 결정적이고 보수적인 원본 근거 필터로 제한하고, 넓은 의미 검색은 명시 `/search` 의 책임으로 유지했다. `pinned_found`, `retrieved_found`, `retrieved_accepted`, `retrieved_skipped_low_relevance`, `retrieved_included` 를 profile 에 분리 기록하며 TC-37에서 부정/긍정, pinned gate 우회, 강한 식별자 4종, 2글자 LIKE, count 정합성을 검증했다.
+
 ## 2026-05-30 — 0.2 release metadata 동기화
 
 **무엇:** `/remember` 문서형 분할 저장 v2 와 완료 이력 문서 정리가 `main` 에 병합된 뒤 release metadata 를 `0.2` 로 올렸다. `VERSION`, root/Codex/Claude plugin manifest, Claude marketplace, Codex marketplace ref, 설치 문서의 release/tag 예시를 같은 버전으로 맞췄다. minor release ref 를 직접 쓸 수 있도록 `sync-plugin-version.py` 는 `0.2` 같은 `major.minor` 형식을 허용한다.

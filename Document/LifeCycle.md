@@ -7,7 +7,7 @@
 | hook | 현재 역할 |
 |---|---|
 | `SessionStart` | 스키마 적용, 프로젝트 등록, `.imprint/Guardrail.md` prepend, background rollup spawn |
-| `UserPromptSubmit` | prompt 저장, working surface 저장, context section prefill, opt-in lazy-fetch worker spawn |
+| `UserPromptSubmit` | prompt 저장, working surface 저장, working → pinned → 관련 unpinned 순의 context section prefill, opt-in lazy-fetch worker spawn |
 | `Stop` | assistant 응답을 `events` 에 archive |
 
 `SessionStart` 의 rollup 정책은 host 별로 다릅니다. Claude Code 는 current session 을 제외한 stale session 만 background rollup 합니다. Codex App 은 하나의 thread 를 오래 재사용하므로 `compact` 때 current session 이 idle 조건을 만족하면 1 batch guarded rollup 을 추가합니다.

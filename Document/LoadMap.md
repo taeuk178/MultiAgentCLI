@@ -6,7 +6,7 @@
 - 결정 사유와 폐기한 대안은 `HISTORY.md` 를 봅니다.
 - 설치와 사용자 명령은 `INSTALL.md`, 상세 hook/retrieval 플로우는 `flow.md` 를 봅니다.
 
-최종 업데이트: 2026-07-15.
+최종 업데이트: 2026-07-21.
 
 ## 방향
 
@@ -56,7 +56,7 @@ API key 없이 host 의 OAuth 구독을 그대로 사용합니다. 무거운 LLM
 
 상세 hook 단계, 테이블 역할, 환경 변수는 `flow.md` 가 기준입니다. 여기서는 계층 구분만 요약합니다.
 
-- **Hook 계층** — `SessionStart`(스키마 적용, Guardrail prepend, stale session background rollup — Codex 는 compact 때 idle 조건 하에 current session 도 1 batch), `UserPromptSubmit`(redaction·archive, working surface 저장, 경량 prefill, opt-in lazy-fetch spawn), `Stop`(응답 redaction·archive). 동기 hook 은 사용자 turn 을 막지 않는 경량 작업만 수행하고, LLM 호출은 background 로 분리합니다.
+- **Hook 계층** — `SessionStart`(스키마 적용, Guardrail prepend, stale session background rollup — Codex 는 compact 때 idle 조건 하에 current session 도 1 batch), `UserPromptSubmit`(redaction·archive, working surface 저장, working → pinned → 관련 unpinned 순의 경량 prefill, opt-in lazy-fetch spawn), `Stop`(응답 redaction·archive). 동기 hook 은 사용자 turn 을 막지 않는 경량 작업만 수행하고, LLM 호출은 background 로 분리합니다.
 - **Memory 계층** — `events` 는 redacted raw archive(노이즈는 `noise=1` soft flag). `search_entries` 는 `/remember`, rollup extract, source document chunk, opt-in external fetch 가 공유하는 단일 검색 인덱스이며 prefill 후보와 `/search` 후보의 원천입니다. `search_summaries` 는 feature/document/project 요약. working overlay 는 영구 entry 로 만들지 않고 `events.metadata_json` 을 검색 시점에 읽습니다.
 - **Retrieval 계층** — local 은 multi-rewrite → hybrid search(FTS5 + optional vector) → RRF → boost/penalty → optional rerank. feature/global 은 summary 검색 + grounding + contradiction check. 같은 주제의 `/remember`(canonical_memory) 와 rollup row(rollup_evidence) 는 질문 의도에 따라 우선순위를 나눕니다. 저신뢰여도 raw events 자동 fallback 은 열지 않습니다.
 - **External Source 계층** — Slack/Notion 은 opt-in cache. `IMPRINT_ENABLE_LAZY_FETCH=1` 또는 `/memory refresh <url>` 로만 동작하고, 실패/stale/cap 초과는 `source_status` marker 로 남습니다.
@@ -134,7 +134,7 @@ RAG 기본 루프가 안정된 뒤 진입합니다. staged diff, 최근 memory, 
 | 위험 | 대응 |
 |---|---|
 | 민감정보 저장 (prompt/terminal/external source 에 secret 혼입) | Guardrail 저장 금지 기준, default + 사용자 custom redaction rule. 과거 DB 청소는 사용자 승인 후 별도 작업. |
-| 컨텍스트 오염 (무관한 memory prefill) | project_id·context section 분리, working TTL/cap, source_status 분리, 수동 `/memory inject` 로 명시 근거 주입. |
+| 컨텍스트 오염 (무관한 memory prefill) | project_id·context section 분리, working TTL/cap, pinned 별도 lane, unpinned 원본 근거 필터, 무매칭 최신 fallback 제거. 넓은 의미 검색과 명시 근거 주입은 `/search`, `/memory inject` 가 담당. |
 | 외부 source 신뢰성 (fetch 실패·stale 을 사용자가 모름) | `source_status` marker, stale 표시, `/memory refresh`. 자동 refresh 는 측정 전 보류. |
 | 성능 병목 (긴 transcript 재파싱, 큰 payload, 동시 worker) | `IMPRINT_PROFILE=1` 계측 + `/memory profile/status`. 측정 후 tail-only parse, lockfile, daemon 분리 중 최소 대응 선택. |
 | 선택 ML 의존성 부재 | FTS-only/LIKE/LLM judge fallback 으로 동작은 유지. 단, 미설치 시 의미(벡터) 검색이 꺼져 "개념 질문으로 맥락 상기" 라는 핵심 목적이 키워드 수준으로 떨어집니다. graceful fallback 이 곧 "기능 동일" 은 아님을 사용자에게 명확히 알립니다(2026-05-21 실측에서 오해 확인). |

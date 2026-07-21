@@ -183,7 +183,7 @@ export IMPRINT_DISABLE_EMBEDDING=1   # 같은 형식: RERANK, NLI, MODEL_JUDGE, 
 hook 경로, 저장 테이블, 검색 파이프라인의 상세 흐름은 [`flow.md`](flow.md) 를 봅니다. 요약:
 
 - `SessionStart`: 스키마 적용, 프로젝트 등록, Guardrail prepend, stale session background rollup.
-- `UserPromptSubmit`: prompt redaction·archive, 경량 prefill. full `/search` 는 자동 호출하지 않습니다.
+- `UserPromptSubmit`: prompt redaction·archive, 경량 prefill. working 다음에 pinned 를 우선 포함하고, unpinned 는 원본 질의 근거를 통과한 항목만 넣습니다. full `/search` 는 자동 호출하지 않습니다.
 - `Stop`: assistant 응답 redaction·archive. 검색용 구현 기억은 이후 delta/rollup 이 `events` 에서 추출합니다.
 
 ## 검증
